@@ -14,7 +14,8 @@ const MOCK_SAT = {
 };
 
 const INITIAL_VIEW = { center: [13, 18] as [number, number], zoom: 1.35, bearing: 0, pitch: 0 };
-const VECTOR_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+const OPENFREEMAP_DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
+const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
 type Basemap = "dark" | "street" | "satellite";
@@ -71,73 +72,28 @@ function layerCategory(layer: MutableStyleLayer): LayerKey | null {
   return null;
 }
 
-function themeVectorStyle(style: StyleSpecification, mode: Exclude<Basemap, "satellite">) {
-  const palette = mode === "dark" ? {
-    background: "#071116",
-    land: "#102126",
-    landcover: "#132a27",
-    water: "#0a2633",
-    waterLine: "#174657",
-    road: "#38535c",
-    motorway: "#52717a",
-    border: "#60808a",
-    building: "#1d3439",
-    text: "#a9c0c8",
-    textHalo: "#071116",
-  } : {
-    background: "#66756d",
-    land: "#6f7d72",
-    landcover: "#637566",
-    water: "#234b5a",
-    waterLine: "#376675",
-    road: "#b8ad91",
-    motorway: "#d2c59c",
-    border: "#d3ddd7",
-    building: "#817f72",
-    text: "#edf3ef",
-    textHalo: "#35443f",
-  };
-
-  for (const rawLayer of style.layers) {
-    const layer = rawLayer as MutableStyleLayer;
-    const category = layerCategory(layer);
-    layer.metadata = { ...layer.metadata, "worldsat:category": category };
-    layer.paint = { ...layer.paint };
-
-    if (layer.type === "background") layer.paint["background-color"] = palette.background;
-    if (layer.type === "fill") {
-      if (category === "water") layer.paint["fill-color"] = palette.water;
-      else if (category === "buildings") layer.paint["fill-color"] = palette.building;
-      else layer.paint["fill-color"] = /park|wood|forest|grass|landcover/.test(layer.id.toLowerCase()) ? palette.landcover : palette.land;
-      layer.paint["fill-opacity"] = 1;
-    }
-    if (layer.type === "fill-extrusion") {
-      layer.paint["fill-extrusion-color"] = palette.building;
-      layer.paint["fill-extrusion-opacity"] = 0.82;
-    }
-    if (layer.type === "line") {
-      if (category === "water") layer.paint["line-color"] = palette.waterLine;
-      if (category === "borders") layer.paint["line-color"] = palette.border;
-      if (category === "roads") {
-        layer.paint["line-color"] = /motorway|trunk|primary/.test(layer.id.toLowerCase()) ? palette.motorway : palette.road;
-      }
-    }
-    if (layer.type === "symbol" && layer.layout?.["text-field"]) {
-      layer.paint["text-color"] = palette.text;
-      layer.paint["text-halo-color"] = palette.textHalo;
-      layer.paint["text-halo-width"] = mode === "dark" ? 1.2 : 1.5;
-      layer.paint["text-opacity"] = 0.96;
-    }
-  }
-}
-
 async function loadStyle(mode: Basemap): Promise<StyleSpecification> {
-  const response = await fetch(VECTOR_STYLE_URL);
-  if (!response.ok) throw new Error(`Map style unavailable (${response.status})`);
+  if (mode === "street") {
+    return {
+      version: 8,
+      projection: { type: "globe" },
+      sources: {
+        "osm-standard": {
+          type: "raster",
+          tiles: [OSM_STANDARD_TILES],
+          tileSize: 256,
+          maxzoom: 19,
+          attribution: "© OpenStreetMap contributors",
+        },
+      },
+      layers: [{ id: "osm-standard", type: "raster", source: "osm-standard" }],
+    };
+  }
+
+  const response = await fetch(OPENFREEMAP_DARK_STYLE_URL);
+  if (!response.ok) throw new Error(`OpenFreeMap dark style unavailable (${response.status})`);
   const style = await response.json() as StyleSpecification;
   style.projection = { type: "globe" };
-
-  if (mode !== "satellite") themeVectorStyle(style, mode);
 
   if (mode === "satellite") {
     for (const rawLayer of style.layers) {
@@ -159,7 +115,6 @@ async function loadStyle(mode: Basemap): Promise<StyleSpecification> {
         id: "satellite-imagery",
         type: "raster",
         source: "satellite-imagery",
-        paint: { "raster-saturation": -0.08, "raster-contrast": 0.08, "raster-brightness-max": 0.82 },
       },
       ...style.layers.map((rawLayer) => {
         const layer = rawLayer as MutableStyleLayer;
@@ -179,7 +134,7 @@ function fallbackStyle(): StyleSpecification {
     sources: {
       "osm-fallback": {
         type: "raster",
-        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tiles: [OSM_STANDARD_TILES],
         tileSize: 256,
         maxzoom: 19,
         attribution: "© OpenStreetMap contributors",
@@ -191,12 +146,6 @@ function fallbackStyle(): StyleSpecification {
         id: "osm-fallback",
         type: "raster",
         source: "osm-fallback",
-        paint: {
-          "raster-brightness-min": 0.02,
-          "raster-brightness-max": 0.48,
-          "raster-contrast": 0.3,
-          "raster-saturation": -0.72,
-        },
       },
     ],
   };
@@ -235,6 +184,7 @@ function addMissionLayers(map: MapLibreMap) {
 }
 
 function applyLayerSettings(map: MapLibreMap, settings: MapSettings) {
+  if (settings.basemap === "street") return;
   const layers = map.getStyle().layers ?? [];
   for (const rawLayer of layers) {
     const layer = rawLayer as MutableStyleLayer;
@@ -366,6 +316,8 @@ function MapSettingsPanel({ settings, onChange, onClose }: {
     ["buildings", "Buildings", "Building footprints at close zoom"],
   ];
 
+  const detailsAvailable = settings.basemap !== "street";
+
   return <aside className="settings-panel" aria-label="Map settings">
     <div className="settings-head"><div><small>DISPLAY CONTROL</small><h2>MAP SETTINGS</h2></div><button onClick={onClose} aria-label="Close map settings">×</button></div>
     <section><h3>BASEMAP</h3><div className="basemap-options">
@@ -377,13 +329,15 @@ function MapSettingsPanel({ settings, onChange, onClose }: {
       ><i className={`basemap-swatch ${mode}`}/><span>{mode.toUpperCase()}</span></button>)}
     </div></section>
     <section><h3>MAP DETAILS</h3><div className="layer-options">
-      {toggles.map(([key, label, description]) => <label key={key}>
+      {toggles.map(([key, label, description]) => <label key={key} className={!detailsAvailable ? "disabled" : ""}>
         <span><b>{label}</b><small>{description}</small></span>
-        <input type="checkbox" checked={settings[key]} onChange={(event) => onChange({ ...settings, [key]: event.target.checked })}/>
+        <input type="checkbox" checked={settings[key]} disabled={!detailsAvailable} onChange={(event) => onChange({ ...settings, [key]: event.target.checked })}/>
         <i aria-hidden="true"/>
       </label>)}
     </div></section>
-    <p>Only visible map tiles are streamed for the current camera position and zoom.</p>
+    <p>{detailsAvailable
+      ? "Map details are separate vector layers. Only visible tiles are streamed."
+      : "The OpenStreetMap Standard layer is a rendered image, so its details cannot be switched independently."}</p>
   </aside>;
 }
 
@@ -430,7 +384,7 @@ export default function Home() {
         <div className="data-row"><span>NORAD ID</span><b>{MOCK_SAT.norad}</b></div>
         <div className="data-row"><span>BASEMAP</span><b>{settings.basemap.toUpperCase()}</b></div>
       </aside>
-      <div className="map-credit">{settings.basemap === "satellite" ? <>Imagery © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> & providers · Labels © OpenStreetMap</> : <>Map © <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · © OpenStreetMap</>}</div>
+      <div className="map-credit">{settings.basemap === "satellite" ? <>Imagery © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> & providers · Overlays © OpenStreetMap</> : settings.basemap === "street" ? <>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></> : <>Map © <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · © OpenStreetMap</>}</div>
       <div className="legend"><span><i className="sat-symbol"/> SATELLITE</span><span><i className="vector-symbol"/> HEADING VECTOR</span></div>
       <div className="controls"><span>DRAG TO ROTATE</span><span>SCROLL TO ZOOM</span><button onClick={() => setResetKey((key) => key + 1)} aria-label="Reset globe camera">RESET VIEW</button></div>
     </section>

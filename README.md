@@ -8,8 +8,8 @@ the orbit-propagation and telemetry services remain offline.
 ## Current capabilities
 
 - MapLibre GL globe with view-dependent tile streaming
-- Dark, Street, and satellite-imagery basemaps
-- Independent Roads, Borders, Places, Water, and Buildings controls
+- Native OpenFreeMap Dark, OpenStreetMap Standard, and satellite-imagery basemaps
+- Independent Roads, Borders, Places, Water, and Buildings controls on vector-backed views
 - Device-local persistence for map preferences
 - Stationary `WORLDSAT-01` mock satellite and heading vector
 - Drag rotation, deep zoom, camera reset, and responsive mission UI
@@ -34,7 +34,17 @@ authoritative orbit model in the browser.
 
 ## Development
 
-Requirements: Node.js `>=22.13.0` and npm.
+Run the Docker Compose project:
+
+```bash
+docker compose up --build
+```
+
+The UI is available at `http://localhost:3000`. The Compose service is named
+`ui`, leaving the project ready for later backend, database, and external API
+services.
+
+For development without Docker, requirements are Node.js `>=22.13.0` and npm.
 
 ```bash
 npm ci

@@ -1,0 +1,12 @@
+name: world-sat-monitor
+
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: world-sat-monitor-ui:local
+    container_name: world-sat-monitor-ui
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
