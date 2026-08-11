@@ -8,7 +8,7 @@ import {
 } from "../app/solar.ts";
 
 function antipodalLongitude(longitude) {
-  return ((longitude + 540) % 360) - 180;
+  return longitude >= 0 ? longitude - 180 : longitude + 180;
 }
 
 test("solar state places the Sun above the calculated subsolar point", () => {
