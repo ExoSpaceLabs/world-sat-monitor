@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Starter Project",
-  description: "A clean starting point for building your site.",
+  title: "WorldSat Monitor",
+  description: "Interactive 3D Earth and satellite mission monitor.",
   other: {
     "codex-preview": "development",
   },

@@ -8,17 +8,18 @@ the orbit-propagation and telemetry services remain offline.
 ## Current capabilities
 
 - MapLibre GL globe with view-dependent tile streaming
-- Native CARTO Dark, OpenStreetMap Standard, and satellite-imagery basemaps
-- Independent Roads, Borders, Places, Water, and Buildings controls on vector-backed views
-- Device-local persistence for map preferences
+- CARTO Dark, OpenStreetMap Standard, and Esri satellite-imagery basemaps
+- Optional starfield and time-driven sun position
+- Optional UTC solar terminator for daytime/nighttime differentiation
+- Continuous globe rotation with a short pause after manual interaction
+- Camera follow mode for the selected satellite
 - Stationary `WORLDSAT-01` mock satellite and heading vector
 - Drag rotation, deep zoom, camera reset, and responsive mission UI
 
 ## Map data
 
-- Dark basemap: [CARTO Dark Matter](https://carto.com/basemaps/)
-- Vector overlays and map data: [OpenFreeMap](https://openfreemap.org/) and
-  [OpenStreetMap](https://www.openstreetmap.org/)
+- Dark map: [CARTO Dark Matter](https://carto.com/basemaps/)
+- Street map: [OpenStreetMap](https://www.openstreetmap.org/)
 - Satellite imagery: [Esri World Imagery](https://www.esri.com/)
 
 Only the tiles required for the visible camera position and zoom are loaded.
