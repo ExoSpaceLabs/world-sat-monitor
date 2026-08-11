@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  createNightRegion,
   getSolarState,
+  nightShadowOpacity,
   solarElevation,
-} from "../app/solar.ts";
+} from "../app/domain/solar.ts";
 
 function antipodalLongitude(longitude) {
   return longitude >= 0 ? longitude - 180 : longitude + 180;
@@ -29,21 +29,10 @@ test("solar state places the Sun above the calculated subsolar point", () => {
   }
 });
 
-test("night geometry is finite, closed, and split at the antimeridian", () => {
-  const night = createNightRegion(new Date("2026-08-11T12:00:00.000Z"));
-
-  assert.equal(night.geometry.type, "MultiPolygon");
-  assert.equal(night.geometry.coordinates.length, 2);
-
-  for (const polygon of night.geometry.coordinates) {
-    const ring = polygon[0];
-    assert.ok(ring.length > 90);
-    assert.deepEqual(ring[0], ring.at(-1));
-    for (const coordinate of ring) {
-      assert.equal(coordinate.length, 2);
-      assert.ok(coordinate.every(Number.isFinite));
-      assert.ok(coordinate[0] >= -180 && coordinate[0] <= 180);
-      assert.ok(coordinate[1] >= -90 && coordinate[1] <= 90);
-    }
-  }
+test("night texture is transparent under the Sun and opaque at the anti-solar point", () => {
+  assert.equal(nightShadowOpacity(10), 0);
+  assert.equal(nightShadowOpacity(3), 0);
+  assert.ok(nightShadowOpacity(-6) > 0.3);
+  assert.ok(nightShadowOpacity(-30) > 0.7);
+  assert.ok(nightShadowOpacity(-90) > nightShadowOpacity(-6));
 });

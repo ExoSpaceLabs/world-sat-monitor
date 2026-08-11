@@ -1,5 +1,3 @@
-import type {Feature, MultiPolygon} from "geojson";
-
 const DEG = Math.PI / 180;
 
 function normalizeLongitude(longitude: number) {
@@ -29,32 +27,6 @@ export function getSolarState(date: Date): SolarState {
   };
 }
 
-function terminatorLatitude(longitude: number, sun: SolarState) {
-  const hourAngle = (longitude - sun.longitude) * DEG;
-  const declination = sun.latitude * DEG;
-  return Math.atan2(-Math.cos(declination) * Math.cos(hourAngle), Math.sin(declination)) / DEG;
-}
-
-export function createNightRegion(date: Date): Feature<MultiPolygon> {
-  const sun = getSolarState(date);
-  const pole = sun.latitude >= 0 ? -90 : 90;
-  const strips: Array<[number, number]> = [[-180, 0], [0, 180]];
-  const coordinates = strips.map(([start, end]) => {
-    const ring: number[][] = [[start, pole], [end, pole]];
-    for (let longitude = end; longitude >= start; longitude -= 2) {
-      ring.push([longitude, terminatorLatitude(longitude, sun)]);
-    }
-    ring.push([start, pole]);
-    return [ring];
-  });
-
-  return {
-    type: "Feature",
-    properties: {utc: date.toISOString()},
-    geometry: {type: "MultiPolygon", coordinates},
-  };
-}
-
 export function solarElevation(latitude: number, longitude: number, sun: SolarState) {
   const lat = latitude * DEG;
   const sunLat = sun.latitude * DEG;
@@ -62,4 +34,11 @@ export function solarElevation(latitude: number, longitude: number, sun: SolarSt
   return Math.asin(
     Math.sin(lat) * Math.sin(sunLat) + Math.cos(lat) * Math.cos(sunLat) * Math.cos(deltaLon),
   ) / DEG;
+}
+
+export function nightShadowOpacity(elevation: number) {
+  if (elevation >= 3) return 0;
+  const transition = Math.min(1, Math.max(0, (3 - elevation) / 21));
+  const eased = transition * transition * (3 - 2 * transition);
+  return 0.16 + eased * 0.62;
 }

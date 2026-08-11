@@ -13,7 +13,7 @@ the orbit-propagation and telemetry services remain offline.
 - CARTO Dark, OpenStreetMap Standard, and Esri satellite-imagery basemaps
 - Optional starfield and time-driven sun position
 - Optional UTC solar terminator for daytime/nighttime differentiation
-- Continuous globe rotation with a short pause after manual interaction
+- Continuous globe rotation with pauses after manual interaction and at close zoom
 - Camera follow mode for the selected satellite
 - Stationary `WORLDSAT-01` mock satellite and heading vector
 - Drag rotation, deep zoom, camera reset, and responsive mission UI
@@ -35,6 +35,19 @@ catalogue storage, orbit propagation, telemetry adapters, and API/WebSocket
 delivery. Those services are expected to be independently deployable through
 Docker Compose; the UI should consume propagated state rather than run the
 authoritative orbit model in the browser.
+
+The frontend rendering stack has explicit top-to-bottom ownership:
+
+1. `WorldSatMonitor` owns page information, controls, and future selection state.
+2. `SatelliteLayer` and `SatellitePanel` own the selected object, marker, heading,
+   follow control, and future path overlays.
+3. `DayNightLayer` owns the UTC solar shadow skin and its style reload lifecycle.
+4. `GlobeMap` owns MapLibre, basemaps, camera orientation, and automatic rotation.
+5. `SpaceBackground` owns one inward-facing spherical star texture and UTC sun.
+
+The globe publishes a single `SceneOrientation` contract. The outer sky sphere
+consumes the same signed rotation, while the shadow and sun consume the same
+UTC `SolarState`; none of those renderers mutates another renderer's state.
 
 ## Development
 
@@ -62,4 +75,5 @@ npm run lint
 npm test
 ```
 
-The application source is primarily in `app/page.tsx` and `app/globals.css`.
+The page entry point is `app/page.tsx`; rendering components and their styles
+are isolated under `app/components`, with shared contracts under `app/domain`.

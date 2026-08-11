@@ -29,5 +29,11 @@ test("renders development preview metadata", async () => {
     response.headers.get("content-type") ?? "",
     /^text\/html\b/i,
   );
-  assert.match(await response.text(), developmentPreviewMeta);
+  const html = await response.text();
+  assert.match(html, developmentPreviewMeta);
+  assert.match(html, /data-layer=["']page["']/i);
+  assert.match(html, /data-layer=["']space-background["']/i);
+  assert.match(html, /data-layer=["']globe-map["']/i);
+  assert.match(html, /data-layer=["']satellite-controls["']/i);
+  assert.match(html, /WORLDSAT-01/);
 });
