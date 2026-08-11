@@ -1,5 +1,7 @@
 # WorldSat Monitor
 
+[![CI](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml)
+
 WorldSat Monitor is a web-based satellite mission display built around an
 interactive 3D Earth. The current checkpoint is intentionally frontend-only:
 it renders one stationary mock spacecraft and a mocked heading vector while

@@ -223,7 +223,7 @@ function syncNightShadow(map: MapLibreMap, enabled: boolean, date = new Date()) 
       source: "night-region",
       paint: {
         "fill-color": "#01040b",
-        "fill-opacity": 0.48,
+        "fill-opacity": 0.64,
         "fill-antialias": false,
       },
     });
@@ -267,6 +267,8 @@ function Globe({
     let lastCameraReport = 0;
     let rotationPausedUntil = 0;
     let nightTimer = 0;
+    let markerNode: HTMLDivElement | null = null;
+    let markerRenderListener: (() => void) | null = null;
 
     void Promise.all([import("maplibre-gl"), loadStyle(basemapRef.current).catch(() => fallbackStyle())]).then(([maplibre, style]) => {
       if (disposed || !containerRef.current) return;
@@ -294,25 +296,34 @@ function Globe({
       });
       map.on("error", () => onMapState("fallback"));
 
-      map.once("load", () => {
-        if (!map) return;
-        const markerNode = document.createElement("div");
-      markerNode.className = "satellite-marker";
-      markerNode.setAttribute("role", "button");
-      markerNode.setAttribute("tabindex", "0");
-      markerNode.setAttribute("aria-label", `Follow ${MOCK_SAT.name}, mock satellite at ${MOCK_SAT.lat} north, ${MOCK_SAT.lon} east`);
-      markerNode.innerHTML = `<span class="satellite-pulse"></span><span class="satellite-core"></span><span class="satellite-label"><b>${MOCK_SAT.name}</b><small>${MOCK_SAT.heading}° HEADING</small></span>`;
-      const selectSatellite = () => selectSatelliteRef.current();
-      markerNode.addEventListener("click", selectSatellite);
-      markerNode.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectSatellite();
+      markerRenderListener = () => {
+        if (!map || markerNode || !map.isStyleLoaded()) return;
+        const node = document.createElement("div");
+        node.className = "satellite-marker";
+        node.setAttribute("role", "button");
+        node.setAttribute("tabindex", "0");
+        node.setAttribute("aria-label", `Follow ${MOCK_SAT.name}, mock satellite at ${MOCK_SAT.lat} north, ${MOCK_SAT.lon} east`);
+        node.innerHTML = `<span class="satellite-pulse"></span><span class="satellite-core"></span><span class="satellite-label"><b>${MOCK_SAT.name}</b><small>${MOCK_SAT.heading}° HEADING</small></span>`;
+        const selectSatellite = () => selectSatelliteRef.current();
+        node.addEventListener("click", selectSatellite);
+        node.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectSatellite();
+          }
+        });
+        try {
+          new maplibre.Marker({ element: node, anchor: "center" })
+            .setLngLat([MOCK_SAT.lon, MOCK_SAT.lat])
+            .addTo(map);
+          markerNode = node;
+          map.off("render", markerRenderListener!);
+          markerRenderListener = null;
+        } catch {
+          node.remove();
         }
-      });
-      new maplibre.Marker({ element: markerNode, anchor: "center" })
-        .setLngLat([MOCK_SAT.lon, MOCK_SAT.lat])
-        .addTo(map);
+      };
+      map.on("render", markerRenderListener);
 
       const reportCamera = () => {
         if (!map) return;
@@ -345,13 +356,14 @@ function Globe({
       nightTimer = window.setInterval(() => {
         if (map?.isStyleLoaded() && sceneRef.current.nightShadow) syncNightShadow(map, true);
       }, 60_000);
-      });
     });
 
     return () => {
       disposed = true;
       cancelAnimationFrame(animationFrame);
       window.clearInterval(nightTimer);
+      if (map && markerRenderListener) map.off("render", markerRenderListener);
+      markerNode?.remove();
       map?.remove();
       mapRef.current = null;
     };
@@ -445,9 +457,13 @@ export default function Home() {
   const sun = useMemo(() => getSolarState(now), [now]);
   const satelliteSunElevation = solarElevation(MOCK_SAT.lat, MOCK_SAT.lon, sun);
   const relativeSunLongitude = ((sun.longitude - camera.longitude + 540) % 360) - 180;
-  const sunStyle = {
+  const skyStyle = {
     "--sun-x": `${50 + 43 * Math.sin(relativeSunLongitude * Math.PI / 180)}%`,
-    "--sun-y": `${48 - 31 * Math.sin(sun.latitude * Math.PI / 180)}%`,
+    "--sun-y": `${48 - 31 * Math.sin((sun.latitude - camera.latitude * 0.35) * Math.PI / 180)}%`,
+    "--stars-far-x": `${-camera.longitude * 1.8}px`,
+    "--stars-far-y": `${camera.latitude * 1.1}px`,
+    "--stars-near-x": `${-camera.longitude * 3.4}px`,
+    "--stars-near-y": `${camera.latitude * 2.1}px`,
   } as CSSProperties;
 
   const handleCameraChange = useCallback((longitude: number, latitude: number, zoom: number) => {
@@ -472,7 +488,11 @@ export default function Home() {
       </div>
     </header>
     <section className="viewport">
-      <div className={`space-sky ${scene.sky ? "visible" : ""}`} aria-hidden="true"><span className="sun-disc" style={sunStyle}/></div>
+      <div className={`space-sky ${scene.sky ? "visible" : ""}`} style={skyStyle} aria-hidden="true">
+        <span className="starfield stars-far"/>
+        <span className="starfield stars-near"/>
+        <span className="sun-disc"/>
+      </div>
       <Globe resetKey={resetKey} basemap={basemap} scene={scene} followSatellite={followSatellite} onCameraChange={handleCameraChange} onMapState={handleMapState} onSelectSatellite={handleSelectSatellite}/>
       <div className="eyebrow">ORBITAL VIEW / EARTH DETAIL</div>
       <div className="coordinates">{formatCoordinate(camera.latitude, "N", "S")}&nbsp;&nbsp; {formatCoordinate(camera.longitude, "E", "W")}&nbsp;&nbsp; Z{camera.zoom.toFixed(1)}</div>
