@@ -8,7 +8,7 @@ the orbit-propagation and telemetry services remain offline.
 ## Current capabilities
 
 - MapLibre GL globe with view-dependent tile streaming
-- Native OpenFreeMap Dark, OpenStreetMap Standard, and satellite-imagery basemaps
+- Native CARTO Dark, OpenStreetMap Standard, and satellite-imagery basemaps
 - Independent Roads, Borders, Places, Water, and Buildings controls on vector-backed views
 - Device-local persistence for map preferences
 - Stationary `WORLDSAT-01` mock satellite and heading vector
@@ -16,7 +16,8 @@ the orbit-propagation and telemetry services remain offline.
 
 ## Map data
 
-- Vector map and labels: [OpenFreeMap](https://openfreemap.org/) and
+- Dark basemap: [CARTO Dark Matter](https://carto.com/basemaps/)
+- Vector overlays and map data: [OpenFreeMap](https://openfreemap.org/) and
   [OpenStreetMap](https://www.openstreetmap.org/)
 - Satellite imagery: [Esri World Imagery](https://www.esri.com/)
 

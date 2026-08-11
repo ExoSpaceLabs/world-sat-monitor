@@ -15,6 +15,7 @@ const MOCK_SAT = {
 
 const INITIAL_VIEW = { center: [13, 18] as [number, number], zoom: 1.35, bearing: 0, pitch: 0 };
 const OPENFREEMAP_DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
+const CARTO_DARK_STYLE_URL = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
@@ -73,6 +74,14 @@ function layerCategory(layer: MutableStyleLayer): LayerKey | null {
 }
 
 async function loadStyle(mode: Basemap): Promise<StyleSpecification> {
+  if (mode === "dark") {
+    const response = await fetch(CARTO_DARK_STYLE_URL);
+    if (!response.ok) throw new Error(`CARTO Dark Matter style unavailable (${response.status})`);
+    const style = await response.json() as StyleSpecification;
+    style.projection = { type: "globe" };
+    return style;
+  }
+
   if (mode === "street") {
     return {
       version: 8,
@@ -384,7 +393,7 @@ export default function Home() {
         <div className="data-row"><span>NORAD ID</span><b>{MOCK_SAT.norad}</b></div>
         <div className="data-row"><span>BASEMAP</span><b>{settings.basemap.toUpperCase()}</b></div>
       </aside>
-      <div className="map-credit">{settings.basemap === "satellite" ? <>Imagery © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> & providers · Overlays © OpenStreetMap</> : settings.basemap === "street" ? <>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></> : <>Map © <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · © OpenStreetMap</>}</div>
+      <div className="map-credit">{settings.basemap === "satellite" ? <>Imagery © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> & providers · Overlays © OpenStreetMap</> : settings.basemap === "street" ? <>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></> : <>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a> © <a href="https://carto.com/attributions" target="_blank" rel="noreferrer">CARTO</a></>}</div>
       <div className="legend"><span><i className="sat-symbol"/> SATELLITE</span><span><i className="vector-symbol"/> HEADING VECTOR</span></div>
       <div className="controls"><span>DRAG TO ROTATE</span><span>SCROLL TO ZOOM</span><button onClick={() => setResetKey((key) => key + 1)} aria-label="Reset globe camera">RESET VIEW</button></div>
     </section>
