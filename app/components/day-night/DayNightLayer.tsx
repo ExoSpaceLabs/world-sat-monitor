@@ -93,22 +93,34 @@ function removeNightLayer(map: MapLibreMap) {
   if (map.getSource(NIGHT_SOURCE_ID)) map.removeSource(NIGHT_SOURCE_ID);
 }
 
-function addNightLayer(map: MapLibreMap, sun: SolarState, opacity: number) {
-  removeNightLayer(map);
-  map.addSource(NIGHT_SOURCE_ID, {
-    type: "geojson",
-    data: nightHemisphereGeometry(sun),
-  });
-  map.addLayer({
-    id: NIGHT_LAYER_ID,
-    type: "fill",
-    source: NIGHT_SOURCE_ID,
-    paint: {
-      "fill-antialias": false,
-      "fill-color": "#00030a",
-      "fill-opacity": opacityExpression(opacity) as never,
-    },
-  });
+function ensureNightLayer(
+  map: MapLibreMap,
+  sun: SolarState,
+  opacity: number,
+  enabled: boolean,
+) {
+  if (!map.getSource(NIGHT_SOURCE_ID)) {
+    map.addSource(NIGHT_SOURCE_ID, {
+      type: "geojson",
+      data: nightHemisphereGeometry(sun),
+    });
+  }
+
+  if (!map.getLayer(NIGHT_LAYER_ID)) {
+    map.addLayer({
+      id: NIGHT_LAYER_ID,
+      type: "fill",
+      source: NIGHT_SOURCE_ID,
+      paint: {
+        "fill-antialias": false,
+        "fill-color": "#00030a",
+        "fill-opacity": opacityExpression(opacity) as never,
+      },
+    });
+  }
+
+  map.setLayoutProperty(NIGHT_LAYER_ID, "visibility", enabled ? "visible" : "none");
+  map.setPaintProperty(NIGHT_LAYER_ID, "fill-opacity", opacityExpression(opacity));
   map.triggerRepaint();
 }
 
@@ -126,17 +138,49 @@ export function DayNightLayer({
   solarState,
 }: DayNightLayerProps) {
   const map = mapSession?.map;
-  const latestRef = useRef({opacity, solarState});
+  const latestRef = useRef({enabled, opacity, solarState});
 
   useEffect(() => {
-    latestRef.current = {opacity, solarState};
-  }, [opacity, solarState]);
+    latestRef.current = {enabled, opacity, solarState};
+  }, [enabled, opacity, solarState]);
 
   useEffect(() => {
-    if (!map || !map.isStyleLoaded()) return;
-    addNightLayer(map, latestRef.current.solarState, latestRef.current.opacity);
+    if (!map) return;
+    let disposed = false;
+    let retryFrame = 0;
+    let retryCount = 0;
+
+    const ensure = () => {
+      if (disposed) return;
+      const latest = latestRef.current;
+      try {
+        // mapSession is published from MapLibre's style.load callback. Do not
+        // gate this on isStyleLoaded(): that method can still be false while
+        // source tiles are settling, which previously made the effect return
+        // once and leave the night layer permanently absent.
+        ensureNightLayer(map, latest.solarState, latest.opacity, latest.enabled);
+      } catch (error) {
+        if (retryCount < 60) {
+          retryCount += 1;
+          retryFrame = requestAnimationFrame(ensure);
+          return;
+        }
+        console.error("Unable to install WorldSat night layer", error);
+      }
+    };
+
+    ensure();
+    const handleStyleLoad = () => {
+      retryCount = 0;
+      ensure();
+    };
+    map.on("style.load", handleStyleLoad);
+
     return () => {
-      if (map.isStyleLoaded()) removeNightLayer(map);
+      disposed = true;
+      cancelAnimationFrame(retryFrame);
+      map.off("style.load", handleStyleLoad);
+      removeNightLayer(map);
     };
   }, [map, mapSession?.styleRevision]);
 
