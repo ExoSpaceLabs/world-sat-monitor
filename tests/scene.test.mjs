@@ -72,11 +72,11 @@ test("camera bearing rotates its screen axes without changing its outward direct
   assert.ok(Math.abs(eastUp.right.z + northUp.up.z) < 1e-12);
 });
 
-test("automatic map rotation stops when the camera locks to Earth", () => {
-  const base = {followSatellite: false, isInteracting: false, isMoving: false};
-  assert.equal(shouldAutoRotate({...base, zoom: AUTO_ROTATION_MAX_ZOOM - 0.01}), true);
-  assert.equal(shouldAutoRotate({...base, zoom: AUTO_ROTATION_MAX_ZOOM}), false);
-  assert.equal(shouldAutoRotate({...base, zoom: AUTO_ROTATION_MAX_ZOOM + 1}), false);
-  assert.equal(shouldAutoRotate({...base, zoom: 1, followSatellite: true}), false);
-  assert.equal(shouldAutoRotate({...base, zoom: 1, isInteracting: true}), false);
+test("camera frame locks at close zoom while Earth rotation remains continuous", () => {
+  assert.equal(shouldAutoRotate({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM - 0.01}), true);
+  assert.equal(shouldAutoRotate({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM}), false);
+  assert.equal(shouldAutoRotate({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM + 1}), false);
+  assert.equal(shouldAutoRotate({followSatellite: true, zoom: 1}), false);
+  assert.equal(shouldLockCameraToEarth({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM - 0.01}), false);
+  assert.equal(shouldLockCameraToEarth({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM}), true);
 });
