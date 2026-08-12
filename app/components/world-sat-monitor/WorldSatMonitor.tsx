@@ -1,14 +1,19 @@
 "use client";
 
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {SpaceBackground} from "../background/SpaceBackground";
-import {DayNightLayer} from "../day-night/DayNightLayer";
+import {DayNightLayer, NIGHT_LAYER_ID} from "../day-night/DayNightLayer";
 import {GlobeMap} from "../globe/GlobeMap";
 import {SatelliteLayer} from "../satellite/SatelliteLayer";
 import {SatellitePanel} from "../satellite/SatellitePanel";
 import {MapSettingsPanel} from "../settings/MapSettingsPanel";
-import {INITIAL_UTC, INITIAL_VIEW, type SceneOrientation} from "../../domain/scene";
-import {MOCK_SATELLITE} from "../../domain/satellite";
+import {
+  INITIAL_UTC,
+  INITIAL_VIEW,
+  normalizeLongitude,
+  type SceneOrientation,
+} from "../../domain/scene";
+import {EARTH_RADIUS_KM, MOCK_SATELLITE} from "../../domain/satellite";
 import {
   DEFAULT_BASEMAP,
   DEFAULT_SCENE_OPTIONS,
@@ -17,7 +22,14 @@ import {
   type MapState,
   type SceneOptions,
 } from "../../domain/types";
-import {getSolarState} from "../../domain/solar";
+import {getSolarState, inertialSolarLongitude} from "../../domain/solar";
+
+type SimulationClock = {
+  initialized: boolean;
+  realAnchorMs: number;
+  simulationAnchorMs: number;
+  scale: number;
+};
 
 function formatCoordinate(value: number, positive: string, negative: string) {
   return `${Math.abs(value).toFixed(3)}° ${value >= 0 ? positive : negative}`;
@@ -35,6 +47,8 @@ function BasemapCredit({basemap}: {basemap: Basemap}) {
 
 export function WorldSatMonitor() {
   const [resetKey, setResetKey] = useState(0);
+  const [timeResetKey, setTimeResetKey] = useState(0);
+  const [timeScale, setTimeScale] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mapState, setMapState] = useState<MapState>("loading");
   const [mapSession, setMapSession] = useState<MapSession | null>(null);
@@ -42,6 +56,12 @@ export function WorldSatMonitor() {
   const [scene, setScene] = useState<SceneOptions>({...DEFAULT_SCENE_OPTIONS});
   const [followSatellite, setFollowSatellite] = useState(false);
   const [now, setNow] = useState(INITIAL_UTC);
+  const simulationClockRef = useRef<SimulationClock>({
+    initialized: false,
+    realAnchorMs: 0,
+    simulationAnchorMs: 0,
+    scale: 1,
+  });
   const [orientation, setOrientation] = useState<SceneOrientation>({
     longitude: INITIAL_VIEW.center[0],
     inertialLongitude: INITIAL_VIEW.center[0],
@@ -58,7 +78,21 @@ export function WorldSatMonitor() {
   }>({active: true, reason: "active"});
 
   useEffect(() => {
-    const clock = window.setInterval(() => setNow(new Date()), 1_000);
+    const realNow = Date.now();
+    simulationClockRef.current = {
+      initialized: true,
+      realAnchorMs: realNow,
+      simulationAnchorMs: realNow,
+      scale: 1,
+    };
+    setNow(new Date(realNow));
+    const clock = window.setInterval(() => {
+      const state = simulationClockRef.current;
+      const realTimestamp = Date.now();
+      const simulationTimestamp = state.simulationAnchorMs
+        + (realTimestamp - state.realAnchorMs) * state.scale;
+      setNow(new Date(simulationTimestamp));
+    }, 250);
     return () => window.clearInterval(clock);
   }, []);
 
@@ -67,8 +101,39 @@ export function WorldSatMonitor() {
   const handleEnvironmentChange = useCallback((enabled: boolean) => {
     setScene((current) => ({...current, spaceEnvironment: enabled}));
   }, []);
+  const handleDebugChange = useCallback((debug: boolean) => {
+    setScene((current) => ({...current, debug}));
+  }, []);
   const handleShadowOpacityChange = useCallback((shadowOpacity: number) => {
     setScene((current) => ({...current, shadowOpacity}));
+  }, []);
+  const handleTimeScaleChange = useCallback((scale: number) => {
+    const nextScale = Math.max(0, scale);
+    const realTimestamp = Date.now();
+    const state = simulationClockRef.current;
+    const simulationTimestamp = state.initialized
+      ? state.simulationAnchorMs + (realTimestamp - state.realAnchorMs) * state.scale
+      : realTimestamp;
+    simulationClockRef.current = {
+      initialized: true,
+      realAnchorMs: realTimestamp,
+      simulationAnchorMs: simulationTimestamp,
+      scale: nextScale,
+    };
+    setTimeScale(nextScale);
+    setNow(new Date(simulationTimestamp));
+  }, []);
+  const handleTimeReset = useCallback(() => {
+    const realTimestamp = Date.now();
+    const scale = simulationClockRef.current.scale;
+    simulationClockRef.current = {
+      initialized: true,
+      realAnchorMs: realTimestamp,
+      simulationAnchorMs: realTimestamp,
+      scale,
+    };
+    setNow(new Date(realTimestamp));
+    setTimeResetKey((key) => key + 1);
   }, []);
   const handleRotationChange = useCallback((
     active: boolean,
@@ -81,7 +146,9 @@ export function WorldSatMonitor() {
   const handleSettingsReset = useCallback(() => {
     setBasemap(DEFAULT_BASEMAP);
     setScene({...DEFAULT_SCENE_OPTIONS});
-  }, []);
+    handleTimeScaleChange(1);
+    handleTimeReset();
+  }, [handleTimeReset, handleTimeScaleChange]);
   const handleSatelliteSelect = useCallback(() => setFollowSatellite(true), []);
 
   const rotationLabel = followSatellite
@@ -89,8 +156,13 @@ export function WorldSatMonitor() {
     : rotation.reason === "zoom"
       ? "CAMERA LOCKED TO EARTH ROTATION"
       : rotation.active
-        ? "24-HOUR EARTH ROTATION ACTIVE"
+        ? `${timeScale}× EARTH ROTATION ACTIVE`
         : "EARTH ROTATION PAUSED · INTERACTION";
+
+  const shadowReady = Boolean(mapSession?.map.getLayer(NIGHT_LAYER_ID));
+  const inertialSunLongitude = inertialSolarLongitude(solarState, orientation.earthRotationDegrees);
+  const cameraSunDelta = normalizeLongitude(orientation.longitude - solarState.longitude);
+  const altitudeRatio = MOCK_SATELLITE.altitude / EARTH_RADIUS_KM;
 
   return (
     <main className="monitor-shell" data-layer="page">
@@ -109,6 +181,8 @@ export function WorldSatMonitor() {
           followSatellite={followSatellite}
           resetKey={resetKey}
           satellite={MOCK_SATELLITE}
+          timeResetKey={timeResetKey}
+          timeScale={timeScale}
           onMapSession={setMapSession}
           onMapState={setMapState}
           onOrientationChange={setOrientation}
@@ -131,13 +205,32 @@ export function WorldSatMonitor() {
 
         <div className="eyebrow">ORBITAL VIEW / EARTH DETAIL</div>
         <div className="coordinates">{formatCoordinate(orientation.latitude, "N", "S")}&nbsp;&nbsp; {formatCoordinate(orientation.longitude, "E", "W")}&nbsp;&nbsp; Z{orientation.zoom.toFixed(1)}</div>
+        {scene.debug && (
+          <aside className="debug-overlay" data-layer="debug-overlay" aria-label="Scene debug telemetry">
+            <strong>SCENE DEBUG</strong>
+            <dl>
+              <div><dt>SIM UTC</dt><dd>{now.toISOString()}</dd></div>
+              <div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div>
+              <div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div>
+              <div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div>
+              <div><dt>SUN INERTIAL</dt><dd>{inertialSunLongitude.toFixed(3)}°</dd></div>
+              <div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div>
+              <div><dt>SHADOW LAYER</dt><dd className={shadowReady ? "ok" : "bad"}>{shadowReady ? "READY" : "MISSING"}</dd></div>
+              <div><dt>SAT ALTITUDE</dt><dd>{MOCK_SATELLITE.altitude} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div>
+            </dl>
+          </aside>
+        )}
         {settingsOpen && (
           <MapSettingsPanel
             basemap={basemap}
             scene={scene}
+            timeScale={timeScale}
             onBasemapChange={setBasemap}
+            onDebugChange={handleDebugChange}
             onEnvironmentChange={handleEnvironmentChange}
             onShadowOpacityChange={handleShadowOpacityChange}
+            onTimeReset={handleTimeReset}
+            onTimeScaleChange={handleTimeScaleChange}
             onReset={handleSettingsReset}
             onClose={() => setSettingsOpen(false)}
           />
@@ -157,7 +250,7 @@ export function WorldSatMonitor() {
       <footer>
         <span>1 OBJECT TRACKED</span>
         <span>MAP <b className={mapState === "ready" ? "online" : ""}>{mapState.toUpperCase()}</b></span>
-        <span>ENVIRONMENT <b className={scene.spaceEnvironment ? "online" : ""}>{scene.spaceEnvironment ? "UTC LIVE" : "OFF"}</b></span>
+        <span>ENVIRONMENT <b className={scene.spaceEnvironment ? "online" : ""}>{scene.spaceEnvironment ? `${timeScale}× UTC` : "OFF"}</b></span>
         <span>API <b>NOT CONNECTED</b></span>
         <em>UI CHECKPOINT 0.6</em>
       </footer>
