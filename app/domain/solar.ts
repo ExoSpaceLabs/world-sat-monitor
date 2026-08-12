@@ -1,15 +1,16 @@
-import type {Feature, MultiPolygon} from "geojson";
-
 const DEG = Math.PI / 180;
 
-function normalizeLongitude(longitude: number) {
+function normalizeSolarLongitude(longitude: number) {
   return (((longitude % 360) + 540) % 360) - 180;
 }
 
 export type SolarState = {
   latitude: number;
+  /** Subsolar longitude in the Earth-fixed frame. */
   longitude: number;
 };
+
+export const NIGHT_SHADOW_ALPHA = 0.3;
 
 export function getSolarState(date: Date): SolarState {
   const julianDay = date.getTime() / 86_400_000 + 2_440_587.5;
@@ -25,34 +26,12 @@ export function getSolarState(date: Date): SolarState {
 
   return {
     latitude: declination / DEG,
-    longitude: normalizeLongitude(rightAscension / DEG - siderealDegrees),
+    longitude: normalizeSolarLongitude(rightAscension / DEG - siderealDegrees),
   };
 }
 
-function terminatorLatitude(longitude: number, sun: SolarState) {
-  const hourAngle = (longitude - sun.longitude) * DEG;
-  const declination = sun.latitude * DEG;
-  return Math.atan2(-Math.cos(declination) * Math.cos(hourAngle), Math.sin(declination)) / DEG;
-}
-
-export function createNightRegion(date: Date): Feature<MultiPolygon> {
-  const sun = getSolarState(date);
-  const pole = sun.latitude >= 0 ? -90 : 90;
-  const strips: Array<[number, number]> = [[-180, 0], [0, 180]];
-  const coordinates = strips.map(([start, end]) => {
-    const ring: number[][] = [[start, pole], [end, pole]];
-    for (let longitude = end; longitude >= start; longitude -= 2) {
-      ring.push([longitude, terminatorLatitude(longitude, sun)]);
-    }
-    ring.push([start, pole]);
-    return [ring];
-  });
-
-  return {
-    type: "Feature",
-    properties: {utc: date.toISOString()},
-    geometry: {type: "MultiPolygon", coordinates},
-  };
+export function inertialSolarLongitude(sun: SolarState, earthRotationDegrees: number) {
+  return normalizeSolarLongitude(sun.longitude + earthRotationDegrees);
 }
 
 export function solarElevation(latitude: number, longitude: number, sun: SolarState) {
@@ -62,4 +41,10 @@ export function solarElevation(latitude: number, longitude: number, sun: SolarSt
   return Math.asin(
     Math.sin(lat) * Math.sin(sunLat) + Math.cos(lat) * Math.cos(sunLat) * Math.cos(deltaLon),
   ) / DEG;
+}
+
+export function shadowAlpha(illumination: number) {
+  if (illumination >= 0) return 0;
+  const terminatorBlend = Math.min(1, -illumination / 0.025);
+  return NIGHT_SHADOW_ALPHA * terminatorBlend;
 }
