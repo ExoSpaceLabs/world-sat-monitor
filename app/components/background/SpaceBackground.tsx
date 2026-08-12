@@ -4,6 +4,7 @@ import {useEffect, useRef} from "react";
 import type {SceneOrientation} from "../../domain/scene";
 import {toOuterSphereRotation} from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
+import {inertialSolarLongitude} from "../../domain/solar";
 
 const TEXTURE_WIDTH = 2048;
 const TEXTURE_HEIGHT = 1024;
@@ -90,7 +91,7 @@ function drawSun(
 ) {
   const rotation = toOuterSphereRotation(orientation);
   const latitude = sun.latitude * Math.PI / 180;
-  const longitude = sun.longitude * Math.PI / 180;
+  const longitude = inertialSolarLongitude(sun, orientation.earthRotationDegrees) * Math.PI / 180;
   const localX = Math.cos(latitude) * Math.sin(longitude);
   const localY = Math.sin(latitude);
   const localZ = -Math.cos(latitude) * Math.cos(longitude);
@@ -142,7 +143,10 @@ function renderSky(runtime: SkyRuntime, orientation: SceneOrientation, sun: Sola
     const longitude = Math.atan2(localX, -localZ);
     const latitude = Math.asin(Math.max(-1, Math.min(1, localY)));
     const textureX = Math.floor((longitude / (Math.PI * 2) + 0.5) * TEXTURE_WIDTH) % TEXTURE_WIDTH;
-    const textureY = Math.min(TEXTURE_HEIGHT - 1, Math.max(0, Math.floor((0.5 - latitude / Math.PI) * TEXTURE_HEIGHT)));
+    const textureY = Math.min(
+      TEXTURE_HEIGHT - 1,
+      Math.max(0, Math.floor((0.5 - latitude / Math.PI) * TEXTURE_HEIGHT)),
+    );
     const source = (textureY * TEXTURE_WIDTH + textureX) * 4;
     const target = index * 4;
     output[target] = runtime.starTexture[source];

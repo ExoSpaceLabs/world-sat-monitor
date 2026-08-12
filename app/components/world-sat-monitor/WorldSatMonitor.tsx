@@ -37,6 +37,9 @@ export function WorldSatMonitor() {
   const [now, setNow] = useState(INITIAL_UTC);
   const [orientation, setOrientation] = useState<SceneOrientation>({
     longitude: INITIAL_VIEW.center[0],
+    inertialLongitude: INITIAL_VIEW.center[0],
+    earthRotationDegrees: 0,
+    cameraLockedToEarth: false,
     latitude: INITIAL_VIEW.center[1],
     zoom: INITIAL_VIEW.zoom,
     bearing: INITIAL_VIEW.bearing,
@@ -72,12 +75,12 @@ export function WorldSatMonitor() {
   }, []);
 
   const rotationLabel = followSatellite
-    ? "CAMERA LOCKED TO SATELLITE"
+    ? "CAMERA LOCKED TO SATELLITE / EARTH ROTATION"
     : rotation.reason === "zoom"
-      ? "AUTO ROTATION PAUSED · EARTH FILLS VIEW"
+      ? "CAMERA LOCKED TO EARTH ROTATION"
       : rotation.active
-        ? "AUTO ROTATION ACTIVE"
-        : "AUTO ROTATION PAUSED · INTERACTION";
+        ? "24-HOUR EARTH ROTATION ACTIVE"
+        : "EARTH ROTATION PAUSED · INTERACTION";
 
   return (
     <main className="monitor-shell" data-layer="page">
@@ -141,10 +144,10 @@ export function WorldSatMonitor() {
       <footer>
         <span>1 OBJECT TRACKED</span>
         <span>MAP <b className={mapState === "ready" ? "online" : ""}>{mapState.toUpperCase()}</b></span>
-        <span>SKY <b className={scene.sky ? "online" : ""}>{scene.sky ? "UTC LIVE" : "OFF"}</b></span>
+        <span>SKY <b className={scene.sky ? "online" : ""}>{scene.sky ? "INERTIAL" : "OFF"}</b></span>
         <span>NIGHT <b className={scene.nightShadow ? "online" : ""}>{scene.nightShadow ? "UTC LIVE" : "OFF"}</b></span>
         <span>API <b>NOT CONNECTED</b></span>
-        <em>UI CHECKPOINT 0.5</em>
+        <em>UI CHECKPOINT 0.6</em>
       </footer>
     </main>
   );

@@ -1,12 +1,21 @@
 const DEG = Math.PI / 180;
 
-function normalizeLongitude(longitude: number) {
+function normalizeSolarLongitude(longitude: number) {
   return (((longitude % 360) + 540) % 360) - 180;
 }
 
 export type SolarState = {
   latitude: number;
+  /** Subsolar longitude in the Earth-fixed frame. */
   longitude: number;
+};
+
+export type NightShadowCell = {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+  opacity: number;
 };
 
 export function getSolarState(date: Date): SolarState {
@@ -23,8 +32,12 @@ export function getSolarState(date: Date): SolarState {
 
   return {
     latitude: declination / DEG,
-    longitude: normalizeLongitude(rightAscension / DEG - siderealDegrees),
+    longitude: normalizeSolarLongitude(rightAscension / DEG - siderealDegrees),
   };
+}
+
+export function inertialSolarLongitude(sun: SolarState, earthRotationDegrees: number) {
+  return normalizeSolarLongitude(sun.longitude + earthRotationDegrees);
 }
 
 export function solarElevation(latitude: number, longitude: number, sun: SolarState) {
@@ -37,8 +50,28 @@ export function solarElevation(latitude: number, longitude: number, sun: SolarSt
 }
 
 export function nightShadowOpacity(elevation: number) {
-  if (elevation >= 3) return 0;
-  const transition = Math.min(1, Math.max(0, (3 - elevation) / 21));
+  if (elevation >= 2) return 0;
+  const transition = Math.min(1, Math.max(0, (2 - elevation) / 20));
   const eased = transition * transition * (3 - 2 * transition);
-  return 0.16 + eased * 0.62;
+  return 0.2 + eased * 0.64;
+}
+
+/**
+ * Builds a globe-safe shadow skin from small Earth-fixed cells. Unlike a
+ * pole-to-pole canvas quad, these cells do not collapse at the poles or the
+ * anti-meridian when MapLibre projects them onto a globe.
+ */
+export function createNightShadowCells(sun: SolarState, stepDegrees = 4): NightShadowCell[] {
+  const cells: NightShadowCell[] = [];
+  for (let south = -88; south < 88; south += stepDegrees) {
+    const north = Math.min(88, south + stepDegrees);
+    const latitude = (south + north) / 2;
+    for (let west = -180; west < 180; west += stepDegrees) {
+      const east = Math.min(180, west + stepDegrees);
+      const longitude = (west + east) / 2;
+      const opacity = nightShadowOpacity(solarElevation(latitude, longitude, sun));
+      if (opacity > 0) cells.push({west, south, east, north, opacity});
+    }
+  }
+  return cells;
 }

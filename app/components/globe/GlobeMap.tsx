@@ -4,11 +4,12 @@ import {useEffect, useRef} from "react";
 import type {Map as MapLibreMap} from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
-  AUTO_ROTATION_MAX_ZOOM,
   INITIAL_VIEW,
   ROTATION_DEGREES_PER_SECOND,
   ROTATION_RESUME_DELAY_MS,
+  inertialCameraLongitude,
   shouldAutoRotate,
+  shouldLockCameraToEarth,
   type SceneOrientation,
 } from "../../domain/scene";
 import type {Basemap, MapSession, MapState} from "../../domain/types";
@@ -26,10 +27,17 @@ type GlobeMapProps = {
   onRotationChange: (active: boolean, reason: "active" | "follow" | "interaction" | "zoom") => void;
 };
 
-function makeOrientation(map: MapLibreMap): SceneOrientation {
+function makeOrientation(
+  map: MapLibreMap,
+  earthRotationDegrees: number,
+  cameraLockedToEarth: boolean,
+): SceneOrientation {
   const center = map.getCenter();
   return {
     longitude: center.lng,
+    inertialLongitude: inertialCameraLongitude(center.lng, earthRotationDegrees),
+    earthRotationDegrees,
+    cameraLockedToEarth,
     latitude: center.lat,
     zoom: map.getZoom(),
     bearing: map.getBearing(),
@@ -81,6 +89,8 @@ export function GlobeMap({
     let lastFrame = performance.now();
     let lastOrientationReport = 0;
     let rotationPausedUntil = 0;
+    let earthRotationDegrees = 0;
+    let cameraLockedToEarth = false;
     let lastRotationReason: "active" | "follow" | "interaction" | "zoom" | null = null;
 
     const reportOrientation = (force = false) => {
@@ -88,7 +98,9 @@ export function GlobeMap({
       const timestamp = performance.now();
       if (!force && timestamp - lastOrientationReport < 90) return;
       lastOrientationReport = timestamp;
-      callbacksRef.current.onOrientationChange(makeOrientation(map));
+      callbacksRef.current.onOrientationChange(
+        makeOrientation(map, earthRotationDegrees, cameraLockedToEarth),
+      );
     };
 
     void Promise.all([
@@ -140,28 +152,41 @@ export function GlobeMap({
         const elapsedSeconds = Math.min((timestamp - lastFrame) / 1000, 0.1);
         lastFrame = timestamp;
         const interactionPaused = timestamp < rotationPausedUntil;
-        const zoomPaused = map.getZoom() >= AUTO_ROTATION_MAX_ZOOM;
-        const active = shouldAutoRotate({
+        const mapMoving = map.isMoving();
+        cameraLockedToEarth = shouldLockCameraToEarth({
           followSatellite: followRef.current,
-          isInteracting: interactionPaused,
-          isMoving: map.isMoving(),
           zoom: map.getZoom(),
         });
-        const reason = active
-          ? "active"
-          : followRef.current
+        const earthMovesUnderCamera = shouldAutoRotate({
+          followSatellite: followRef.current,
+          isInteracting: interactionPaused,
+          isMoving: mapMoving,
+          zoom: map.getZoom(),
+        });
+        const rotationRunning = !interactionPaused && !mapMoving;
+        const reason = rotationRunning
+          ? followRef.current
             ? "follow"
-            : zoomPaused
+            : cameraLockedToEarth
               ? "zoom"
-              : "interaction";
+              : "active"
+          : "interaction";
 
         if (reason !== lastRotationReason) {
           lastRotationReason = reason;
-          callbacksRef.current.onRotationChange(active, reason);
+          callbacksRef.current.onRotationChange(rotationRunning, reason);
         }
-        if (active) {
-          const center = map.getCenter();
-          map.jumpTo({center: [center.lng + ROTATION_DEGREES_PER_SECOND * elapsedSeconds, center.lat]});
+
+        if (rotationRunning) {
+          const rotationDelta = ROTATION_DEGREES_PER_SECOND * elapsedSeconds;
+          earthRotationDegrees += rotationDelta;
+          if (earthMovesUnderCamera) {
+            const center = map.getCenter();
+            // Earth rotates eastward, so progressively more westerly Earth
+            // longitudes move under an inertially fixed camera.
+            map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
+          }
+          reportOrientation();
         }
         animationFrame = requestAnimationFrame(rotate);
       };
