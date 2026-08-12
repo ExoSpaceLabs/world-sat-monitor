@@ -1,151 +1,181 @@
 "use client";
 
 import {useEffect, useRef} from "react";
-import type {SceneOrientation} from "../../domain/scene";
-import {
-  createCameraFrame,
-  directionFromCoordinates,
-  globeRadiusPixels,
-  toCameraSpace,
-} from "../../domain/scene";
+import type {GeoJSONSource, Map as MapLibreMap} from "maplibre-gl";
 import type {SolarState} from "../../domain/solar";
-import {inertialSolarLongitude} from "../../domain/solar";
-import {
-  createFullscreenWebGL,
-  destroyFullscreenWebGL,
-  drawFullscreen,
-  resizeWebGLCanvas,
-  type FullscreenWebGL,
-} from "../rendering/webgl";
+import type {MapSession} from "../../domain/types";
 
-const SHADOW_GLOBE_SCALE = 1.018;
+const NIGHT_SOURCE_ID = "worldsat-night-hemisphere-source";
+const NIGHT_LAYER_ID = "worldsat-night-hemisphere";
+const TERMINATOR_SEGMENTS = 144;
+const DEG = Math.PI / 180;
+const RAD = 180 / Math.PI;
 
-const SHADOW_FRAGMENT_SHADER = `
-  precision highp float;
+type Coordinate = [number, number];
 
-  uniform vec2 uCenter;
-  uniform float uOpacity;
-  uniform float uRadius;
-  uniform vec3 uSun;
-
-  void main() {
-    vec2 sphere = (gl_FragCoord.xy - uCenter) / uRadius;
-    float radialSquared = dot(sphere, sphere);
-    if (radialSquared > 1.0) discard;
-
-    vec3 normal = vec3(sphere, sqrt(max(0.0, 1.0 - radialSquared)));
-    float illumination = dot(normal, uSun);
-    float night = 1.0 - smoothstep(-0.012, 0.012, illumination);
-    if (night < 0.002) discard;
-
-    float alpha = uOpacity * night;
-    vec3 shadowColor = vec3(0.0, 0.012, 0.04);
-    gl_FragColor = vec4(shadowColor * alpha, alpha);
-  }
-`;
-
-type ShadowRuntime = FullscreenWebGL & {
-  canvas: HTMLCanvasElement;
-  center: WebGLUniformLocation | null;
-  opacity: WebGLUniformLocation | null;
-  radius: WebGLUniformLocation | null;
-  sun: WebGLUniformLocation | null;
+type NightGeometry = {
+  type: "FeatureCollection";
+  features: Array<{
+    type: "Feature";
+    properties: Record<string, never>;
+    geometry: {
+      type: "Polygon";
+      coordinates: Coordinate[][];
+    };
+  }>;
 };
 
-type ShadowState = {
-  enabled: boolean;
-  opacity: number;
-  orientation: SceneOrientation;
-  solarState: SolarState;
-};
+function normalizeLongitude(longitude: number) {
+  return (((longitude % 360) + 540) % 360) - 180;
+}
 
-function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
-  const {canvas, gl, program} = runtime;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.clearColor(0, 0, 0, 0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  if (!state.enabled || canvas.width === 0 || canvas.height === 0) return;
+function unwrapLongitude(longitude: number, reference: number) {
+  let unwrapped = longitude;
+  while (unwrapped - reference > 180) unwrapped -= 360;
+  while (unwrapped - reference < -180) unwrapped += 360;
+  return unwrapped;
+}
 
-  const bounds = canvas.getBoundingClientRect();
-  if (bounds.width <= 0 || bounds.height <= 0) return;
-  const pixelScale = canvas.width / bounds.width;
-  const frame = createCameraFrame(state.orientation);
-  const sunDirection = directionFromCoordinates(
-    inertialSolarLongitude(state.solarState, state.orientation.earthRotationDegrees),
-    state.solarState.latitude,
+/** Returns a point at a great-circle angular distance from the origin. */
+function destination(
+  longitude: number,
+  latitude: number,
+  bearingDegrees: number,
+  angularDistanceDegrees: number,
+): Coordinate {
+  const latitude1 = latitude * DEG;
+  const longitude1 = longitude * DEG;
+  const bearing = bearingDegrees * DEG;
+  const distance = angularDistanceDegrees * DEG;
+  const sinLatitude1 = Math.sin(latitude1);
+  const cosLatitude1 = Math.cos(latitude1);
+  const sinDistance = Math.sin(distance);
+  const cosDistance = Math.cos(distance);
+
+  const latitude2 = Math.asin(
+    sinLatitude1 * cosDistance
+      + cosLatitude1 * sinDistance * Math.cos(bearing),
   );
-  const cameraSun = toCameraSpace(sunDirection, frame);
-  const radius = globeRadiusPixels(state.orientation.zoom, state.orientation.latitude)
-    * SHADOW_GLOBE_SCALE
-    * pixelScale;
+  const longitude2 = longitude1 + Math.atan2(
+    Math.sin(bearing) * sinDistance * cosLatitude1,
+    cosDistance - sinLatitude1 * Math.sin(latitude2),
+  );
 
-  gl.useProgram(program);
-  gl.uniform2f(runtime.center, canvas.width / 2, canvas.height / 2);
-  gl.uniform1f(runtime.opacity, Math.max(0, Math.min(1, state.opacity)));
-  gl.uniform1f(runtime.radius, radius);
-  gl.uniform3f(runtime.sun, cameraSun.x, cameraSun.y, cameraSun.outward);
-  drawFullscreen(runtime);
+  return [normalizeLongitude(longitude2 * RAD), latitude2 * RAD];
+}
+
+/**
+ * Builds the night hemisphere as a fan of geodesic triangles centred on the
+ * anti-solar point. MapLibre then projects and clips those triangles using the
+ * exact same globe transform as the basemap, so there is no second synthetic
+ * sphere to keep in registration.
+ */
+function nightHemisphereGeometry(sun: SolarState): NightGeometry {
+  const antiSolarLongitude = normalizeLongitude(sun.longitude + 180);
+  const antiSolarLatitude = -sun.latitude;
+  const center: Coordinate = [antiSolarLongitude, antiSolarLatitude];
+  const terminator: Coordinate[] = [];
+
+  for (let index = 0; index <= TERMINATOR_SEGMENTS; index += 1) {
+    terminator.push(destination(
+      antiSolarLongitude,
+      antiSolarLatitude,
+      index * 360 / TERMINATOR_SEGMENTS,
+      90,
+    ));
+  }
+
+  const features: NightGeometry["features"] = [];
+  for (let index = 0; index < TERMINATOR_SEGMENTS; index += 1) {
+    const first = terminator[index];
+    const second = terminator[index + 1];
+    // Keep every triangle locally continuous across the antimeridian. MapLibre
+    // accepts unwrapped longitudes and will still project them onto the globe.
+    const firstUnwrapped: Coordinate = [
+      unwrapLongitude(first[0], antiSolarLongitude),
+      first[1],
+    ];
+    const secondUnwrapped: Coordinate = [
+      unwrapLongitude(second[0], antiSolarLongitude),
+      second[1],
+    ];
+    features.push({
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: [[center, firstUnwrapped, secondUnwrapped, center]],
+      },
+    });
+  }
+
+  return {type: "FeatureCollection", features};
+}
+
+function removeNightLayer(map: MapLibreMap) {
+  if (map.getLayer(NIGHT_LAYER_ID)) map.removeLayer(NIGHT_LAYER_ID);
+  if (map.getSource(NIGHT_SOURCE_ID)) map.removeSource(NIGHT_SOURCE_ID);
+}
+
+function addNightLayer(map: MapLibreMap, sun: SolarState) {
+  removeNightLayer(map);
+  map.addSource(NIGHT_SOURCE_ID, {
+    type: "geojson",
+    data: nightHemisphereGeometry(sun),
+  });
+  // No beforeId: keep the night treatment above the basemap labels. DOM based
+  // satellite markers are still rendered above the MapLibre canvas.
+  map.addLayer({
+    id: NIGHT_LAYER_ID,
+    type: "fill",
+    source: NIGHT_SOURCE_ID,
+    paint: {
+      "fill-antialias": true,
+      "fill-color": "#00030a",
+      "fill-opacity": 0.7,
+    },
+  });
 }
 
 type DayNightLayerProps = {
   enabled: boolean;
+  mapSession: MapSession | null;
   opacity: number;
-  orientation: SceneOrientation;
   solarState: SolarState;
 };
 
 export function DayNightLayer({
   enabled,
+  mapSession,
   opacity,
-  orientation,
   solarState,
 }: DayNightLayerProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const runtimeRef = useRef<ShadowRuntime | null>(null);
-  const latestRef = useRef<ShadowState>({enabled, opacity, orientation, solarState});
+  const map = mapSession?.map;
+  const latestSolarRef = useRef(solarState);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const fullscreen = createFullscreenWebGL(canvas, SHADOW_FRAGMENT_SHADER);
-    if (!fullscreen) return;
-    const runtime: ShadowRuntime = {
-      ...fullscreen,
-      canvas,
-      center: fullscreen.gl.getUniformLocation(fullscreen.program, "uCenter"),
-      opacity: fullscreen.gl.getUniformLocation(fullscreen.program, "uOpacity"),
-      radius: fullscreen.gl.getUniformLocation(fullscreen.program, "uRadius"),
-      sun: fullscreen.gl.getUniformLocation(fullscreen.program, "uSun"),
-    };
-    runtimeRef.current = runtime;
+    latestSolarRef.current = solarState;
+  }, [solarState]);
 
-    const resize = () => {
-      resizeWebGLCanvas(canvas);
-      renderShadowGlobe(runtime, latestRef.current);
-    };
-    const observer = new ResizeObserver(resize);
-    observer.observe(canvas);
-    resize();
-
+  useEffect(() => {
+    if (!map || !map.isStyleLoaded()) return;
+    addNightLayer(map, latestSolarRef.current);
     return () => {
-      observer.disconnect();
-      destroyFullscreenWebGL(runtime);
-      if (runtimeRef.current === runtime) runtimeRef.current = null;
+      if (map.isStyleLoaded()) removeNightLayer(map);
     };
-  }, []);
+  }, [map, mapSession?.styleRevision]);
 
   useEffect(() => {
-    latestRef.current = {enabled, opacity, orientation, solarState};
-    const runtime = runtimeRef.current;
-    if (runtime) renderShadowGlobe(runtime, latestRef.current);
-  }, [enabled, opacity, orientation, solarState]);
+    const source = map?.getSource(NIGHT_SOURCE_ID) as GeoJSONSource | undefined;
+    if (!source) return;
+    source.setData(nightHemisphereGeometry(solarState));
+  }, [map, solarState]);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className={`day-night-globe ${enabled ? "visible" : ""}`}
-      data-layer="day-night-globe"
-      aria-hidden="true"
-    />
-  );
+  useEffect(() => {
+    if (!map?.getLayer(NIGHT_LAYER_ID)) return;
+    map.setLayoutProperty(NIGHT_LAYER_ID, "visibility", enabled ? "visible" : "none");
+    map.setPaintProperty(NIGHT_LAYER_ID, "fill-opacity", Math.max(0, Math.min(1, opacity)));
+  }, [enabled, map, opacity]);
+
+  return null;
 }
