@@ -75,16 +75,14 @@ function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
     state.solarState.latitude,
   );
   const cameraSun = toCameraSpace(sunDirection, frame);
+  const radius = globeRadiusPixels(state.orientation.zoom, state.orientation.latitude)
+    * SHADOW_GLOBE_SCALE
+    * pixelScale;
 
   gl.useProgram(program);
   gl.uniform2f(runtime.center, canvas.width / 2, canvas.height / 2);
   gl.uniform1f(runtime.opacity, Math.max(0, Math.min(1, state.opacity)));
-  gl.uniform1f(
-    runtime.radius,
-    globeRadiusPixels(state.orientation.zoom, state.orientation.latitude)
-      * SHADOW_GLOBE_SCALE
-      * pixelScale,
-  );
+  gl.uniform1f(runtime.radius, radius);
   gl.uniform3f(runtime.sun, cameraSun.x, cameraSun.y, cameraSun.outward);
   drawFullscreen(runtime);
 }
