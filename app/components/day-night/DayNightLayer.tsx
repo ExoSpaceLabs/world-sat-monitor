@@ -1,115 +1,91 @@
 "use client";
 
-import {useEffect, useRef} from "react";
+import {useEffect} from "react";
 import type {GeoJSONSource, Map as MapLibreMap} from "maplibre-gl";
 import type {SolarState} from "../../domain/solar";
 import type {MapSession} from "../../domain/types";
 
-const NIGHT_SOURCE_ID = "worldsat-night-hemisphere-source";
-const NIGHT_LAYER_ID = "worldsat-night-hemisphere";
-const TERMINATOR_SEGMENTS = 144;
+export const NIGHT_SOURCE_ID = "worldsat-night-hemisphere-source";
+export const NIGHT_LAYER_ID = "worldsat-night-hemisphere";
+const GRID_DEGREES = 3;
+const TERMINATOR_BLEND = 0.075;
+const ALPHA_LEVELS = [0.18, 0.34, 0.52, 0.7, 0.86, 1] as const;
 const DEG = Math.PI / 180;
-const RAD = 180 / Math.PI;
 
 type Coordinate = [number, number];
+type PolygonCoordinates = Coordinate[][];
 
 type NightGeometry = {
   type: "FeatureCollection";
   features: Array<{
     type: "Feature";
-    properties: Record<string, never>;
+    properties: {alpha: number};
     geometry: {
-      type: "Polygon";
-      coordinates: Coordinate[][];
+      type: "MultiPolygon";
+      coordinates: PolygonCoordinates[];
     };
   }>;
 };
 
-function normalizeLongitude(longitude: number) {
-  return (((longitude % 360) + 540) % 360) - 180;
+function illumination(latitude: number, longitude: number, sun: SolarState) {
+  const lat = latitude * DEG;
+  const sunLat = sun.latitude * DEG;
+  const deltaLon = (longitude - sun.longitude) * DEG;
+  return Math.sin(lat) * Math.sin(sunLat)
+    + Math.cos(lat) * Math.cos(sunLat) * Math.cos(deltaLon);
 }
 
-function unwrapLongitude(longitude: number, reference: number) {
-  let unwrapped = longitude;
-  while (unwrapped - reference > 180) unwrapped -= 360;
-  while (unwrapped - reference < -180) unwrapped += 360;
-  return unwrapped;
-}
-
-/** Returns a point at a great-circle angular distance from the origin. */
-function destination(
-  longitude: number,
-  latitude: number,
-  bearingDegrees: number,
-  angularDistanceDegrees: number,
-): Coordinate {
-  const latitude1 = latitude * DEG;
-  const longitude1 = longitude * DEG;
-  const bearing = bearingDegrees * DEG;
-  const distance = angularDistanceDegrees * DEG;
-  const sinLatitude1 = Math.sin(latitude1);
-  const cosLatitude1 = Math.cos(latitude1);
-  const sinDistance = Math.sin(distance);
-  const cosDistance = Math.cos(distance);
-
-  const latitude2 = Math.asin(
-    sinLatitude1 * cosDistance
-      + cosLatitude1 * sinDistance * Math.cos(bearing),
-  );
-  const longitude2 = longitude1 + Math.atan2(
-    Math.sin(bearing) * sinDistance * cosLatitude1,
-    cosDistance - sinLatitude1 * Math.sin(latitude2),
-  );
-
-  return [normalizeLongitude(longitude2 * RAD), latitude2 * RAD];
+function alphaLevel(illuminationValue: number) {
+  if (illuminationValue >= 0) return -1;
+  const blend = Math.min(1, -illuminationValue / TERMINATOR_BLEND);
+  return Math.min(ALPHA_LEVELS.length - 1, Math.floor(blend * ALPHA_LEVELS.length));
 }
 
 /**
- * Builds the night hemisphere as a fan of geodesic triangles centred on the
- * anti-solar point. MapLibre then projects and clips those triangles using the
- * exact same globe transform as the basemap, so there is no second synthetic
- * sphere to keep in registration.
+ * Builds the night side from small geographic cells rather than one giant
+ * hemisphere polygon. Every cell remains local in longitude/latitude, so
+ * MapLibre can tessellate, curve and horizon-clip it reliably on globe view.
  */
 function nightHemisphereGeometry(sun: SolarState): NightGeometry {
-  const antiSolarLongitude = normalizeLongitude(sun.longitude + 180);
-  const antiSolarLatitude = -sun.latitude;
-  const center: Coordinate = [antiSolarLongitude, antiSolarLatitude];
-  const terminator: Coordinate[] = [];
+  const groups: PolygonCoordinates[][] = ALPHA_LEVELS.map(() => []);
 
-  for (let index = 0; index <= TERMINATOR_SEGMENTS; index += 1) {
-    terminator.push(destination(
-      antiSolarLongitude,
-      antiSolarLatitude,
-      index * 360 / TERMINATOR_SEGMENTS,
-      90,
-    ));
+  for (let south = -90; south < 90; south += GRID_DEGREES) {
+    const north = Math.min(90, south + GRID_DEGREES);
+    const sampleLatitude = (south + north) / 2;
+    for (let west = -180; west < 180; west += GRID_DEGREES) {
+      const east = Math.min(180, west + GRID_DEGREES);
+      const sampleLongitude = (west + east) / 2;
+      const level = alphaLevel(illumination(sampleLatitude, sampleLongitude, sun));
+      if (level < 0) continue;
+      groups[level].push([[
+        [west, south],
+        [east, south],
+        [east, north],
+        [west, north],
+        [west, south],
+      ]]);
+    }
   }
 
-  const features: NightGeometry["features"] = [];
-  for (let index = 0; index < TERMINATOR_SEGMENTS; index += 1) {
-    const first = terminator[index];
-    const second = terminator[index + 1];
-    // Keep every triangle locally continuous across the antimeridian. MapLibre
-    // accepts unwrapped longitudes and will still project them onto the globe.
-    const firstUnwrapped: Coordinate = [
-      unwrapLongitude(first[0], antiSolarLongitude),
-      first[1],
-    ];
-    const secondUnwrapped: Coordinate = [
-      unwrapLongitude(second[0], antiSolarLongitude),
-      second[1],
-    ];
-    features.push({
-      type: "Feature",
-      properties: {},
+  return {
+    type: "FeatureCollection",
+    features: groups.flatMap((coordinates, index) => coordinates.length === 0 ? [] : [{
+      type: "Feature" as const,
+      properties: {alpha: ALPHA_LEVELS[index]},
       geometry: {
-        type: "Polygon",
-        coordinates: [[center, firstUnwrapped, secondUnwrapped, center]],
+        type: "MultiPolygon" as const,
+        coordinates,
       },
-    });
-  }
+    }]),
+  };
+}
 
-  return {type: "FeatureCollection", features};
+function opacityExpression(opacity: number) {
+  return [
+    "*",
+    Math.max(0, Math.min(1, opacity)),
+    ["coalesce", ["get", "alpha"], 1],
+  ];
 }
 
 function removeNightLayer(map: MapLibreMap) {
@@ -117,24 +93,23 @@ function removeNightLayer(map: MapLibreMap) {
   if (map.getSource(NIGHT_SOURCE_ID)) map.removeSource(NIGHT_SOURCE_ID);
 }
 
-function addNightLayer(map: MapLibreMap, sun: SolarState) {
+function addNightLayer(map: MapLibreMap, sun: SolarState, opacity: number) {
   removeNightLayer(map);
   map.addSource(NIGHT_SOURCE_ID, {
     type: "geojson",
     data: nightHemisphereGeometry(sun),
   });
-  // No beforeId: keep the night treatment above the basemap labels. DOM based
-  // satellite markers are still rendered above the MapLibre canvas.
   map.addLayer({
     id: NIGHT_LAYER_ID,
     type: "fill",
     source: NIGHT_SOURCE_ID,
     paint: {
-      "fill-antialias": true,
+      "fill-antialias": false,
       "fill-color": "#00030a",
-      "fill-opacity": 0.7,
+      "fill-opacity": opacityExpression(opacity) as never,
     },
   });
+  map.triggerRepaint();
 }
 
 type DayNightLayerProps = {
@@ -151,15 +126,10 @@ export function DayNightLayer({
   solarState,
 }: DayNightLayerProps) {
   const map = mapSession?.map;
-  const latestSolarRef = useRef(solarState);
-
-  useEffect(() => {
-    latestSolarRef.current = solarState;
-  }, [solarState]);
 
   useEffect(() => {
     if (!map || !map.isStyleLoaded()) return;
-    addNightLayer(map, latestSolarRef.current);
+    addNightLayer(map, solarState, opacity);
     return () => {
       if (map.isStyleLoaded()) removeNightLayer(map);
     };
@@ -169,12 +139,14 @@ export function DayNightLayer({
     const source = map?.getSource(NIGHT_SOURCE_ID) as GeoJSONSource | undefined;
     if (!source) return;
     source.setData(nightHemisphereGeometry(solarState));
+    map?.triggerRepaint();
   }, [map, solarState]);
 
   useEffect(() => {
     if (!map?.getLayer(NIGHT_LAYER_ID)) return;
     map.setLayoutProperty(NIGHT_LAYER_ID, "visibility", enabled ? "visible" : "none");
-    map.setPaintProperty(NIGHT_LAYER_ID, "fill-opacity", Math.max(0, Math.min(1, opacity)));
+    map.setPaintProperty(NIGHT_LAYER_ID, "fill-opacity", opacityExpression(opacity));
+    map.triggerRepaint();
   }, [enabled, map, opacity]);
 
   return null;
