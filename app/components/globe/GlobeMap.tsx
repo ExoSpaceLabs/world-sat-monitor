@@ -32,7 +32,8 @@ type GlobeMapProps = {
   onRotationChange: (active: boolean, reason: RotationReason) => void;
 };
 
-const ORIENTATION_REPORT_INTERVAL_MS = 16;
+const ORIENTATION_REPORT_INTERVAL_MS = 33;
+const WHEEL_INTERACTION_RELEASE_MS = 120;
 
 function makeOrientation(
   map: MapLibreMap,
@@ -88,6 +89,7 @@ export function GlobeMap({
   const timeScaleRef = useRef(timeScale);
   const earthRotationRef = useRef(0);
   const appliedMapRotationRef = useRef(0);
+  const pendingMapRotationRef = useRef(0);
   const callbacksRef = useRef({onMapSession, onMapState, onOrientationChange, onRotationChange});
 
   useEffect(() => { followRef.current = followSatellite; }, [followSatellite]);
@@ -104,6 +106,9 @@ export function GlobeMap({
     let lastOrientationReport = 0;
     let cameraLockedToEarth = false;
     let lastRotationReason: RotationReason | null = null;
+    let userInteracting = false;
+    let wheelReleaseTimer = 0;
+    let cleanupInteraction: (() => void) | null = null;
 
     const reportOrientation = (force = false) => {
       if (!map) return;
@@ -151,6 +156,32 @@ export function GlobeMap({
       map.on("move", () => reportOrientation());
       map.once("load", () => reportOrientation(true));
 
+      const canvas = map.getCanvasContainer();
+      const beginPointerInteraction = () => {
+        userInteracting = true;
+      };
+      const endPointerInteraction = () => {
+        userInteracting = false;
+      };
+      const beginWheelInteraction = () => {
+        userInteracting = true;
+        window.clearTimeout(wheelReleaseTimer);
+        wheelReleaseTimer = window.setTimeout(() => {
+          userInteracting = false;
+        }, WHEEL_INTERACTION_RELEASE_MS);
+      };
+      canvas.addEventListener("pointerdown", beginPointerInteraction);
+      canvas.addEventListener("wheel", beginWheelInteraction, {passive: true});
+      window.addEventListener("pointerup", endPointerInteraction);
+      window.addEventListener("pointercancel", endPointerInteraction);
+      cleanupInteraction = () => {
+        canvas.removeEventListener("pointerdown", beginPointerInteraction);
+        canvas.removeEventListener("wheel", beginWheelInteraction);
+        window.removeEventListener("pointerup", endPointerInteraction);
+        window.removeEventListener("pointercancel", endPointerInteraction);
+        window.clearTimeout(wheelReleaseTimer);
+      };
+
       const rotate = (timestamp: number) => {
         if (!map || disposed) return;
         const elapsedSeconds = Math.min((timestamp - lastFrame) / 1000, 0.1);
@@ -174,24 +205,29 @@ export function GlobeMap({
           callbacksRef.current.onRotationChange(true, reason);
         }
 
-        // The physical/simulation clock always advances, regardless of camera
-        // interaction. User input must not pause Earth, Sun, or future orbit
-        // propagation.
+        // Simulation time and physical Earth rotation never pause. Camera input
+        // is handled independently below so dragging cannot stall the scene.
         const rotationDelta = ROTATION_DEGREES_PER_SECOND
           * elapsedSeconds
           * Math.max(0, timeScaleRef.current);
         earthRotationRef.current += rotationDelta;
 
-        // In the wide inertial view MapLibre represents Earth rotation by
-        // changing the Earth-fixed camera longitude. Do not issue jumpTo while
-        // MapLibre is already processing a drag/zoom/ease animation: doing so
-        // fights its gesture handler and caused the free-camera drag glitch.
-        // We intentionally skip only the camera compensation for those frames;
-        // earthRotationRef above continues without interruption.
-        if (earthMovesUnderCamera && rotationDelta !== 0 && !map.isMoving()) {
-          const center = map.getCenter();
-          map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
-          appliedMapRotationRef.current += rotationDelta;
+        if (earthMovesUnderCamera && rotationDelta !== 0) {
+          if (userInteracting || map.isMoving()) {
+            // Preserve the rotation that occurs while MapLibre owns the camera.
+            // Applying jumpTo during a drag is what made the far view unusable.
+            pendingMapRotationRef.current += rotationDelta;
+          } else {
+            const visualRotation = rotationDelta + pendingMapRotationRef.current;
+            pendingMapRotationRef.current = 0;
+            const center = map.getCenter();
+            map.jumpTo({center: [center.lng - visualRotation, center.lat]});
+            appliedMapRotationRef.current += visualRotation;
+          }
+        } else {
+          // Close/follow views co-rotate with Earth, so there is no inertial
+          // camera compensation to catch up after an interaction.
+          pendingMapRotationRef.current = 0;
         }
 
         reportOrientation();
@@ -203,6 +239,7 @@ export function GlobeMap({
     return () => {
       disposed = true;
       cancelAnimationFrame(animationFrame);
+      cleanupInteraction?.();
       callbacksRef.current.onMapSession(null);
       map?.remove();
       mapRef.current = null;
@@ -254,6 +291,7 @@ export function GlobeMap({
     }
     earthRotationRef.current = 0;
     appliedMapRotationRef.current = 0;
+    pendingMapRotationRef.current = 0;
     if (map) {
       const locked = shouldLockCameraToEarth({followSatellite: followRef.current, zoom: map.getZoom()});
       callbacksRef.current.onOrientationChange(makeOrientation(map, 0, locked));
