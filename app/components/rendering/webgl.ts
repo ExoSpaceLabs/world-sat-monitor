@@ -32,6 +32,32 @@ function compileShader(
   return shader;
 }
 
+export function createWebGLProgram(
+  gl: WebGLRenderingContext,
+  vertexSource: string,
+  fragmentSource: string,
+) {
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  if (!program) {
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    throw new Error("Unable to create WebGL program");
+  }
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const message = gl.getProgramInfoLog(program) ?? "Unknown WebGL link error";
+    gl.deleteProgram(program);
+    throw new Error(message);
+  }
+  return program;
+}
+
 export function createFullscreenWebGL(
   canvas: HTMLCanvasElement,
   fragmentSource: string,
@@ -46,21 +72,7 @@ export function createFullscreenWebGL(
   });
   if (!gl) return null;
 
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, FULLSCREEN_VERTEX_SHADER);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  const program = gl.createProgram();
-  if (!program) throw new Error("Unable to create WebGL program");
-  gl.attachShader(program, vertex);
-  gl.attachShader(program, fragment);
-  gl.linkProgram(program);
-  gl.deleteShader(vertex);
-  gl.deleteShader(fragment);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const message = gl.getProgramInfoLog(program) ?? "Unknown WebGL link error";
-    gl.deleteProgram(program);
-    throw new Error(message);
-  }
-
+  const program = createWebGLProgram(gl, FULLSCREEN_VERTEX_SHADER, fragmentSource);
   const buffer = gl.createBuffer();
   if (!buffer) throw new Error("Unable to create WebGL buffer");
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
