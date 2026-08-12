@@ -128,17 +128,21 @@ function createStarTextureCanvas(width: number, height: number) {
   return canvas;
 }
 
+function powerOfTwoAtMost(value: number) {
+  return 2 ** Math.floor(Math.log2(Math.max(2, value)));
+}
+
 function clearWebGLErrors(gl: WebGLRenderingContext) {
-  while (gl.getError() !== gl.NO_ERROR) {
-    // Drain stale errors before validating a texture upload.
+  for (let attempt = 0; attempt < 8 && gl.getError() !== gl.NO_ERROR; attempt += 1) {
+    // Drain stale errors without spinning forever if the context is lost.
   }
 }
 
 function createTexture(runtime: FullscreenWebGL) {
   const {gl} = runtime;
   const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-  const width = Math.min(STAR_TEXTURE_WIDTH, maxTextureSize);
-  const height = Math.min(STAR_TEXTURE_HEIGHT, Math.max(1, Math.floor(width / 2)));
+  const width = Math.min(STAR_TEXTURE_WIDTH, powerOfTwoAtMost(maxTextureSize));
+  const height = Math.min(STAR_TEXTURE_HEIGHT, Math.max(1, width / 2));
   const texture = gl.createTexture();
   if (!texture) throw new Error("Unable to create star texture");
 
