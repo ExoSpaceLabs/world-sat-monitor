@@ -85,7 +85,6 @@ export function WorldSatMonitor() {
       simulationAnchorMs: realNow,
       scale: 1,
     };
-    setNow(new Date(realNow));
     const clock = window.setInterval(() => {
       const state = simulationClockRef.current;
       const realTimestamp = Date.now();
