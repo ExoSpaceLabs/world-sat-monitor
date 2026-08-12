@@ -116,8 +116,8 @@ export function WorldSatMonitor() {
         >
           <DayNightLayer
             enabled={scene.spaceEnvironment}
+            mapSession={mapSession}
             opacity={scene.shadowOpacity}
-            orientation={orientation}
             solarState={solarState}
           />
         </GlobeMap>
