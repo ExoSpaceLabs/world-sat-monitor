@@ -17,6 +17,7 @@ export const MOCK_SATELLITE: Satellite = {
 };
 
 export const EARTH_RADIUS_KM = 6371;
+const LIMB_OCCLUSION_MARGIN_DEGREES = 2;
 
 function coordinatesDot(
   leftLongitude: number,
@@ -33,8 +34,14 @@ function coordinatesDot(
 }
 
 /**
- * Determines whether Earth blocks a satellite, including the extra visibility
- * provided by altitude above the limb.
+ * Determines whether Earth blocks a satellite.
+ *
+ * The geometric horizon is altitude-aware, but the UI applies a small margin
+ * before exact tangency. MapLibre's globe projection and the DOM marker do not
+ * share an identical depth buffer, so waiting until the mathematical tangent
+ * made the marker appear to float on the far side for roughly half a degree
+ * in the observed 547 km regression case. The margin also removes limb
+ * flicker while preserving the extra horizon visibility provided by altitude.
  */
 export function isSatelliteOccluded(
   satellite: Pick<Satellite, "altitude" | "lat" | "lon">,
@@ -48,8 +55,14 @@ export function isSatelliteOccluded(
   );
   const orbitalRadius = EARTH_RADIUS_KM + Math.max(0, satellite.altitude);
   const earthRatio = EARTH_RADIUS_KM / orbitalRadius;
-  const farSideLimb = -Math.sqrt(Math.max(0, 1 - earthRatio * earthRatio));
-  return cameraDot < farSideLimb;
+  const geometricLimb = Math.acos(
+    -Math.sqrt(Math.max(0, 1 - earthRatio * earthRatio)),
+  );
+  const visualLimb = Math.max(
+    Math.PI / 2,
+    geometricLimb - LIMB_OCCLUSION_MARGIN_DEGREES * Math.PI / 180,
+  );
+  return cameraDot < Math.cos(visualLimb);
 }
 
 export function headingEndpoint(
