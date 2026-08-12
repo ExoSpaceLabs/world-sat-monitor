@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect} from "react";
+import {useEffect, useRef} from "react";
 import type {GeoJSONSource, Map as MapLibreMap} from "maplibre-gl";
 import type {SolarState} from "../../domain/solar";
 import type {MapSession} from "../../domain/types";
@@ -126,10 +126,15 @@ export function DayNightLayer({
   solarState,
 }: DayNightLayerProps) {
   const map = mapSession?.map;
+  const latestRef = useRef({opacity, solarState});
+
+  useEffect(() => {
+    latestRef.current = {opacity, solarState};
+  }, [opacity, solarState]);
 
   useEffect(() => {
     if (!map || !map.isStyleLoaded()) return;
-    addNightLayer(map, solarState, opacity);
+    addNightLayer(map, latestRef.current.solarState, latestRef.current.opacity);
     return () => {
       if (map.isStyleLoaded()) removeNightLayer(map);
     };
