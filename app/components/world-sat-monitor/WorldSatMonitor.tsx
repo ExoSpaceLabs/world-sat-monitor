@@ -31,6 +31,8 @@ type SimulationClock = {
   scale: number;
 };
 
+type RotationReason = "active" | "follow" | "zoom";
+
 function formatCoordinate(value: number, positive: string, negative: string) {
   return `${Math.abs(value).toFixed(3)}° ${value >= 0 ? positive : negative}`;
 }
@@ -72,10 +74,7 @@ export function WorldSatMonitor() {
     bearing: INITIAL_VIEW.bearing,
     pitch: INITIAL_VIEW.pitch,
   });
-  const [rotation, setRotation] = useState<{
-    active: boolean;
-    reason: "active" | "follow" | "interaction" | "zoom";
-  }>({active: true, reason: "active"});
+  const [rotationReason, setRotationReason] = useState<RotationReason>("active");
 
   useEffect(() => {
     const realNow = Date.now();
@@ -134,10 +133,9 @@ export function WorldSatMonitor() {
     setNow(new Date(realTimestamp));
     setTimeResetKey((key) => key + 1);
   }, []);
-  const handleRotationChange = useCallback((
-    active: boolean,
-    reason: "active" | "follow" | "interaction" | "zoom",
-  ) => setRotation((current) => current.active === active && current.reason === reason ? current : {active, reason}), []);
+  const handleRotationChange = useCallback((_active: boolean, reason: RotationReason) => {
+    setRotationReason((current) => current === reason ? current : reason);
+  }, []);
   const handleReset = useCallback(() => {
     setFollowSatellite(false);
     setResetKey((key) => key + 1);
@@ -151,12 +149,10 @@ export function WorldSatMonitor() {
   const handleSatelliteSelect = useCallback(() => setFollowSatellite(true), []);
 
   const rotationLabel = followSatellite
-    ? "CAMERA LOCKED TO SATELLITE / EARTH ROTATION"
-    : rotation.reason === "zoom"
+    ? "CAMERA LOCKED TO SATELLITE · EARTH ROTATING"
+    : rotationReason === "zoom"
       ? "CAMERA LOCKED TO EARTH ROTATION"
-      : rotation.active
-        ? `${timeScale}× EARTH ROTATION ACTIVE`
-        : "EARTH ROTATION PAUSED · INTERACTION";
+      : `${timeScale}× EARTH ROTATION ACTIVE`;
 
   const shadowReady = Boolean(mapSession?.map.getLayer(NIGHT_LAYER_ID));
   const inertialSunLongitude = inertialSolarLongitude(solarState, orientation.earthRotationDegrees);
@@ -211,6 +207,7 @@ export function WorldSatMonitor() {
               <div><dt>SIM UTC</dt><dd>{now.toISOString()}</dd></div>
               <div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div>
               <div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div>
+              <div><dt>CAMERA FRAME</dt><dd>{orientation.cameraLockedToEarth ? "EARTH-LOCKED" : "INERTIAL"}</dd></div>
               <div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div>
               <div><dt>SUN INERTIAL</dt><dd>{inertialSunLongitude.toFixed(3)}°</dd></div>
               <div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div>
@@ -243,7 +240,7 @@ export function WorldSatMonitor() {
         />
         <div className="map-credit"><BasemapCredit basemap={basemap}/></div>
         <div className="legend"><span><i className="sat-symbol"/> SATELLITE</span><span><i className="vector-symbol"/> HEADING VECTOR</span></div>
-        <div className="controls"><span>{rotationLabel}</span><span>DRAG PAUSES ROTATION</span><button onClick={handleReset} aria-label="Reset globe camera">RESET VIEW</button></div>
+        <div className="controls"><span>{rotationLabel}</span><span>DRAG CHANGES CAMERA · EARTH KEEPS ROTATING</span><button onClick={handleReset} aria-label="Reset globe camera">RESET VIEW</button></div>
       </section>
 
       <footer>
