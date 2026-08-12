@@ -7,7 +7,6 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import {
   INITIAL_VIEW,
   ROTATION_DEGREES_PER_SECOND,
-  ROTATION_RESUME_DELAY_MS,
   inertialCameraLongitude,
   shouldAutoRotate,
   shouldLockCameraToEarth,
@@ -16,6 +15,8 @@ import {
 import type {Basemap, MapSession, MapState} from "../../domain/types";
 import type {Satellite} from "../../domain/satellite";
 import {fallbackStyle, loadBasemapStyle} from "../../maps/styles";
+
+type RotationReason = "active" | "follow" | "zoom";
 
 type GlobeMapProps = {
   basemap: Basemap;
@@ -28,7 +29,7 @@ type GlobeMapProps = {
   onMapSession: (session: MapSession | null) => void;
   onMapState: (state: MapState) => void;
   onOrientationChange: (orientation: SceneOrientation) => void;
-  onRotationChange: (active: boolean, reason: "active" | "follow" | "interaction" | "zoom") => void;
+  onRotationChange: (active: boolean, reason: RotationReason) => void;
 };
 
 const ORIENTATION_REPORT_INTERVAL_MS = 16;
@@ -101,9 +102,8 @@ export function GlobeMap({
     let animationFrame = 0;
     let lastFrame = performance.now();
     let lastOrientationReport = 0;
-    let rotationPausedUntil = 0;
     let cameraLockedToEarth = false;
-    let lastRotationReason: "active" | "follow" | "interaction" | "zoom" | null = null;
+    let lastRotationReason: RotationReason | null = null;
 
     const reportOrientation = (force = false) => {
       if (!map) return;
@@ -151,56 +151,44 @@ export function GlobeMap({
       map.on("move", () => reportOrientation());
       map.once("load", () => reportOrientation(true));
 
-      const pauseRotation = () => {
-        rotationPausedUntil = performance.now() + ROTATION_RESUME_DELAY_MS;
-      };
-      const canvas = map.getCanvasContainer();
-      canvas.addEventListener("pointerdown", pauseRotation);
-      canvas.addEventListener("wheel", pauseRotation, {passive: true});
-      canvas.addEventListener("touchstart", pauseRotation, {passive: true});
-
       const rotate = (timestamp: number) => {
         if (!map || disposed) return;
         const elapsedSeconds = Math.min((timestamp - lastFrame) / 1000, 0.1);
         lastFrame = timestamp;
-        const interactionPaused = timestamp < rotationPausedUntil;
-        const mapMoving = map.isMoving();
         cameraLockedToEarth = shouldLockCameraToEarth({
           followSatellite: followRef.current,
           zoom: map.getZoom(),
         });
         const earthMovesUnderCamera = shouldAutoRotate({
           followSatellite: followRef.current,
-          isInteracting: interactionPaused,
-          isMoving: mapMoving,
           zoom: map.getZoom(),
         });
-        const rotationRunning = !interactionPaused && !mapMoving;
-        const reason = rotationRunning
-          ? followRef.current
-            ? "follow"
-            : cameraLockedToEarth
-              ? "zoom"
-              : "active"
-          : "interaction";
+        const reason: RotationReason = followRef.current
+          ? "follow"
+          : cameraLockedToEarth
+            ? "zoom"
+            : "active";
 
         if (reason !== lastRotationReason) {
           lastRotationReason = reason;
-          callbacksRef.current.onRotationChange(rotationRunning, reason);
+          callbacksRef.current.onRotationChange(true, reason);
         }
 
-        if (rotationRunning) {
-          const rotationDelta = ROTATION_DEGREES_PER_SECOND
-            * elapsedSeconds
-            * Math.max(0, timeScaleRef.current);
-          earthRotationRef.current += rotationDelta;
-          if (earthMovesUnderCamera) {
-            const center = map.getCenter();
-            map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
-            appliedMapRotationRef.current += rotationDelta;
-          }
-          reportOrientation();
+        const rotationDelta = ROTATION_DEGREES_PER_SECOND
+          * elapsedSeconds
+          * Math.max(0, timeScaleRef.current);
+        earthRotationRef.current += rotationDelta;
+
+        if (earthMovesUnderCamera && rotationDelta !== 0) {
+          const center = map.getCenter();
+          // Earth rotation never pauses. In wide view the camera is inertial,
+          // so Earth-fixed longitude continuously moves underneath it even
+          // while the user is interacting with the map.
+          map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
+          appliedMapRotationRef.current += rotationDelta;
         }
+
+        reportOrientation();
         animationFrame = requestAnimationFrame(rotate);
       };
       animationFrame = requestAnimationFrame(rotate);
