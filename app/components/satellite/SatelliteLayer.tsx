@@ -13,6 +13,7 @@ import {
 
 export const SATELLITE_HEADING_LAYER_ID = "selected-satellite-heading";
 const SATELLITE_HEADING_SOURCE_ID = "selected-satellite-heading-source";
+const DEG = Math.PI / 180;
 
 type MarkerElements = {
   heading: HTMLElement;
@@ -77,6 +78,36 @@ function addHeading(map: MapLibreMap, satellite: Satellite) {
   });
 }
 
+function destination(longitude: number, latitude: number, bearingDegrees: number, distanceDegrees: number) {
+  const latitude1 = latitude * DEG;
+  const longitude1 = longitude * DEG;
+  const bearing = bearingDegrees * DEG;
+  const distance = distanceDegrees * DEG;
+  const latitude2 = Math.asin(
+    Math.sin(latitude1) * Math.cos(distance)
+      + Math.cos(latitude1) * Math.sin(distance) * Math.cos(bearing),
+  );
+  const longitude2 = longitude1 + Math.atan2(
+    Math.sin(bearing) * Math.sin(distance) * Math.cos(latitude1),
+    Math.cos(distance) - Math.sin(latitude1) * Math.sin(latitude2),
+  );
+  return [longitude2 / DEG, latitude2 / DEG] as [number, number];
+}
+
+function estimatedGlobeRadius(map: MapLibreMap) {
+  const center = map.getCenter();
+  const centerPoint = map.project(center);
+  const canvas = map.getCanvas();
+  const maximum = Math.min(canvas.clientWidth, canvas.clientHeight) / 2;
+  const samples = [0, 90, 180, 270]
+    .map((bearing) => map.project(destination(center.lng, center.lat, bearing, 85)))
+    .map((point) => Math.hypot(point.x - centerPoint.x, point.y - centerPoint.y) / Math.sin(85 * DEG))
+    .filter((radius) => Number.isFinite(radius) && radius > 0 && radius < maximum * 2)
+    .sort((left, right) => left - right);
+  if (samples.length === 0) return maximum;
+  return Math.min(maximum, samples[Math.floor(samples.length / 2)]);
+}
+
 function updateMarkerPresentation(
   map: MapLibreMap,
   elements: MarkerElements,
@@ -85,10 +116,18 @@ function updateMarkerPresentation(
 ) {
   const earthCenter = map.project(map.getCenter());
   const surfacePoint = map.project([satellite.lon, satellite.lat]);
-  const altitudeScale = Math.max(0, satellite.altitude) / EARTH_RADIUS_KM;
-  const offsetX = (surfacePoint.x - earthCenter.x) * altitudeScale;
-  const offsetY = (surfacePoint.y - earthCenter.y) * altitudeScale;
+  const radialX = surfacePoint.x - earthCenter.x;
+  const radialY = surfacePoint.y - earthCenter.y;
+  const radialDistance = Math.hypot(radialX, radialY);
+  const globeRadius = estimatedGlobeRadius(map);
+  const altitudeRatio = Math.max(0, satellite.altitude) / EARTH_RADIUS_KM;
+  const surfaceRadius = Math.min(radialDistance, globeRadius);
+  const altitudePixels = surfaceRadius * altitudeRatio;
+  const inverseDistance = radialDistance > 1e-6 ? 1 / radialDistance : 0;
+  const offsetX = radialX * inverseDistance * altitudePixels;
+  const offsetY = radialY * inverseDistance * altitudePixels;
   elements.visual.style.transform = `translate3d(${offsetX.toFixed(2)}px,${offsetY.toFixed(2)}px,0)`;
+  elements.node.dataset.altitudeOffset = altitudePixels.toFixed(2);
 
   const occluded = isSatelliteOccluded(satellite, orientation);
   elements.node.classList.toggle("occluded", occluded);
