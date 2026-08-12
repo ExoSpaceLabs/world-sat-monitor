@@ -109,9 +109,17 @@ export function createCameraFrame(
   };
 }
 
-/** Orthographic globe radius used by MapLibre before its high-zoom flat-map transition. */
-export function globeRadiusPixels(zoom: number) {
-  return MAPLIBRE_TILE_SIZE * 2 ** zoom / (2 * Math.PI);
+/**
+ * Screen-space globe radius used by MapLibre's globe projection.
+ *
+ * MapLibre's apparent globe radius grows as the camera moves away from the
+ * equator. Keep the same latitude compensation as the previously validated
+ * canvas renderer so overlays continue to match the rendered Earth.
+ */
+export function globeRadiusPixels(zoom: number, latitude = 0) {
+  const worldSize = MAPLIBRE_TILE_SIZE * 2 ** zoom;
+  const latitudeScale = Math.cos(latitude * Math.PI / 180);
+  return worldSize / (2 * Math.PI * Math.max(0.08, latitudeScale));
 }
 
 export function dot(left: Vector3, right: Vector3) {

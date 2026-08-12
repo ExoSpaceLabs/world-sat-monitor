@@ -81,7 +81,9 @@ function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
   gl.uniform1f(runtime.opacity, Math.max(0, Math.min(1, state.opacity)));
   gl.uniform1f(
     runtime.radius,
-    globeRadiusPixels(state.orientation.zoom) * SHADOW_GLOBE_SCALE * pixelScale,
+    globeRadiusPixels(state.orientation.zoom, state.orientation.latitude)
+      * SHADOW_GLOBE_SCALE
+      * pixelScale,
   );
   gl.uniform3f(runtime.sun, cameraSun.x, cameraSun.y, cameraSun.outward);
   drawFullscreen(runtime);

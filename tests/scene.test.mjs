@@ -54,9 +54,13 @@ test("Earth uses a real 24-hour rotation rate", () => {
   assert.equal(ROTATION_DEGREES_PER_SECOND * 24 * 60 * 60, 360);
 });
 
-test("shadow sphere radius is independent of viewing latitude", () => {
-  assert.ok(Math.abs(globeRadiusPixels(0) - 512 / (2 * Math.PI)) < 1e-12);
-  assert.equal(globeRadiusPixels(2), globeRadiusPixels(0) * 4);
+test("shadow sphere radius follows MapLibre latitude scaling", () => {
+  const equator = globeRadiusPixels(0, 0);
+  assert.ok(Math.abs(equator - 512 / (2 * Math.PI)) < 1e-12);
+  assert.equal(globeRadiusPixels(2, 0), equator * 4);
+  assert.ok(Math.abs(globeRadiusPixels(0, 60) - equator * 2) < 1e-12);
+  assert.equal(globeRadiusPixels(0, -60), globeRadiusPixels(0, 60));
+  assert.ok(Number.isFinite(globeRadiusPixels(0, 90)));
 });
 
 test("camera bearing rotates its screen axes without changing its outward direction", () => {
