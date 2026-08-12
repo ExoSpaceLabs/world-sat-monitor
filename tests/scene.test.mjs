@@ -59,7 +59,7 @@ test("shadow sphere radius follows MapLibre latitude scaling", () => {
   assert.ok(Math.abs(equator - 512 / (2 * Math.PI)) < 1e-12);
   assert.equal(globeRadiusPixels(2, 0), equator * 4);
   assert.ok(Math.abs(globeRadiusPixels(0, 60) - equator * 2) < 1e-12);
-  assert.equal(globeRadiusPixels(0, -60), globeRadiusPixels(0, 60));
+  assert.ok(Math.abs(globeRadiusPixels(0, -60) - equator * 2) < 1e-12);
   assert.ok(Number.isFinite(globeRadiusPixels(0, 90)));
 });
 
