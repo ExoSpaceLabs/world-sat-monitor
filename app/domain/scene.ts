@@ -6,7 +6,6 @@ export const INITIAL_VIEW = {
 };
 
 export const ROTATION_DEGREES_PER_SECOND = 360 / (24 * 60 * 60);
-export const ROTATION_RESUME_DELAY_MS = 4_000;
 export const CAMERA_LOCK_MIN_ZOOM = 2.35;
 export const AUTO_ROTATION_MAX_ZOOM = CAMERA_LOCK_MIN_ZOOM;
 export const INITIAL_UTC = new Date("2000-01-01T12:00:00.000Z");
@@ -29,8 +28,6 @@ export type SceneOrientation = {
 
 export type RotationDecision = {
   followSatellite: boolean;
-  isInteracting: boolean;
-  isMoving: boolean;
   zoom: number;
 };
 
@@ -49,17 +46,17 @@ export function normalizeLongitude(longitude: number) {
   return (((longitude % 360) + 540) % 360) - 180;
 }
 
-export function shouldLockCameraToEarth({followSatellite, zoom}: Pick<RotationDecision, "followSatellite" | "zoom">) {
+export function shouldLockCameraToEarth({followSatellite, zoom}: RotationDecision) {
   return followSatellite || zoom >= CAMERA_LOCK_MIN_ZOOM;
 }
 
-export function shouldAutoRotate({
-  followSatellite,
-  isInteracting,
-  isMoving,
-  zoom,
-}: RotationDecision) {
-  return !shouldLockCameraToEarth({followSatellite, zoom}) && !isInteracting && !isMoving;
+/**
+ * Earth itself never pauses. This only decides whether an inertially fixed
+ * camera should watch Earth move underneath it. Once zoomed in (or following
+ * a satellite), the camera co-rotates with Earth instead.
+ */
+export function shouldAutoRotate(decision: RotationDecision) {
+  return !shouldLockCameraToEarth(decision);
 }
 
 export function inertialCameraLongitude(earthLongitude: number, earthRotationDegrees: number) {
@@ -110,11 +107,8 @@ export function createCameraFrame(
 }
 
 /**
- * Screen-space globe radius used by the overlay renderer.
- *
- * The latitude compensation intentionally matches the previous canvas path,
- * which visually tracked MapLibre's globe. Removing it made the WebGL shadow
- * mask drift in apparent size while moving the camera north or south.
+ * Legacy screen-space globe-radius helper retained for geometry tests and any
+ * future diagnostics. Rendering the night side no longer depends on it.
  */
 export function globeRadiusPixels(zoom: number, latitude = 0) {
   const worldSize = MAPLIBRE_TILE_SIZE * 2 ** zoom;
