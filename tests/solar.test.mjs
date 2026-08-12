@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  createNightShadowCells,
+  NIGHT_SHADOW_ALPHA,
   getSolarState,
   inertialSolarLongitude,
-  nightShadowOpacity,
+  shadowAlpha,
   solarElevation,
 } from "../app/domain/solar.ts";
 
@@ -39,22 +39,10 @@ test("Sun remains fixed in the inertial frame while Earth rotates", () => {
   assert.ok(Math.abs(startInertial - laterInertial) < 0.05);
 });
 
-test("night shadow is transparent under the Sun and opaque at the anti-solar point", () => {
-  assert.equal(nightShadowOpacity(10), 0);
-  assert.equal(nightShadowOpacity(2), 0);
-  assert.ok(nightShadowOpacity(-6) > 0.3);
-  assert.ok(nightShadowOpacity(-30) > 0.75);
-  assert.ok(nightShadowOpacity(-90) > nightShadowOpacity(-6));
-});
-
-test("shadow mesh covers the anti-solar hemisphere without covering the subsolar point", () => {
-  const sun = {latitude: 0, longitude: 0};
-  const cells = createNightShadowCells(sun, 4);
-  const contains = (latitude, longitude) => cells.find((cell) => (
-    longitude >= cell.west && longitude <= cell.east
-    && latitude >= cell.south && latitude <= cell.north
-  ));
-  assert.equal(contains(0, 0), undefined);
-  assert.ok(contains(0, 180)?.opacity > 0.8);
-  assert.ok(cells.length > 1_500);
+test("shadow sphere is clear on the solar half and 70 percent transparent opposite it", () => {
+  assert.equal(shadowAlpha(1), 0);
+  assert.equal(shadowAlpha(0), 0);
+  assert.equal(shadowAlpha(-1), NIGHT_SHADOW_ALPHA);
+  assert.equal(NIGHT_SHADOW_ALPHA, 0.3);
+  assert.ok(shadowAlpha(-0.01) > 0 && shadowAlpha(-0.01) < NIGHT_SHADOW_ALPHA);
 });

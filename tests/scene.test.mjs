@@ -5,18 +5,32 @@ import {
   AUTO_ROTATION_MAX_ZOOM,
   CAMERA_LOCK_MIN_ZOOM,
   ROTATION_DEGREES_PER_SECOND,
+  cameraRayToInertial,
+  createCameraFrame,
+  directionFromCoordinates,
   inertialCameraLongitude,
   shouldAutoRotate,
   shouldLockCameraToEarth,
-  toOuterSphereRotation,
+  toCameraSpace,
 } from "../app/domain/scene.ts";
 
-test("outer sphere uses the corrected horizontal axis", () => {
-  const rotation = toOuterSphereRotation({inertialLongitude: 30, latitude: 12});
-  assert.ok(rotation.y < 0);
-  assert.ok(rotation.x < 0);
-  assert.ok(Math.abs(rotation.y + Math.PI / 6) < 1e-12);
-  assert.ok(Math.abs(rotation.x + 12 * Math.PI / 180) < 1e-12);
+test("camera movement samples a fixed outer sphere on both axes", () => {
+  const frame = createCameraFrame({inertialLongitude: 30, latitude: 20});
+  const centerRay = cameraRayToInertial({x: 0, y: 0, z: -1}, frame);
+  assert.ok(Math.abs(centerRay.x + frame.outward.x) < 1e-12);
+  assert.ok(Math.abs(centerRay.y + frame.outward.y) < 1e-12);
+  assert.ok(Math.abs(centerRay.z + frame.outward.z) < 1e-12);
+  assert.ok(centerRay.y < 0);
+});
+
+test("Sun and shadow hemispheres are opposite in the camera frame", () => {
+  const frame = createCameraFrame({inertialLongitude: 0, latitude: 0});
+  const nearSideSun = toCameraSpace(directionFromCoordinates(0, 0), frame);
+  const farSideSun = toCameraSpace(directionFromCoordinates(180, 0), frame);
+  assert.ok(nearSideSun.outward > 0.999);
+  assert.ok(farSideSun.outward < -0.999);
+  assert.ok(nearSideSun.forward < 0);
+  assert.ok(farSideSun.forward > 0);
 });
 
 test("wide-view Earth rotation leaves the inertial background fixed", () => {

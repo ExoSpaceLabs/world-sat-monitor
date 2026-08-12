@@ -33,6 +33,17 @@ export type RotationDecision = {
   zoom: number;
 };
 
+export type Vector3 = {x: number; y: number; z: number};
+
+export type CameraFrame = {
+  /** Direction from Earth centre towards the camera. */
+  outward: Vector3;
+  /** Direction from the camera through Earth centre towards the far sky. */
+  forward: Vector3;
+  right: Vector3;
+  up: Vector3;
+};
+
 export function normalizeLongitude(longitude: number) {
   return (((longitude % 360) + 540) % 360) - 180;
 }
@@ -54,15 +65,60 @@ export function inertialCameraLongitude(earthLongitude: number, earthRotationDeg
   return normalizeLongitude(earthLongitude + earthRotationDegrees);
 }
 
-export function toOuterSphereRotation(
-  orientation: Pick<SceneOrientation, "inertialLongitude" | "latitude">,
-) {
+export function directionFromCoordinates(longitude: number, latitude: number): Vector3 {
   const radians = Math.PI / 180;
+  const longitudeRadians = longitude * radians;
+  const latitudeRadians = latitude * radians;
+  const latitudeRadius = Math.cos(latitudeRadians);
   return {
-    x: -orientation.latitude * radians,
-    // The viewer is inside the sky sphere, so its horizontal sampling axis is
-    // the inverse of the Earth-facing camera longitude.
-    y: -orientation.inertialLongitude * radians,
-    z: 0,
+    x: Math.sin(longitudeRadians) * latitudeRadius,
+    y: Math.sin(latitudeRadians),
+    z: Math.cos(longitudeRadians) * latitudeRadius,
   };
+}
+
+export function createCameraFrame(
+  orientation: Pick<SceneOrientation, "inertialLongitude" | "latitude">,
+): CameraFrame {
+  const outward = directionFromCoordinates(orientation.inertialLongitude, orientation.latitude);
+  const longitudeRadians = orientation.inertialLongitude * Math.PI / 180;
+  const right = {x: Math.cos(longitudeRadians), y: 0, z: -Math.sin(longitudeRadians)};
+  const up = {
+    x: -outward.y * Math.sin(longitudeRadians),
+    y: Math.cos(orientation.latitude * Math.PI / 180),
+    z: -outward.y * Math.cos(longitudeRadians),
+  };
+  return {
+    outward,
+    forward: {x: -outward.x, y: -outward.y, z: -outward.z},
+    right,
+    up,
+  };
+}
+
+export function dot(left: Vector3, right: Vector3) {
+  return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+export function toCameraSpace(direction: Vector3, frame: CameraFrame) {
+  return {
+    x: dot(direction, frame.right),
+    y: dot(direction, frame.up),
+    /** Positive when the direction points towards the visible Earth surface. */
+    outward: dot(direction, frame.outward),
+    /** Positive when the direction lies in front of the Earth-looking camera. */
+    forward: dot(direction, frame.forward),
+  };
+}
+
+export function cameraRayToInertial(
+  ray: Vector3,
+  frame: CameraFrame,
+): Vector3 {
+  const forwardScale = -ray.z;
+  const x = frame.right.x * ray.x + frame.up.x * ray.y + frame.forward.x * forwardScale;
+  const y = frame.right.y * ray.x + frame.up.y * ray.y + frame.forward.y * forwardScale;
+  const z = frame.right.z * ray.x + frame.up.z * ray.y + frame.forward.z * forwardScale;
+  const inverseLength = 1 / Math.hypot(x, y, z);
+  return {x: x * inverseLength, y: y * inverseLength, z: z * inverseLength};
 }

@@ -10,13 +10,7 @@ export type SolarState = {
   longitude: number;
 };
 
-export type NightShadowCell = {
-  west: number;
-  south: number;
-  east: number;
-  north: number;
-  opacity: number;
-};
+export const NIGHT_SHADOW_ALPHA = 0.3;
 
 export function getSolarState(date: Date): SolarState {
   const julianDay = date.getTime() / 86_400_000 + 2_440_587.5;
@@ -49,29 +43,8 @@ export function solarElevation(latitude: number, longitude: number, sun: SolarSt
   ) / DEG;
 }
 
-export function nightShadowOpacity(elevation: number) {
-  if (elevation >= 2) return 0;
-  const transition = Math.min(1, Math.max(0, (2 - elevation) / 20));
-  const eased = transition * transition * (3 - 2 * transition);
-  return 0.2 + eased * 0.64;
-}
-
-/**
- * Builds a globe-safe shadow skin from small Earth-fixed cells. Unlike a
- * pole-to-pole canvas quad, these cells do not collapse at the poles or the
- * anti-meridian when MapLibre projects them onto a globe.
- */
-export function createNightShadowCells(sun: SolarState, stepDegrees = 4): NightShadowCell[] {
-  const cells: NightShadowCell[] = [];
-  for (let south = -88; south < 88; south += stepDegrees) {
-    const north = Math.min(88, south + stepDegrees);
-    const latitude = (south + north) / 2;
-    for (let west = -180; west < 180; west += stepDegrees) {
-      const east = Math.min(180, west + stepDegrees);
-      const longitude = (west + east) / 2;
-      const opacity = nightShadowOpacity(solarElevation(latitude, longitude, sun));
-      if (opacity > 0) cells.push({west, south, east, north, opacity});
-    }
-  }
-  return cells;
+export function shadowAlpha(illumination: number) {
+  if (illumination >= 0) return 0;
+  const terminatorBlend = Math.min(1, -illumination / 0.025);
+  return NIGHT_SHADOW_ALPHA * terminatorBlend;
 }

@@ -2,7 +2,12 @@
 
 import {useEffect, useRef} from "react";
 import type {SceneOrientation} from "../../domain/scene";
-import {toOuterSphereRotation} from "../../domain/scene";
+import {
+  cameraRayToInertial,
+  createCameraFrame,
+  directionFromCoordinates,
+  toCameraSpace,
+} from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
 import {inertialSolarLongitude} from "../../domain/solar";
 
@@ -89,27 +94,18 @@ function drawSun(
   orientation: SceneOrientation,
   sun: SolarState,
 ) {
-  const rotation = toOuterSphereRotation(orientation);
-  const latitude = sun.latitude * Math.PI / 180;
-  const longitude = inertialSolarLongitude(sun, orientation.earthRotationDegrees) * Math.PI / 180;
-  const localX = Math.cos(latitude) * Math.sin(longitude);
-  const localY = Math.sin(latitude);
-  const localZ = -Math.cos(latitude) * Math.cos(longitude);
-
-  const cosPitch = Math.cos(rotation.x);
-  const sinPitch = Math.sin(rotation.x);
-  const pitchedY = cosPitch * localY - sinPitch * localZ;
-  const pitchedZ = sinPitch * localY + cosPitch * localZ;
-  const cosYaw = Math.cos(rotation.y);
-  const sinYaw = Math.sin(rotation.y);
-  const worldX = cosYaw * localX + sinYaw * pitchedZ;
-  const worldZ = -sinYaw * localX + cosYaw * pitchedZ;
-  if (worldZ >= -0.02) return;
+  const frame = createCameraFrame(orientation);
+  const sunDirection = directionFromCoordinates(
+    inertialSolarLongitude(sun, orientation.earthRotationDegrees),
+    sun.latitude,
+  );
+  const cameraSun = toCameraSpace(sunDirection, frame);
+  if (cameraSun.forward <= 0.02) return;
 
   const tangent = Math.tan(FIELD_OF_VIEW / 2);
   const aspect = width / height;
-  const screenX = (worldX / -worldZ / (tangent * aspect) + 1) * width / 2;
-  const screenY = (1 - pitchedY / -worldZ / tangent) * height / 2;
+  const screenX = (cameraSun.x / cameraSun.forward / (tangent * aspect) + 1) * width / 2;
+  const screenY = (1 - cameraSun.y / cameraSun.forward / tangent) * height / 2;
   if (screenX < -80 || screenX > width + 80 || screenY < -80 || screenY > height + 80) return;
 
   const radius = Math.max(22, width * 0.065);
@@ -124,24 +120,17 @@ function drawSun(
 }
 
 function renderSky(runtime: SkyRuntime, orientation: SceneOrientation, sun: SolarState) {
-  const rotation = toOuterSphereRotation(orientation);
-  const cosYaw = Math.cos(rotation.y);
-  const sinYaw = Math.sin(rotation.y);
-  const cosPitch = Math.cos(rotation.x);
-  const sinPitch = Math.sin(rotation.x);
+  const frame = createCameraFrame(orientation);
   const output = runtime.image.data;
 
   for (let index = 0; index < runtime.rays.x.length; index += 1) {
-    const worldX = runtime.rays.x[index];
-    const worldY = runtime.rays.y[index];
-    const worldZ = runtime.rays.z[index];
-
-    const localX = cosYaw * worldX - sinYaw * worldZ;
-    const yawedZ = sinYaw * worldX + cosYaw * worldZ;
-    const localY = cosPitch * worldY + sinPitch * yawedZ;
-    const localZ = -sinPitch * worldY + cosPitch * yawedZ;
-    const longitude = Math.atan2(localX, -localZ);
-    const latitude = Math.asin(Math.max(-1, Math.min(1, localY)));
+    const inertialRay = cameraRayToInertial({
+      x: runtime.rays.x[index],
+      y: runtime.rays.y[index],
+      z: runtime.rays.z[index],
+    }, frame);
+    const longitude = Math.atan2(inertialRay.x, inertialRay.z);
+    const latitude = Math.asin(Math.max(-1, Math.min(1, inertialRay.y)));
     const textureX = Math.floor((longitude / (Math.PI * 2) + 0.5) * TEXTURE_WIDTH) % TEXTURE_WIDTH;
     const textureY = Math.min(
       TEXTURE_HEIGHT - 1,

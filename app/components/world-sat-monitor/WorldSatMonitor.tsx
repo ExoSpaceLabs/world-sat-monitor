@@ -4,7 +4,7 @@ import {useCallback, useEffect, useMemo, useState} from "react";
 import {SpaceBackground} from "../background/SpaceBackground";
 import {DayNightLayer} from "../day-night/DayNightLayer";
 import {GlobeMap} from "../globe/GlobeMap";
-import {SatelliteLayer, SATELLITE_HEADING_LAYER_ID} from "../satellite/SatelliteLayer";
+import {SatelliteLayer} from "../satellite/SatelliteLayer";
 import {SatellitePanel} from "../satellite/SatellitePanel";
 import {MapSettingsPanel} from "../settings/MapSettingsPanel";
 import {INITIAL_UTC, INITIAL_VIEW, type SceneOrientation} from "../../domain/scene";
@@ -56,11 +56,6 @@ export function WorldSatMonitor() {
   }, []);
 
   const solarState = useMemo(() => getSolarState(now), [now]);
-  const utcMinute = now.toISOString().slice(0, 16);
-  const shadowSolarState = useMemo(
-    () => getSolarState(new Date(`${utcMinute}:00.000Z`)),
-    [utcMinute],
-  );
 
   const handleSceneChange = useCallback((key: keyof SceneOptions, enabled: boolean) => {
     setScene((current) => ({...current, [key]: enabled}));
@@ -107,9 +102,8 @@ export function WorldSatMonitor() {
         <DayNightLayer
           enabled={scene.nightShadow}
           mapSession={mapSession}
-          satelliteLayerId={SATELLITE_HEADING_LAYER_ID}
-          solarState={shadowSolarState}
-          utcMinute={utcMinute}
+          orientation={orientation}
+          solarState={solarState}
         />
         <SatelliteLayer
           mapSession={mapSession}
