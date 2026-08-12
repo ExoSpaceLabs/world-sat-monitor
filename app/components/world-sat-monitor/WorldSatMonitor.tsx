@@ -32,7 +32,7 @@ export function WorldSatMonitor() {
   const [mapState, setMapState] = useState<MapState>("loading");
   const [mapSession, setMapSession] = useState<MapSession | null>(null);
   const [basemap, setBasemap] = useState<Basemap>("dark");
-  const [scene, setScene] = useState<SceneOptions>({sky: true, nightShadow: true});
+  const [scene, setScene] = useState<SceneOptions>({spaceEnvironment: true});
   const [followSatellite, setFollowSatellite] = useState(false);
   const [now, setNow] = useState(INITIAL_UTC);
   const [orientation, setOrientation] = useState<SceneOrientation>({
@@ -57,8 +57,8 @@ export function WorldSatMonitor() {
 
   const solarState = useMemo(() => getSolarState(now), [now]);
 
-  const handleSceneChange = useCallback((key: keyof SceneOptions, enabled: boolean) => {
-    setScene((current) => ({...current, [key]: enabled}));
+  const handleEnvironmentChange = useCallback((enabled: boolean) => {
+    setScene({spaceEnvironment: enabled});
   }, []);
   const handleRotationChange = useCallback((
     active: boolean,
@@ -88,7 +88,7 @@ export function WorldSatMonitor() {
       </header>
 
       <section className="viewport">
-        <SpaceBackground enabled={scene.sky} orientation={orientation} solarState={solarState}/>
+        <SpaceBackground enabled={scene.spaceEnvironment} orientation={orientation} solarState={solarState}/>
         <GlobeMap
           basemap={basemap}
           followSatellite={followSatellite}
@@ -98,13 +98,13 @@ export function WorldSatMonitor() {
           onMapState={setMapState}
           onOrientationChange={setOrientation}
           onRotationChange={handleRotationChange}
-        />
-        <DayNightLayer
-          enabled={scene.nightShadow}
-          mapSession={mapSession}
-          orientation={orientation}
-          solarState={solarState}
-        />
+        >
+          <DayNightLayer
+            enabled={scene.spaceEnvironment}
+            orientation={orientation}
+            solarState={solarState}
+          />
+        </GlobeMap>
         <SatelliteLayer
           mapSession={mapSession}
           satellite={MOCK_SATELLITE}
@@ -119,7 +119,7 @@ export function WorldSatMonitor() {
             basemap={basemap}
             scene={scene}
             onBasemapChange={setBasemap}
-            onSceneChange={handleSceneChange}
+            onEnvironmentChange={handleEnvironmentChange}
             onClose={() => setSettingsOpen(false)}
           />
         )}
@@ -138,8 +138,7 @@ export function WorldSatMonitor() {
       <footer>
         <span>1 OBJECT TRACKED</span>
         <span>MAP <b className={mapState === "ready" ? "online" : ""}>{mapState.toUpperCase()}</b></span>
-        <span>SKY <b className={scene.sky ? "online" : ""}>{scene.sky ? "INERTIAL" : "OFF"}</b></span>
-        <span>NIGHT <b className={scene.nightShadow ? "online" : ""}>{scene.nightShadow ? "UTC LIVE" : "OFF"}</b></span>
+        <span>ENVIRONMENT <b className={scene.spaceEnvironment ? "online" : ""}>{scene.spaceEnvironment ? "UTC LIVE" : "OFF"}</b></span>
         <span>API <b>NOT CONNECTED</b></span>
         <em>UI CHECKPOINT 0.6</em>
       </footer>

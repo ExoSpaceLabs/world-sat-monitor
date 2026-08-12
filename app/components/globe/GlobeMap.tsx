@@ -1,6 +1,7 @@
 "use client";
 
 import {useEffect, useRef} from "react";
+import type {ReactNode} from "react";
 import type {Map as MapLibreMap} from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
@@ -18,6 +19,7 @@ import {fallbackStyle, loadBasemapStyle} from "../../maps/styles";
 
 type GlobeMapProps = {
   basemap: Basemap;
+  children?: ReactNode;
   followSatellite: boolean;
   resetKey: number;
   satellite: Satellite;
@@ -60,6 +62,7 @@ function makeAtmosphereTransparent(map: MapLibreMap) {
 
 export function GlobeMap({
   basemap,
+  children,
   followSatellite,
   resetKey,
   satellite,
@@ -238,10 +241,12 @@ export function GlobeMap({
 
   return (
     <div
-      ref={containerRef}
       className="globe-map"
       aria-label="Interactive rotating 3D Earth map"
       data-layer="globe-map"
-    />
+    >
+      <div ref={containerRef} className="globe-map-host"/>
+      {children}
+    </div>
   );
 }

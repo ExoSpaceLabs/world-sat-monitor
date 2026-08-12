@@ -4,18 +4,18 @@ import test from "node:test";
 const developmentPreviewMeta =
   /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
 
-test("renders development preview metadata", async () => {
+test("renders development preview metadata and independent scene layers", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
+  const {default: worker} = await import(workerUrl.href);
 
   const response = await worker.fetch(
     new Request("http://localhost/", {
-      headers: { accept: "text/html" },
+      headers: {accept: "text/html"},
     }),
     {
       ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
+        fetch: async () => new Response("Not found", {status: 404}),
       },
     },
     {
@@ -34,6 +34,7 @@ test("renders development preview metadata", async () => {
   assert.match(html, /data-layer=["']page["']/i);
   assert.match(html, /data-layer=["']space-background["']/i);
   assert.match(html, /data-layer=["']globe-map["']/i);
+  assert.match(html, /data-layer=["']day-night-globe["']/i);
   assert.match(html, /data-layer=["']satellite-controls["']/i);
   assert.match(html, /WORLDSAT-01/);
 });

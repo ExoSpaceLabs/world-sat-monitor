@@ -9,7 +9,6 @@ import {
 } from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
 import {inertialSolarLongitude, shadowAlpha} from "../../domain/solar";
-import type {MapSession} from "../../domain/types";
 
 const MAX_RENDER_WIDTH = 960;
 const SHADOW_GLOBE_SCALE = 1.018;
@@ -18,7 +17,6 @@ const MAPLIBRE_TILE_SIZE = 512;
 type ShadowRuntime = {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
-  mapSession: MapSession;
   renderQueued: boolean;
 };
 
@@ -35,16 +33,15 @@ function earthRadiusPixels(orientation: SceneOrientation) {
 }
 
 function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
-  const {canvas, context, mapSession} = runtime;
+  const {canvas, context} = runtime;
   context.clearRect(0, 0, canvas.width, canvas.height);
   if (!state.enabled || canvas.width === 0 || canvas.height === 0) return;
 
-  const containerRect = mapSession.map.getCanvasContainer().getBoundingClientRect();
-  if (containerRect.width <= 0 || containerRect.height <= 0) return;
-  const scale = canvas.width / containerRect.width;
-  const mapCenter = mapSession.map.project(mapSession.map.getCenter());
-  const centerX = mapCenter.x * scale;
-  const centerY = mapCenter.y * scale;
+  const bounds = canvas.getBoundingClientRect();
+  if (bounds.width <= 0 || bounds.height <= 0) return;
+  const scale = canvas.width / bounds.width;
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
   const radius = earthRadiusPixels(state.orientation) * SHADOW_GLOBE_SCALE * scale;
   if (radius <= 0) return;
 
@@ -83,35 +80,28 @@ function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
 
 type DayNightLayerProps = {
   enabled: boolean;
-  mapSession: MapSession | null;
   orientation: SceneOrientation;
   solarState: SolarState;
 };
 
 export function DayNightLayer({
   enabled,
-  mapSession,
   orientation,
   solarState,
 }: DayNightLayerProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const runtimeRef = useRef<ShadowRuntime | null>(null);
   const latestRef = useRef<ShadowState>({enabled, orientation, solarState});
 
   useEffect(() => {
-    if (!mapSession) return;
-    const container = mapSession.map.getCanvasContainer();
-    const canvas = document.createElement("canvas");
-    canvas.className = "day-night-globe";
-    canvas.dataset.layer = "day-night-globe";
-    canvas.setAttribute("aria-hidden", "true");
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const context = canvas.getContext("2d");
     if (!context) return;
-    container.append(canvas);
-
-    const runtime = {canvas, context, mapSession, renderQueued: false};
+    const runtime = {canvas, context, renderQueued: false};
     runtimeRef.current = runtime;
     const resize = () => {
-      const rect = container.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       const width = Math.min(MAX_RENDER_WIDTH, Math.max(320, Math.round(rect.width)));
       canvas.width = width;
@@ -119,15 +109,14 @@ export function DayNightLayer({
       renderShadowGlobe(runtime, latestRef.current);
     };
     const observer = new ResizeObserver(resize);
-    observer.observe(container);
+    observer.observe(canvas);
     resize();
 
     return () => {
       observer.disconnect();
-      canvas.remove();
       if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
-  }, [mapSession]);
+  }, []);
 
   useEffect(() => {
     latestRef.current = {enabled, orientation, solarState};
@@ -142,5 +131,12 @@ export function DayNightLayer({
     });
   }, [enabled, orientation, solarState]);
 
-  return null;
+  return (
+    <canvas
+      ref={canvasRef}
+      className={`day-night-globe ${enabled ? "visible" : ""}`}
+      data-layer="day-night-globe"
+      aria-hidden="true"
+    />
+  );
 }

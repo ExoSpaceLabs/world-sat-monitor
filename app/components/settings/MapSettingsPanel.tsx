@@ -5,7 +5,7 @@ type MapSettingsPanelProps = {
   basemap: Basemap;
   scene: SceneOptions;
   onBasemapChange: (next: Basemap) => void;
-  onSceneChange: (key: keyof SceneOptions, enabled: boolean) => void;
+  onEnvironmentChange: (enabled: boolean) => void;
   onClose: () => void;
 };
 
@@ -13,7 +13,7 @@ export function MapSettingsPanel({
   basemap,
   scene,
   onBasemapChange,
-  onSceneChange,
+  onEnvironmentChange,
   onClose,
 }: MapSettingsPanelProps) {
   return (
@@ -40,17 +40,20 @@ export function MapSettingsPanel({
       <section>
         <h3>SPACE ENVIRONMENT</h3>
         <div className="scene-options">
-          <button className="scene-toggle" role="switch" aria-checked={scene.sky} onClick={() => onSceneChange("sky", !scene.sky)}>
-            <span><b>SKY + SUN</b><small>ORIENTATION-LOCKED OUTER SPHERE</small></span><i className={scene.sky ? "enabled" : ""}/>
-          </button>
-          <button className="scene-toggle" role="switch" aria-checked={scene.nightShadow} onClick={() => onSceneChange("nightShadow", !scene.nightShadow)}>
-            <span><b>NIGHT SHADOW</b><small>UTC SOLAR TERMINATOR</small></span><i className={scene.nightShadow ? "enabled" : ""}/>
+          <button
+            className="scene-toggle"
+            role="switch"
+            aria-checked={scene.spaceEnvironment}
+            onClick={() => onEnvironmentChange(!scene.spaceEnvironment)}
+          >
+            <span><b>SKY · SUN · NIGHT SHADOW</b><small>ONE UTC-LOCKED ENVIRONMENT</small></span>
+            <i className={scene.spaceEnvironment ? "enabled" : ""}/>
           </button>
         </div>
       </section>
       <div className="rotation-state">
         <span>PLANET ROTATION</span>
-        <b>{ROTATION_DEGREES_PER_SECOND.toFixed(1)}°/S · PAUSES AT Z{AUTO_ROTATION_MAX_ZOOM}</b>
+        <b>{ROTATION_DEGREES_PER_SECOND.toFixed(4)}°/S · CAMERA LOCK Z{AUTO_ROTATION_MAX_ZOOM}</b>
       </div>
     </aside>
   );
