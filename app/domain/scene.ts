@@ -110,11 +110,11 @@ export function createCameraFrame(
 }
 
 /**
- * Screen-space globe radius used by MapLibre's globe projection.
+ * Screen-space globe radius used by the overlay renderer.
  *
- * MapLibre's apparent globe radius grows as the camera moves away from the
- * equator. Keep the same latitude compensation as the previously validated
- * canvas renderer so overlays continue to match the rendered Earth.
+ * The latitude compensation intentionally matches the previous canvas path,
+ * which visually tracked MapLibre's globe. Removing it made the WebGL shadow
+ * mask drift in apparent size while moving the camera north or south.
  */
 export function globeRadiusPixels(zoom: number, latitude = 0) {
   const worldSize = MAPLIBRE_TILE_SIZE * 2 ** zoom;
