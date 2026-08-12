@@ -10,15 +10,16 @@ import type {SolarState} from "../../domain/solar";
 import {inertialSolarLongitude} from "../../domain/solar";
 import {
   createFullscreenWebGL,
+  createWebGLProgram,
   destroyFullscreenWebGL,
   drawFullscreen,
   resizeWebGLCanvas,
   type FullscreenWebGL,
 } from "../rendering/webgl";
 
-const STAR_TEXTURE_WIDTH = 2048;
-const STAR_TEXTURE_HEIGHT = 1024;
 const STAR_COUNT = 5_200;
+const STAR_STRIDE_FLOATS = 7;
+const STAR_STRIDE_BYTES = STAR_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 const FIELD_OF_VIEW_TANGENT = Math.tan(68 * Math.PI / 360);
 
 const SKY_FRAGMENT_SHADER = `
@@ -29,11 +30,8 @@ const SKY_FRAGMENT_SHADER = `
   uniform vec3 uForward;
   uniform vec3 uRight;
   uniform vec3 uSun;
-  uniform sampler2D uTexture;
   uniform float uTangent;
   uniform vec3 uUp;
-
-  const float PI = 3.141592653589793;
 
   void main() {
     vec2 screen = vUv * 2.0 - 1.0;
@@ -42,11 +40,8 @@ const SKY_FRAGMENT_SHADER = `
       uUp * (screen.y * uTangent) +
       uForward
     );
-    float longitude = atan(ray.x, ray.z);
-    float latitude = asin(clamp(ray.y, -1.0, 1.0));
-    vec2 textureUv = vec2(longitude / (2.0 * PI) + 0.5, 0.5 - latitude / PI);
-    vec3 color = texture2D(uTexture, textureUv).rgb;
 
+    vec3 color = vec3(0.0039, 0.0196, 0.0431);
     float separation = max(0.0, 1.0 - dot(ray, uSun));
     float wideGlow = exp(-separation * 180.0) * 0.12;
     float corona = exp(-separation * 1800.0) * 0.72;
@@ -58,15 +53,72 @@ const SKY_FRAGMENT_SHADER = `
   }
 `;
 
+const STAR_VERTEX_SHADER = `
+  precision highp float;
+
+  attribute vec4 aStar;
+  attribute vec3 aColor;
+  uniform float uAspect;
+  uniform vec3 uForward;
+  uniform float uPixelRatio;
+  uniform vec3 uRight;
+  uniform float uTangent;
+  uniform vec3 uUp;
+  varying vec3 vColor;
+
+  void main() {
+    vec3 direction = aStar.xyz;
+    float forward = dot(direction, uForward);
+    float right = dot(direction, uRight);
+    float up = dot(direction, uUp);
+    vColor = aColor;
+
+    if (forward <= 0.001) {
+      gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+
+    vec2 ndc = vec2(
+      right / (forward * uTangent * uAspect),
+      up / (forward * uTangent)
+    );
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    gl_PointSize = aStar.w * uPixelRatio;
+  }
+`;
+
+const STAR_FRAGMENT_SHADER = `
+  precision mediump float;
+
+  varying vec3 vColor;
+
+  void main() {
+    vec2 point = gl_PointCoord - 0.5;
+    float distanceFromCenter = length(point);
+    if (distanceFromCenter > 0.5) discard;
+    float alpha = 1.0 - smoothstep(0.18, 0.5, distanceFromCenter);
+    gl_FragColor = vec4(vColor * alpha, alpha);
+  }
+`;
+
 type SkyRuntime = FullscreenWebGL & {
   aspect: WebGLUniformLocation | null;
   canvas: HTMLCanvasElement;
   forward: WebGLUniformLocation | null;
   right: WebGLUniformLocation | null;
+  starAspect: WebGLUniformLocation | null;
+  starBuffer: WebGLBuffer;
+  starColor: number;
+  starForward: WebGLUniformLocation | null;
+  starPixelRatio: WebGLUniformLocation | null;
+  starPosition: number;
+  starProgram: WebGLProgram;
+  starRight: WebGLUniformLocation | null;
+  starTangent: WebGLUniformLocation | null;
+  starUp: WebGLUniformLocation | null;
   sun: WebGLUniformLocation | null;
   tangent: WebGLUniformLocation | null;
-  texture: WebGLTexture;
-  textureUniform: WebGLUniformLocation | null;
   up: WebGLUniformLocation | null;
 };
 
@@ -84,90 +136,101 @@ function seededRandom(seed: number) {
   };
 }
 
-function createStarTextureCanvas(width: number, height: number) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) return canvas;
-
-  context.fillStyle = "#01050b";
-  context.fillRect(0, 0, width, height);
+/**
+ * Generates inertial unit vectors once. Stars are GPU point sprites rather
+ * than a sampled texture, so their brightness cannot disappear through texture
+ * minification or mip-level averaging.
+ */
+function createStarField() {
   const random = seededRandom(0x57534d);
-  const areaScale = width * height / (STAR_TEXTURE_WIDTH * STAR_TEXTURE_HEIGHT);
-  const starCount = Math.max(1_300, Math.round(STAR_COUNT * areaScale));
+  const data = new Float32Array(STAR_COUNT * STAR_STRIDE_FLOATS);
 
-  context.globalCompositeOperation = "lighter";
-  for (let index = 0; index < starCount; index += 1) {
-    const x = random() * width;
-    const y = random() * height;
+  for (let index = 0; index < STAR_COUNT; index += 1) {
+    const y = random() * 2 - 1;
+    const longitude = random() * Math.PI * 2;
+    const horizontal = Math.sqrt(Math.max(0, 1 - y * y));
     const bright = random();
-    const radius = bright > 0.992 ? 2.4 : bright > 0.94 ? 1.35 : 0.72;
-    const alpha = bright > 0.992 ? 0.98 : 0.36 + random() * 0.58;
-    const warm = random() > 0.91;
+    const warm = random() > 0.9;
+    const offset = index * STAR_STRIDE_FLOATS;
 
-    context.fillStyle = warm
-      ? `rgba(255,232,196,${alpha})`
-      : `rgba(190,218,255,${alpha})`;
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.fill();
-
-    if (radius > 1) {
-      const glow = context.createRadialGradient(x, y, 0, x, y, radius * 3.4);
-      glow.addColorStop(
-        0,
-        warm ? `rgba(255,238,205,${alpha * 0.52})` : `rgba(214,231,255,${alpha * 0.46})`,
-      );
-      glow.addColorStop(1, "rgba(0,0,0,0)");
-      context.fillStyle = glow;
-      context.fillRect(x - radius * 3.4, y - radius * 3.4, radius * 6.8, radius * 6.8);
+    data[offset] = Math.sin(longitude) * horizontal;
+    data[offset + 1] = y;
+    data[offset + 2] = Math.cos(longitude) * horizontal;
+    data[offset + 3] = bright > 0.993 ? 3.8 : bright > 0.94 ? 2.35 : 1.45;
+    if (warm) {
+      data[offset + 4] = 1.0;
+      data[offset + 5] = 0.82 + random() * 0.12;
+      data[offset + 6] = 0.58 + random() * 0.18;
+    } else {
+      data[offset + 4] = 0.72 + random() * 0.22;
+      data[offset + 5] = 0.82 + random() * 0.15;
+      data[offset + 6] = 1.0;
     }
   }
-  context.globalCompositeOperation = "source-over";
-  return canvas;
+  return data;
 }
 
-function powerOfTwoAtMost(value: number) {
-  return 2 ** Math.floor(Math.log2(Math.max(2, value)));
-}
-
-function clearWebGLErrors(gl: WebGLRenderingContext) {
-  for (let attempt = 0; attempt < 8 && gl.getError() !== gl.NO_ERROR; attempt += 1) {
-    // Drain stale errors without spinning forever if the context is lost.
+function createStarRuntime(fullscreen: FullscreenWebGL) {
+  const {gl} = fullscreen;
+  const starProgram = createWebGLProgram(gl, STAR_VERTEX_SHADER, STAR_FRAGMENT_SHADER);
+  const starBuffer = gl.createBuffer();
+  if (!starBuffer) {
+    gl.deleteProgram(starProgram);
+    throw new Error("Unable to create star buffer");
   }
+  gl.bindBuffer(gl.ARRAY_BUFFER, starBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, createStarField(), gl.STATIC_DRAW);
+  return {
+    starAspect: gl.getUniformLocation(starProgram, "uAspect"),
+    starBuffer,
+    starColor: gl.getAttribLocation(starProgram, "aColor"),
+    starForward: gl.getUniformLocation(starProgram, "uForward"),
+    starPixelRatio: gl.getUniformLocation(starProgram, "uPixelRatio"),
+    starPosition: gl.getAttribLocation(starProgram, "aStar"),
+    starProgram,
+    starRight: gl.getUniformLocation(starProgram, "uRight"),
+    starTangent: gl.getUniformLocation(starProgram, "uTangent"),
+    starUp: gl.getUniformLocation(starProgram, "uUp"),
+  };
 }
 
-function createTexture(runtime: FullscreenWebGL) {
-  const {gl} = runtime;
-  const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-  const width = Math.min(STAR_TEXTURE_WIDTH, powerOfTwoAtMost(maxTextureSize));
-  const height = Math.min(STAR_TEXTURE_HEIGHT, Math.max(1, width / 2));
-  const texture = gl.createTexture();
-  if (!texture) throw new Error("Unable to create star texture");
+function drawStars(runtime: SkyRuntime, state: SkyState) {
+  const {canvas, gl} = runtime;
+  const frame = createCameraFrame(state.orientation);
+  const bounds = canvas.getBoundingClientRect();
+  const pixelRatio = bounds.width > 0 ? canvas.width / bounds.width : 1;
 
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  clearWebGLErrors(gl);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
+  gl.useProgram(runtime.starProgram);
+  gl.bindBuffer(gl.ARRAY_BUFFER, runtime.starBuffer);
+  gl.enableVertexAttribArray(runtime.starPosition);
+  gl.vertexAttribPointer(
+    runtime.starPosition,
+    4,
+    gl.FLOAT,
+    false,
+    STAR_STRIDE_BYTES,
     0,
-    gl.RGBA,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    createStarTextureCanvas(width, height),
   );
-  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.enableVertexAttribArray(runtime.starColor);
+  gl.vertexAttribPointer(
+    runtime.starColor,
+    3,
+    gl.FLOAT,
+    false,
+    STAR_STRIDE_BYTES,
+    4 * Float32Array.BYTES_PER_ELEMENT,
+  );
+  gl.uniform1f(runtime.starAspect, canvas.width / canvas.height);
+  gl.uniform3f(runtime.starForward, frame.forward.x, frame.forward.y, frame.forward.z);
+  gl.uniform1f(runtime.starPixelRatio, pixelRatio);
+  gl.uniform3f(runtime.starRight, frame.right.x, frame.right.y, frame.right.z);
+  gl.uniform1f(runtime.starTangent, FIELD_OF_VIEW_TANGENT);
+  gl.uniform3f(runtime.starUp, frame.up.x, frame.up.y, frame.up.z);
 
-  const uploadError = gl.getError();
-  if (uploadError !== gl.NO_ERROR) {
-    gl.deleteTexture(texture);
-    throw new Error(`Unable to upload star texture (WebGL error ${uploadError})`);
-  }
-  return texture;
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
+  gl.disable(gl.BLEND);
 }
 
 function renderSky(runtime: SkyRuntime, state: SkyState) {
@@ -191,10 +254,8 @@ function renderSky(runtime: SkyRuntime, state: SkyState) {
   gl.uniform3f(runtime.sun, sun.x, sun.y, sun.z);
   gl.uniform1f(runtime.tangent, FIELD_OF_VIEW_TANGENT);
   gl.uniform3f(runtime.up, frame.up.x, frame.up.y, frame.up.z);
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, runtime.texture);
-  gl.uniform1i(runtime.textureUniform, 0);
   drawFullscreen(runtime);
+  drawStars(runtime, state);
 }
 
 type SpaceBackgroundProps = {
@@ -213,17 +274,16 @@ export function SpaceBackground({enabled, orientation, solarState}: SpaceBackgro
     if (!canvas) return;
     const fullscreen = createFullscreenWebGL(canvas, SKY_FRAGMENT_SHADER);
     if (!fullscreen) return;
-    const texture = createTexture(fullscreen);
+    const starRuntime = createStarRuntime(fullscreen);
     const runtime: SkyRuntime = {
       ...fullscreen,
+      ...starRuntime,
       aspect: fullscreen.gl.getUniformLocation(fullscreen.program, "uAspect"),
       canvas,
       forward: fullscreen.gl.getUniformLocation(fullscreen.program, "uForward"),
       right: fullscreen.gl.getUniformLocation(fullscreen.program, "uRight"),
       sun: fullscreen.gl.getUniformLocation(fullscreen.program, "uSun"),
       tangent: fullscreen.gl.getUniformLocation(fullscreen.program, "uTangent"),
-      texture,
-      textureUniform: fullscreen.gl.getUniformLocation(fullscreen.program, "uTexture"),
       up: fullscreen.gl.getUniformLocation(fullscreen.program, "uUp"),
     };
     runtimeRef.current = runtime;
@@ -238,7 +298,8 @@ export function SpaceBackground({enabled, orientation, solarState}: SpaceBackgro
 
     return () => {
       observer.disconnect();
-      fullscreen.gl.deleteTexture(texture);
+      fullscreen.gl.deleteBuffer(runtime.starBuffer);
+      fullscreen.gl.deleteProgram(runtime.starProgram);
       destroyFullscreenWebGL(fullscreen);
       if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
