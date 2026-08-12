@@ -20,6 +20,12 @@ test("orbital altitude extends visibility beyond the surface limb", () => {
   assert.ok(EARTH_RADIUS_KM + lowEarthOrbit.altitude > EARTH_RADIUS_KM);
 });
 
+test("547 km marker dims before the MapLibre visual limb mismatch", () => {
+  const camera = {longitude: -78.967, latitude: -6.301};
+  const satellite = {lon: 32.7, lat: 18.4, altitude: 547};
+  assert.equal(isSatelliteOccluded(satellite, camera), true);
+});
+
 test("a satellite remains occluded across the anti-camera hemisphere", () => {
   const camera = {longitude: 12, latitude: 18};
   for (const longitude of [150, 170, -170, -150]) {
