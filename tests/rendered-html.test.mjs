@@ -34,9 +34,7 @@ test("renders development preview metadata and server-rendered scene layers", as
   assert.match(html, /data-layer=["']page["']/i);
   assert.match(html, /data-layer=["']space-background["']/i);
   assert.match(html, /data-layer=["']globe-map["']/i);
-  // The day/night treatment is a MapLibre GeoJSON layer created after the
-  // client map style loads, so it correctly has no standalone SSR canvas.
-  assert.doesNotMatch(html, /data-layer=["']day-night-globe["']/i);
+  assert.match(html, /data-layer=["']day-night-globe["']/i);
   assert.match(html, /data-layer=["']satellite-controls["']/i);
   assert.doesNotMatch(html, /data-layer=["']debug-overlay["']/i);
   assert.match(html, /WORLDSAT-01/);
