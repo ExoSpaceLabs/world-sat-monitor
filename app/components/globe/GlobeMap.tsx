@@ -174,16 +174,22 @@ export function GlobeMap({
           callbacksRef.current.onRotationChange(true, reason);
         }
 
+        // The physical/simulation clock always advances, regardless of camera
+        // interaction. User input must not pause Earth, Sun, or future orbit
+        // propagation.
         const rotationDelta = ROTATION_DEGREES_PER_SECOND
           * elapsedSeconds
           * Math.max(0, timeScaleRef.current);
         earthRotationRef.current += rotationDelta;
 
-        if (earthMovesUnderCamera && rotationDelta !== 0) {
+        // In the wide inertial view MapLibre represents Earth rotation by
+        // changing the Earth-fixed camera longitude. Do not issue jumpTo while
+        // MapLibre is already processing a drag/zoom/ease animation: doing so
+        // fights its gesture handler and caused the free-camera drag glitch.
+        // We intentionally skip only the camera compensation for those frames;
+        // earthRotationRef above continues without interruption.
+        if (earthMovesUnderCamera && rotationDelta !== 0 && !map.isMoving()) {
           const center = map.getCenter();
-          // Earth rotation never pauses. In wide view the camera is inertial,
-          // so Earth-fixed longitude continuously moves underneath it even
-          // while the user is interacting with the map.
           map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
           appliedMapRotationRef.current += rotationDelta;
         }
