@@ -2,7 +2,7 @@
 
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {SpaceBackground} from "../background/SpaceBackground";
-import {DayNightLayer, NIGHT_LAYER_ID, NIGHT_SOURCE_ID} from "../day-night/DayNightLayer";
+import {DayNightLayer, type ShadowDebugState} from "../day-night/DayNightLayer";
 import {GlobeMap} from "../globe/GlobeMap";
 import {SatelliteLayer} from "../satellite/SatelliteLayer";
 import {SatellitePanel} from "../satellite/SatellitePanel";
@@ -58,6 +58,10 @@ export function WorldSatMonitor() {
   const [scene, setScene] = useState<SceneOptions>({...DEFAULT_SCENE_OPTIONS});
   const [followSatellite, setFollowSatellite] = useState(false);
   const [now, setNow] = useState(INITIAL_UTC);
+  const [shadowDebug, setShadowDebug] = useState<ShadowDebugState>({
+    ready: false,
+    radiusPx: null,
+  });
   const simulationClockRef = useRef<SimulationClock>({
     initialized: false,
     realAnchorMs: 0,
@@ -101,6 +105,13 @@ export function WorldSatMonitor() {
   }, []);
   const handleDebugChange = useCallback((debug: boolean) => {
     setScene((current) => ({...current, debug}));
+  }, []);
+  const handleShadowDebugChange = useCallback((next: ShadowDebugState) => {
+    setShadowDebug((current) => (
+      current.ready === next.ready && current.radiusPx === next.radiusPx
+        ? current
+        : next
+    ));
   }, []);
   const handleShadowOpacityChange = useCallback((shadowOpacity: number) => {
     setScene((current) => ({...current, shadowOpacity}));
@@ -154,8 +165,6 @@ export function WorldSatMonitor() {
       ? "CAMERA LOCKED TO EARTH ROTATION"
       : `${timeScale}× EARTH ROTATION ACTIVE`;
 
-  const shadowSourceReady = Boolean(mapSession?.map.getSource(NIGHT_SOURCE_ID));
-  const shadowLayerReady = Boolean(mapSession?.map.getLayer(NIGHT_LAYER_ID));
   const inertialSunLongitude = inertialSolarLongitude(solarState, orientation.earthRotationDegrees);
   const cameraSunDelta = normalizeLongitude(orientation.longitude - solarState.longitude);
   const altitudeRatio = MOCK_SATELLITE.altitude / EARTH_RADIUS_KM;
@@ -187,7 +196,9 @@ export function WorldSatMonitor() {
           <DayNightLayer
             enabled={scene.spaceEnvironment}
             mapSession={mapSession}
+            onDebugState={handleShadowDebugChange}
             opacity={scene.shadowOpacity}
+            orientation={orientation}
             solarState={solarState}
           />
         </GlobeMap>
@@ -212,8 +223,9 @@ export function WorldSatMonitor() {
               <div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div>
               <div><dt>SUN INERTIAL</dt><dd>{inertialSunLongitude.toFixed(3)}°</dd></div>
               <div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div>
-              <div><dt>SHADOW SOURCE</dt><dd className={shadowSourceReady ? "ok" : "bad"}>{shadowSourceReady ? "READY" : "MISSING"}</dd></div>
-              <div><dt>SHADOW LAYER</dt><dd className={shadowLayerReady ? "ok" : "bad"}>{shadowLayerReady ? "READY" : "MISSING"}</dd></div>
+              <div><dt>SHADOW MODE</dt><dd>CANVAS HEMISPHERE</dd></div>
+              <div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div>
+              <div><dt>SHADOW RADIUS</dt><dd>{shadowDebug.radiusPx === null ? "--" : `${shadowDebug.radiusPx} px`}</dd></div>
               <div><dt>SAT ALTITUDE</dt><dd>{MOCK_SATELLITE.altitude} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div>
             </dl>
           </aside>
