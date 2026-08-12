@@ -2,7 +2,7 @@
 
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {SpaceBackground} from "../background/SpaceBackground";
-import {DayNightLayer, NIGHT_LAYER_ID} from "../day-night/DayNightLayer";
+import {DayNightLayer, NIGHT_LAYER_ID, NIGHT_SOURCE_ID} from "../day-night/DayNightLayer";
 import {GlobeMap} from "../globe/GlobeMap";
 import {SatelliteLayer} from "../satellite/SatelliteLayer";
 import {SatellitePanel} from "../satellite/SatellitePanel";
@@ -154,7 +154,8 @@ export function WorldSatMonitor() {
       ? "CAMERA LOCKED TO EARTH ROTATION"
       : `${timeScale}× EARTH ROTATION ACTIVE`;
 
-  const shadowReady = Boolean(mapSession?.map.getLayer(NIGHT_LAYER_ID));
+  const shadowSourceReady = Boolean(mapSession?.map.getSource(NIGHT_SOURCE_ID));
+  const shadowLayerReady = Boolean(mapSession?.map.getLayer(NIGHT_LAYER_ID));
   const inertialSunLongitude = inertialSolarLongitude(solarState, orientation.earthRotationDegrees);
   const cameraSunDelta = normalizeLongitude(orientation.longitude - solarState.longitude);
   const altitudeRatio = MOCK_SATELLITE.altitude / EARTH_RADIUS_KM;
@@ -211,7 +212,8 @@ export function WorldSatMonitor() {
               <div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div>
               <div><dt>SUN INERTIAL</dt><dd>{inertialSunLongitude.toFixed(3)}°</dd></div>
               <div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div>
-              <div><dt>SHADOW LAYER</dt><dd className={shadowReady ? "ok" : "bad"}>{shadowReady ? "READY" : "MISSING"}</dd></div>
+              <div><dt>SHADOW SOURCE</dt><dd className={shadowSourceReady ? "ok" : "bad"}>{shadowSourceReady ? "READY" : "MISSING"}</dd></div>
+              <div><dt>SHADOW LAYER</dt><dd className={shadowLayerReady ? "ok" : "bad"}>{shadowLayerReady ? "READY" : "MISSING"}</dd></div>
               <div><dt>SAT ALTITUDE</dt><dd>{MOCK_SATELLITE.altitude} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div>
             </dl>
           </aside>
