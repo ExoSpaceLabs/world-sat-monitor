@@ -1,5 +1,6 @@
-.globe-map .maplibregl-marker.satellite-marker{z-index:4!important;display:block!important;visibility:visible!important}
+.globe-map .maplibregl-marker.satellite-marker{z-index:4!important}
 .satellite-marker{appearance:none;border:0;background:transparent;padding:0;width:30px;height:30px;position:relative;pointer-events:auto;cursor:pointer;border-radius:50%}
+.satellite-visual{position:absolute;inset:0;display:block;will-change:transform;opacity:1}.satellite-marker.occluded .satellite-visual{opacity:.22}.satellite-marker.occluded .satellite-pulse{animation:none;opacity:0}.satellite-marker.occluded .satellite-core{background:#76928a;box-shadow:0 0 7px rgba(85,230,165,.22)}.satellite-marker.occluded .satellite-label{opacity:.62}
 .satellite-marker:focus-visible{outline:1px solid #7dffbf;outline-offset:4px}
 .satellite-core{position:absolute;left:11px;top:11px;width:8px;height:8px;border-radius:50%;background:#7dffbf;box-shadow:0 0 10px #55e6a5,0 0 22px rgba(85,230,165,.5)}
 .satellite-marker.selected .satellite-core{background:#fff;box-shadow:0 0 10px #7dffbf,0 0 28px #55e6a5}

@@ -3,33 +3,75 @@
 import {useEffect, useRef} from "react";
 import type {SceneOrientation} from "../../domain/scene";
 import {
-  cameraRayToInertial,
   createCameraFrame,
   directionFromCoordinates,
-  toCameraSpace,
 } from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
 import {inertialSolarLongitude} from "../../domain/solar";
+import {
+  createFullscreenWebGL,
+  destroyFullscreenWebGL,
+  drawFullscreen,
+  resizeWebGLCanvas,
+  type FullscreenWebGL,
+} from "../rendering/webgl";
 
-const TEXTURE_WIDTH = 2048;
-const TEXTURE_HEIGHT = 1024;
-const MAX_RENDER_WIDTH = 720;
-const FIELD_OF_VIEW = 68 * Math.PI / 180;
+const TEXTURE_WIDTH = 4096;
+const TEXTURE_HEIGHT = 2048;
+const FIELD_OF_VIEW_TANGENT = Math.tan(68 * Math.PI / 360);
 
-type RayField = {
-  x: Float32Array;
-  y: Float32Array;
-  z: Float32Array;
+const SKY_FRAGMENT_SHADER = `
+  precision highp float;
+
+  varying vec2 vUv;
+  uniform float uAspect;
+  uniform vec3 uForward;
+  uniform vec3 uRight;
+  uniform vec3 uSun;
+  uniform sampler2D uTexture;
+  uniform float uTangent;
+  uniform vec3 uUp;
+
+  const float PI = 3.141592653589793;
+
+  void main() {
+    vec2 screen = vUv * 2.0 - 1.0;
+    vec3 ray = normalize(
+      uRight * (screen.x * uTangent * uAspect) +
+      uUp * (screen.y * uTangent) +
+      uForward
+    );
+    float longitude = atan(ray.x, ray.z);
+    float latitude = asin(clamp(ray.y, -1.0, 1.0));
+    vec2 textureUv = vec2(longitude / (2.0 * PI) + 0.5, 0.5 - latitude / PI);
+    vec3 color = texture2D(uTexture, textureUv).rgb;
+
+    float separation = max(0.0, 1.0 - dot(ray, uSun));
+    float wideGlow = exp(-separation * 180.0) * 0.12;
+    float corona = exp(-separation * 1800.0) * 0.72;
+    float disc = smoothstep(0.00006, 0.000015, separation);
+    color += vec3(0.28, 0.48, 0.72) * wideGlow;
+    color += vec3(1.0, 0.72, 0.28) * corona;
+    color = mix(color, vec3(1.0, 0.965, 0.82), disc);
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+type SkyRuntime = FullscreenWebGL & {
+  aspect: WebGLUniformLocation | null;
+  canvas: HTMLCanvasElement;
+  forward: WebGLUniformLocation | null;
+  right: WebGLUniformLocation | null;
+  sun: WebGLUniformLocation | null;
+  tangent: WebGLUniformLocation | null;
+  texture: WebGLTexture;
+  up: WebGLUniformLocation | null;
 };
 
-type SkyRuntime = {
-  context: CanvasRenderingContext2D;
-  height: number;
-  image: ImageData;
-  rays: RayField;
-  renderQueued: boolean;
-  starTexture: Uint8ClampedArray;
-  width: number;
+type SkyState = {
+  enabled: boolean;
+  orientation: SceneOrientation;
+  solarState: SolarState;
 };
 
 function seededRandom(seed: number) {
@@ -40,111 +82,89 @@ function seededRandom(seed: number) {
   };
 }
 
-function createStarTexture() {
+function createStarTextureCanvas() {
   const canvas = document.createElement("canvas");
   canvas.width = TEXTURE_WIDTH;
   canvas.height = TEXTURE_HEIGHT;
-  const context = canvas.getContext("2d", {willReadFrequently: true});
-  if (!context) return new Uint8ClampedArray(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
+  const context = canvas.getContext("2d");
+  if (!context) return canvas;
 
   context.fillStyle = "#01050b";
   context.fillRect(0, 0, canvas.width, canvas.height);
   const random = seededRandom(0x57534d);
-  for (let index = 0; index < 2600; index += 1) {
+
+  context.globalCompositeOperation = "lighter";
+  for (let index = 0; index < 8_500; index += 1) {
     const x = random() * canvas.width;
     const y = random() * canvas.height;
-    const radius = random() > 0.965 ? 1.6 : random() > 0.72 ? 0.85 : 0.48;
-    const warmth = random();
-    context.fillStyle = warmth > 0.92
-      ? `rgba(255,238,200,${0.4 + random() * 0.5})`
-      : `rgba(${185 + Math.floor(random() * 70)},${210 + Math.floor(random() * 45)},255,${0.28 + random() * 0.64})`;
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.fill();
-  }
-  return context.getImageData(0, 0, canvas.width, canvas.height).data;
-}
+    const bright = random();
+    const radius = bright > 0.992 ? 2.25 : bright > 0.94 ? 1.15 : 0.48;
+    const alpha = bright > 0.992 ? 0.95 : 0.28 + random() * 0.58;
+    const warm = random() > 0.91;
 
-function createRayField(width: number, height: number): RayField {
-  const count = width * height;
-  const x = new Float32Array(count);
-  const y = new Float32Array(count);
-  const z = new Float32Array(count);
-  const tangent = Math.tan(FIELD_OF_VIEW / 2);
-  const aspect = width / height;
-
-  for (let py = 0; py < height; py += 1) {
-    for (let px = 0; px < width; px += 1) {
-      const index = py * width + px;
-      const rayX = (2 * (px + 0.5) / width - 1) * tangent * aspect;
-      const rayY = (1 - 2 * (py + 0.5) / height) * tangent;
-      const inverseLength = 1 / Math.hypot(rayX, rayY, 1);
-      x[index] = rayX * inverseLength;
-      y[index] = rayY * inverseLength;
-      z[index] = -inverseLength;
+    if (radius > 1) {
+      const glow = context.createRadialGradient(x, y, 0, x, y, radius * 3.2);
+      glow.addColorStop(0, warm ? `rgba(255,238,205,${alpha})` : `rgba(214,231,255,${alpha})`);
+      glow.addColorStop(0.22, warm ? `rgba(255,190,112,${alpha * 0.55})` : `rgba(133,190,255,${alpha * 0.48})`);
+      glow.addColorStop(1, "rgba(0,0,0,0)");
+      context.fillStyle = glow;
+      context.fillRect(x - radius * 3.2, y - radius * 3.2, radius * 6.4, radius * 6.4);
+    } else {
+      context.fillStyle = warm
+        ? `rgba(255,232,196,${alpha})`
+        : `rgba(190,218,255,${alpha})`;
+      context.fillRect(x, y, 1, 1);
     }
   }
-  return {x, y, z};
+  context.globalCompositeOperation = "source-over";
+  return canvas;
 }
 
-function drawSun(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  orientation: SceneOrientation,
-  sun: SolarState,
-) {
-  const frame = createCameraFrame(orientation);
-  const sunDirection = directionFromCoordinates(
-    inertialSolarLongitude(sun, orientation.earthRotationDegrees),
-    sun.latitude,
+function createTexture(runtime: FullscreenWebGL) {
+  const {gl} = runtime;
+  const texture = gl.createTexture();
+  if (!texture) throw new Error("Unable to create star texture");
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    createStarTextureCanvas(),
   );
-  const cameraSun = toCameraSpace(sunDirection, frame);
-  if (cameraSun.forward <= 0.02) return;
-
-  const tangent = Math.tan(FIELD_OF_VIEW / 2);
-  const aspect = width / height;
-  const screenX = (cameraSun.x / cameraSun.forward / (tangent * aspect) + 1) * width / 2;
-  const screenY = (1 - cameraSun.y / cameraSun.forward / tangent) * height / 2;
-  if (screenX < -80 || screenX > width + 80 || screenY < -80 || screenY > height + 80) return;
-
-  const radius = Math.max(22, width * 0.065);
-  const glow = context.createRadialGradient(screenX, screenY, 1, screenX, screenY, radius);
-  glow.addColorStop(0, "rgba(255,255,238,1)");
-  glow.addColorStop(0.08, "rgba(255,242,180,1)");
-  glow.addColorStop(0.22, "rgba(255,190,83,.55)");
-  glow.addColorStop(0.58, "rgba(87,156,213,.12)");
-  glow.addColorStop(1, "rgba(0,0,0,0)");
-  context.fillStyle = glow;
-  context.fillRect(screenX - radius, screenY - radius, radius * 2, radius * 2);
+  return texture;
 }
 
-function renderSky(runtime: SkyRuntime, orientation: SceneOrientation, sun: SolarState) {
-  const frame = createCameraFrame(orientation);
-  const output = runtime.image.data;
-
-  for (let index = 0; index < runtime.rays.x.length; index += 1) {
-    const inertialRay = cameraRayToInertial({
-      x: runtime.rays.x[index],
-      y: runtime.rays.y[index],
-      z: runtime.rays.z[index],
-    }, frame);
-    const longitude = Math.atan2(inertialRay.x, inertialRay.z);
-    const latitude = Math.asin(Math.max(-1, Math.min(1, inertialRay.y)));
-    const textureX = Math.floor((longitude / (Math.PI * 2) + 0.5) * TEXTURE_WIDTH) % TEXTURE_WIDTH;
-    const textureY = Math.min(
-      TEXTURE_HEIGHT - 1,
-      Math.max(0, Math.floor((0.5 - latitude / Math.PI) * TEXTURE_HEIGHT)),
-    );
-    const source = (textureY * TEXTURE_WIDTH + textureX) * 4;
-    const target = index * 4;
-    output[target] = runtime.starTexture[source];
-    output[target + 1] = runtime.starTexture[source + 1];
-    output[target + 2] = runtime.starTexture[source + 2];
-    output[target + 3] = 255;
+function renderSky(runtime: SkyRuntime, state: SkyState) {
+  const {canvas, gl, program} = runtime;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  if (!state.enabled) {
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    return;
   }
-  runtime.context.putImageData(runtime.image, 0, 0);
-  drawSun(runtime.context, runtime.width, runtime.height, orientation, sun);
+
+  const frame = createCameraFrame(state.orientation);
+  const sun = directionFromCoordinates(
+    inertialSolarLongitude(state.solarState, state.orientation.earthRotationDegrees),
+    state.solarState.latitude,
+  );
+  gl.useProgram(program);
+  gl.uniform1f(runtime.aspect, canvas.width / canvas.height);
+  gl.uniform3f(runtime.forward, frame.forward.x, frame.forward.y, frame.forward.z);
+  gl.uniform3f(runtime.right, frame.right.x, frame.right.y, frame.right.z);
+  gl.uniform3f(runtime.sun, sun.x, sun.y, sun.z);
+  gl.uniform1f(runtime.tangent, FIELD_OF_VIEW_TANGENT);
+  gl.uniform3f(runtime.up, frame.up.x, frame.up.y, frame.up.z);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, runtime.texture);
+  gl.uniform1i(gl.getUniformLocation(program, "uTexture"), 0);
+  drawFullscreen(runtime);
 }
 
 type SpaceBackgroundProps = {
@@ -156,55 +176,48 @@ type SpaceBackgroundProps = {
 export function SpaceBackground({enabled, orientation, solarState}: SpaceBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runtimeRef = useRef<SkyRuntime | null>(null);
-  const latestRef = useRef({orientation, solarState});
+  const latestRef = useRef<SkyState>({enabled, orientation, solarState});
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const starTexture = createStarTexture();
+    const fullscreen = createFullscreenWebGL(canvas, SKY_FRAGMENT_SHADER);
+    if (!fullscreen) return;
+    const texture = createTexture(fullscreen);
+    const runtime: SkyRuntime = {
+      ...fullscreen,
+      aspect: fullscreen.gl.getUniformLocation(fullscreen.program, "uAspect"),
+      canvas,
+      forward: fullscreen.gl.getUniformLocation(fullscreen.program, "uForward"),
+      right: fullscreen.gl.getUniformLocation(fullscreen.program, "uRight"),
+      sun: fullscreen.gl.getUniformLocation(fullscreen.program, "uSun"),
+      tangent: fullscreen.gl.getUniformLocation(fullscreen.program, "uTangent"),
+      texture,
+      up: fullscreen.gl.getUniformLocation(fullscreen.program, "uUp"),
+    };
+    runtimeRef.current = runtime;
 
     const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const width = Math.min(MAX_RENDER_WIDTH, Math.max(320, Math.round(rect.width)));
-      const height = Math.max(180, Math.round(width * rect.height / rect.width));
-      canvas.width = width;
-      canvas.height = height;
-      const runtime = {
-        context,
-        height,
-        image: context.createImageData(width, height),
-        rays: createRayField(width, height),
-        renderQueued: false,
-        starTexture,
-        width,
-      };
-      runtimeRef.current = runtime;
-      renderSky(runtime, latestRef.current.orientation, latestRef.current.solarState);
+      resizeWebGLCanvas(canvas);
+      renderSky(runtime, latestRef.current);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     resize();
+
     return () => {
       observer.disconnect();
-      runtimeRef.current = null;
+      fullscreen.gl.deleteTexture(texture);
+      destroyFullscreenWebGL(fullscreen);
+      if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    latestRef.current = {orientation, solarState};
+    latestRef.current = {enabled, orientation, solarState};
     const runtime = runtimeRef.current;
-    if (!runtime || runtime.renderQueued) return;
-    runtime.renderQueued = true;
-    requestAnimationFrame(() => {
-      const current = runtimeRef.current;
-      if (!current) return;
-      current.renderQueued = false;
-      renderSky(current, latestRef.current.orientation, latestRef.current.solarState);
-    });
-  }, [orientation, solarState]);
+    if (runtime) renderSky(runtime, latestRef.current);
+  }, [enabled, orientation, solarState]);
 
   return (
     <canvas

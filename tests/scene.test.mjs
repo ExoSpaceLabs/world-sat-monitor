@@ -8,6 +8,7 @@ import {
   cameraRayToInertial,
   createCameraFrame,
   directionFromCoordinates,
+  globeRadiusPixels,
   inertialCameraLongitude,
   shouldAutoRotate,
   shouldLockCameraToEarth,
@@ -51,6 +52,20 @@ test("close view locks the camera to Earth and rotates the background", () => {
 
 test("Earth uses a real 24-hour rotation rate", () => {
   assert.equal(ROTATION_DEGREES_PER_SECOND * 24 * 60 * 60, 360);
+});
+
+test("shadow sphere radius is independent of viewing latitude", () => {
+  assert.ok(Math.abs(globeRadiusPixels(0) - 512 / (2 * Math.PI)) < 1e-12);
+  assert.equal(globeRadiusPixels(2), globeRadiusPixels(0) * 4);
+});
+
+test("camera bearing rotates its screen axes without changing its outward direction", () => {
+  const northUp = createCameraFrame({inertialLongitude: 30, latitude: 20, bearing: 0});
+  const eastUp = createCameraFrame({inertialLongitude: 30, latitude: 20, bearing: 90});
+  assert.deepEqual(eastUp.outward, northUp.outward);
+  assert.ok(Math.abs(eastUp.right.x + northUp.up.x) < 1e-12);
+  assert.ok(Math.abs(eastUp.right.y + northUp.up.y) < 1e-12);
+  assert.ok(Math.abs(eastUp.right.z + northUp.up.z) < 1e-12);
 });
 
 test("automatic map rotation stops when the camera locks to Earth", () => {

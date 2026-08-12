@@ -10,7 +10,7 @@ export type SolarState = {
   longitude: number;
 };
 
-export const NIGHT_SHADOW_ALPHA = 0.3;
+export const DEFAULT_SHADOW_OPACITY = 0.7;
 
 export function getSolarState(date: Date): SolarState {
   const julianDay = date.getTime() / 86_400_000 + 2_440_587.5;
@@ -43,8 +43,8 @@ export function solarElevation(latitude: number, longitude: number, sun: SolarSt
   ) / DEG;
 }
 
-export function shadowAlpha(illumination: number) {
+export function shadowAlpha(illumination: number, opacity = DEFAULT_SHADOW_OPACITY) {
   if (illumination >= 0) return 0;
   const terminatorBlend = Math.min(1, -illumination / 0.025);
-  return NIGHT_SHADOW_ALPHA * terminatorBlend;
+  return opacity * terminatorBlend;
 }

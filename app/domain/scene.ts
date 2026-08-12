@@ -10,6 +10,7 @@ export const ROTATION_RESUME_DELAY_MS = 4_000;
 export const CAMERA_LOCK_MIN_ZOOM = 2.35;
 export const AUTO_ROTATION_MAX_ZOOM = CAMERA_LOCK_MIN_ZOOM;
 export const INITIAL_UTC = new Date("2000-01-01T12:00:00.000Z");
+export const MAPLIBRE_TILE_SIZE = 512;
 
 export type SceneOrientation = {
   /** Earth-fixed longitude currently under the camera. */
@@ -78,15 +79,27 @@ export function directionFromCoordinates(longitude: number, latitude: number): V
 }
 
 export function createCameraFrame(
-  orientation: Pick<SceneOrientation, "inertialLongitude" | "latitude">,
+  orientation: Pick<SceneOrientation, "inertialLongitude" | "latitude"> &
+    Partial<Pick<SceneOrientation, "bearing">>,
 ): CameraFrame {
   const outward = directionFromCoordinates(orientation.inertialLongitude, orientation.latitude);
   const longitudeRadians = orientation.inertialLongitude * Math.PI / 180;
-  const right = {x: Math.cos(longitudeRadians), y: 0, z: -Math.sin(longitudeRadians)};
-  const up = {
+  const east = {x: Math.cos(longitudeRadians), y: 0, z: -Math.sin(longitudeRadians)};
+  const north = {
     x: -outward.y * Math.sin(longitudeRadians),
     y: Math.cos(orientation.latitude * Math.PI / 180),
     z: -outward.y * Math.cos(longitudeRadians),
+  };
+  const bearing = (orientation.bearing ?? 0) * Math.PI / 180;
+  const right = {
+    x: east.x * Math.cos(bearing) - north.x * Math.sin(bearing),
+    y: east.y * Math.cos(bearing) - north.y * Math.sin(bearing),
+    z: east.z * Math.cos(bearing) - north.z * Math.sin(bearing),
+  };
+  const up = {
+    x: east.x * Math.sin(bearing) + north.x * Math.cos(bearing),
+    y: east.y * Math.sin(bearing) + north.y * Math.cos(bearing),
+    z: east.z * Math.sin(bearing) + north.z * Math.cos(bearing),
   };
   return {
     outward,
@@ -94,6 +107,11 @@ export function createCameraFrame(
     right,
     up,
   };
+}
+
+/** Orthographic globe radius used by MapLibre before its high-zoom flat-map transition. */
+export function globeRadiusPixels(zoom: number) {
+  return MAPLIBRE_TILE_SIZE * 2 ** zoom / (2 * Math.PI);
 }
 
 export function dot(left: Vector3, right: Vector3) {

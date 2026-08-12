@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  NIGHT_SHADOW_ALPHA,
+  DEFAULT_SHADOW_OPACITY,
   getSolarState,
   inertialSolarLongitude,
   shadowAlpha,
@@ -39,10 +39,11 @@ test("Sun remains fixed in the inertial frame while Earth rotates", () => {
   assert.ok(Math.abs(startInertial - laterInertial) < 0.05);
 });
 
-test("shadow sphere is clear on the solar half and 70 percent transparent opposite it", () => {
+test("shadow sphere is clear on the solar half and defaults to 70 percent opacity opposite it", () => {
   assert.equal(shadowAlpha(1), 0);
   assert.equal(shadowAlpha(0), 0);
-  assert.equal(shadowAlpha(-1), NIGHT_SHADOW_ALPHA);
-  assert.equal(NIGHT_SHADOW_ALPHA, 0.3);
-  assert.ok(shadowAlpha(-0.01) > 0 && shadowAlpha(-0.01) < NIGHT_SHADOW_ALPHA);
+  assert.equal(shadowAlpha(-1), DEFAULT_SHADOW_OPACITY);
+  assert.equal(DEFAULT_SHADOW_OPACITY, 0.7);
+  assert.equal(shadowAlpha(-1, 0.35), 0.35);
+  assert.ok(shadowAlpha(-0.01) > 0 && shadowAlpha(-0.01) < DEFAULT_SHADOW_OPACITY);
 });

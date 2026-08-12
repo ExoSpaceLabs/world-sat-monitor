@@ -9,7 +9,14 @@ import {SatellitePanel} from "../satellite/SatellitePanel";
 import {MapSettingsPanel} from "../settings/MapSettingsPanel";
 import {INITIAL_UTC, INITIAL_VIEW, type SceneOrientation} from "../../domain/scene";
 import {MOCK_SATELLITE} from "../../domain/satellite";
-import type {Basemap, MapSession, MapState, SceneOptions} from "../../domain/types";
+import {
+  DEFAULT_BASEMAP,
+  DEFAULT_SCENE_OPTIONS,
+  type Basemap,
+  type MapSession,
+  type MapState,
+  type SceneOptions,
+} from "../../domain/types";
 import {getSolarState} from "../../domain/solar";
 
 function formatCoordinate(value: number, positive: string, negative: string) {
@@ -31,8 +38,8 @@ export function WorldSatMonitor() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mapState, setMapState] = useState<MapState>("loading");
   const [mapSession, setMapSession] = useState<MapSession | null>(null);
-  const [basemap, setBasemap] = useState<Basemap>("dark");
-  const [scene, setScene] = useState<SceneOptions>({spaceEnvironment: true});
+  const [basemap, setBasemap] = useState<Basemap>(DEFAULT_BASEMAP);
+  const [scene, setScene] = useState<SceneOptions>({...DEFAULT_SCENE_OPTIONS});
   const [followSatellite, setFollowSatellite] = useState(false);
   const [now, setNow] = useState(INITIAL_UTC);
   const [orientation, setOrientation] = useState<SceneOrientation>({
@@ -58,7 +65,10 @@ export function WorldSatMonitor() {
   const solarState = useMemo(() => getSolarState(now), [now]);
 
   const handleEnvironmentChange = useCallback((enabled: boolean) => {
-    setScene({spaceEnvironment: enabled});
+    setScene((current) => ({...current, spaceEnvironment: enabled}));
+  }, []);
+  const handleShadowOpacityChange = useCallback((shadowOpacity: number) => {
+    setScene((current) => ({...current, shadowOpacity}));
   }, []);
   const handleRotationChange = useCallback((
     active: boolean,
@@ -68,6 +78,11 @@ export function WorldSatMonitor() {
     setFollowSatellite(false);
     setResetKey((key) => key + 1);
   }, []);
+  const handleSettingsReset = useCallback(() => {
+    setBasemap(DEFAULT_BASEMAP);
+    setScene({...DEFAULT_SCENE_OPTIONS});
+  }, []);
+  const handleSatelliteSelect = useCallback(() => setFollowSatellite(true), []);
 
   const rotationLabel = followSatellite
     ? "CAMERA LOCKED TO SATELLITE / EARTH ROTATION"
@@ -101,15 +116,17 @@ export function WorldSatMonitor() {
         >
           <DayNightLayer
             enabled={scene.spaceEnvironment}
+            opacity={scene.shadowOpacity}
             orientation={orientation}
             solarState={solarState}
           />
         </GlobeMap>
         <SatelliteLayer
           mapSession={mapSession}
+          orientation={orientation}
           satellite={MOCK_SATELLITE}
           selected
-          onSelect={() => setFollowSatellite(true)}
+          onSelect={handleSatelliteSelect}
         />
 
         <div className="eyebrow">ORBITAL VIEW / EARTH DETAIL</div>
@@ -120,6 +137,8 @@ export function WorldSatMonitor() {
             scene={scene}
             onBasemapChange={setBasemap}
             onEnvironmentChange={handleEnvironmentChange}
+            onShadowOpacityChange={handleShadowOpacityChange}
+            onReset={handleSettingsReset}
             onClose={() => setSettingsOpen(false)}
           />
         )}

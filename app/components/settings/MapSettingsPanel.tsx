@@ -1,3 +1,4 @@
+import type {CSSProperties} from "react";
 import {AUTO_ROTATION_MAX_ZOOM, ROTATION_DEGREES_PER_SECOND} from "../../domain/scene";
 import type {Basemap, SceneOptions} from "../../domain/types";
 
@@ -6,6 +7,8 @@ type MapSettingsPanelProps = {
   scene: SceneOptions;
   onBasemapChange: (next: Basemap) => void;
   onEnvironmentChange: (enabled: boolean) => void;
+  onShadowOpacityChange: (opacity: number) => void;
+  onReset: () => void;
   onClose: () => void;
 };
 
@@ -14,6 +17,8 @@ export function MapSettingsPanel({
   scene,
   onBasemapChange,
   onEnvironmentChange,
+  onShadowOpacityChange,
+  onReset,
   onClose,
 }: MapSettingsPanelProps) {
   return (
@@ -49,12 +54,27 @@ export function MapSettingsPanel({
             <span><b>SKY · SUN · NIGHT SHADOW</b><small>ONE UTC-LOCKED ENVIRONMENT</small></span>
             <i className={scene.spaceEnvironment ? "enabled" : ""}/>
           </button>
+          <label className={`shadow-opacity ${scene.spaceEnvironment ? "" : "disabled"}`}>
+            <span><b>SHADOW OPACITY</b><output>{Math.round(scene.shadowOpacity * 100)}%</output></span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={Math.round(scene.shadowOpacity * 100)}
+              disabled={!scene.spaceEnvironment}
+              onChange={(event) => onShadowOpacityChange(Number(event.target.value) / 100)}
+              aria-label="Night shadow opacity"
+              style={{"--shadow-opacity": `${Math.round(scene.shadowOpacity * 100)}%`} as CSSProperties}
+            />
+          </label>
         </div>
       </section>
       <div className="rotation-state">
         <span>PLANET ROTATION</span>
         <b>{ROTATION_DEGREES_PER_SECOND.toFixed(4)}°/S · CAMERA LOCK Z{AUTO_ROTATION_MAX_ZOOM}</b>
       </div>
+      <button className="settings-reset" onClick={onReset}>RESET MAP SETTINGS</button>
     </aside>
   );
 }

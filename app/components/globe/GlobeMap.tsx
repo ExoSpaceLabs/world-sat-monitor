@@ -29,6 +29,8 @@ type GlobeMapProps = {
   onRotationChange: (active: boolean, reason: "active" | "follow" | "interaction" | "zoom") => void;
 };
 
+const ORIENTATION_REPORT_INTERVAL_MS = 16;
+
 function makeOrientation(
   map: MapLibreMap,
   earthRotationDegrees: number,
@@ -99,7 +101,7 @@ export function GlobeMap({
     const reportOrientation = (force = false) => {
       if (!map) return;
       const timestamp = performance.now();
-      if (!force && timestamp - lastOrientationReport < 90) return;
+      if (!force && timestamp - lastOrientationReport < ORIENTATION_REPORT_INTERVAL_MS) return;
       lastOrientationReport = timestamp;
       callbacksRef.current.onOrientationChange(
         makeOrientation(map, earthRotationDegrees, cameraLockedToEarth),
