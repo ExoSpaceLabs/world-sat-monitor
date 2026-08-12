@@ -23,6 +23,8 @@ type GlobeMapProps = {
   followSatellite: boolean;
   resetKey: number;
   satellite: Satellite;
+  timeResetKey: number;
+  timeScale: number;
   onMapSession: (session: MapSession | null) => void;
   onMapState: (state: MapState) => void;
   onOrientationChange: (orientation: SceneOrientation) => void;
@@ -68,6 +70,8 @@ export function GlobeMap({
   followSatellite,
   resetKey,
   satellite,
+  timeResetKey,
+  timeScale,
   onMapSession,
   onMapState,
   onOrientationChange,
@@ -80,9 +84,13 @@ export function GlobeMap({
   const styleRevisionRef = useRef(0);
   const basemapRef = useRef(basemap);
   const followRef = useRef(followSatellite);
+  const timeScaleRef = useRef(timeScale);
+  const earthRotationRef = useRef(0);
+  const appliedMapRotationRef = useRef(0);
   const callbacksRef = useRef({onMapSession, onMapState, onOrientationChange, onRotationChange});
 
   useEffect(() => { followRef.current = followSatellite; }, [followSatellite]);
+  useEffect(() => { timeScaleRef.current = timeScale; }, [timeScale]);
   useEffect(() => {
     callbacksRef.current = {onMapSession, onMapState, onOrientationChange, onRotationChange};
   }, [onMapSession, onMapState, onOrientationChange, onRotationChange]);
@@ -94,7 +102,6 @@ export function GlobeMap({
     let lastFrame = performance.now();
     let lastOrientationReport = 0;
     let rotationPausedUntil = 0;
-    let earthRotationDegrees = 0;
     let cameraLockedToEarth = false;
     let lastRotationReason: "active" | "follow" | "interaction" | "zoom" | null = null;
 
@@ -104,7 +111,7 @@ export function GlobeMap({
       if (!force && timestamp - lastOrientationReport < ORIENTATION_REPORT_INTERVAL_MS) return;
       lastOrientationReport = timestamp;
       callbacksRef.current.onOrientationChange(
-        makeOrientation(map, earthRotationDegrees, cameraLockedToEarth),
+        makeOrientation(map, earthRotationRef.current, cameraLockedToEarth),
       );
     };
 
@@ -183,13 +190,14 @@ export function GlobeMap({
         }
 
         if (rotationRunning) {
-          const rotationDelta = ROTATION_DEGREES_PER_SECOND * elapsedSeconds;
-          earthRotationDegrees += rotationDelta;
+          const rotationDelta = ROTATION_DEGREES_PER_SECOND
+            * elapsedSeconds
+            * Math.max(0, timeScaleRef.current);
+          earthRotationRef.current += rotationDelta;
           if (earthMovesUnderCamera) {
             const center = map.getCenter();
-            // Earth rotates eastward, so progressively more westerly Earth
-            // longitudes move under an inertially fixed camera.
             map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
+            appliedMapRotationRef.current += rotationDelta;
           }
           reportOrientation();
         }
@@ -240,6 +248,23 @@ export function GlobeMap({
     if (resetKey === 0) return;
     mapRef.current?.easeTo({...INITIAL_VIEW, duration: 850});
   }, [resetKey]);
+
+  useEffect(() => {
+    if (timeResetKey === 0) return;
+    const map = mapRef.current;
+    if (map && appliedMapRotationRef.current !== 0) {
+      const center = map.getCenter();
+      map.jumpTo({
+        center: [center.lng + appliedMapRotationRef.current, center.lat],
+      });
+    }
+    earthRotationRef.current = 0;
+    appliedMapRotationRef.current = 0;
+    if (map) {
+      const locked = shouldLockCameraToEarth({followSatellite: followRef.current, zoom: map.getZoom()});
+      callbacksRef.current.onOrientationChange(makeOrientation(map, 0, locked));
+    }
+  }, [timeResetKey]);
 
   return (
     <div
