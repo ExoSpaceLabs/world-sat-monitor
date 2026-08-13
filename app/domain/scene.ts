@@ -6,10 +6,10 @@ export const INITIAL_VIEW = {
 };
 
 export const ROTATION_DEGREES_PER_SECOND = 360 / (24 * 60 * 60);
-export const ROTATION_RESUME_DELAY_MS = 4_000;
 export const CAMERA_LOCK_MIN_ZOOM = 2.35;
 export const AUTO_ROTATION_MAX_ZOOM = CAMERA_LOCK_MIN_ZOOM;
 export const INITIAL_UTC = new Date("2000-01-01T12:00:00.000Z");
+export const MAPLIBRE_TILE_SIZE = 512;
 
 export type SceneOrientation = {
   /** Earth-fixed longitude currently under the camera. */
@@ -28,8 +28,6 @@ export type SceneOrientation = {
 
 export type RotationDecision = {
   followSatellite: boolean;
-  isInteracting: boolean;
-  isMoving: boolean;
   zoom: number;
 };
 
@@ -48,17 +46,17 @@ export function normalizeLongitude(longitude: number) {
   return (((longitude % 360) + 540) % 360) - 180;
 }
 
-export function shouldLockCameraToEarth({followSatellite, zoom}: Pick<RotationDecision, "followSatellite" | "zoom">) {
+export function shouldLockCameraToEarth({followSatellite, zoom}: RotationDecision) {
   return followSatellite || zoom >= CAMERA_LOCK_MIN_ZOOM;
 }
 
-export function shouldAutoRotate({
-  followSatellite,
-  isInteracting,
-  isMoving,
-  zoom,
-}: RotationDecision) {
-  return !shouldLockCameraToEarth({followSatellite, zoom}) && !isInteracting && !isMoving;
+/**
+ * Earth itself never pauses. This only decides whether an inertially fixed
+ * camera should watch Earth move underneath it. Once zoomed in (or following
+ * a satellite), the camera co-rotates with Earth instead.
+ */
+export function shouldAutoRotate(decision: RotationDecision) {
+  return !shouldLockCameraToEarth(decision);
 }
 
 export function inertialCameraLongitude(earthLongitude: number, earthRotationDegrees: number) {
@@ -78,15 +76,27 @@ export function directionFromCoordinates(longitude: number, latitude: number): V
 }
 
 export function createCameraFrame(
-  orientation: Pick<SceneOrientation, "inertialLongitude" | "latitude">,
+  orientation: Pick<SceneOrientation, "inertialLongitude" | "latitude"> &
+    Partial<Pick<SceneOrientation, "bearing">>,
 ): CameraFrame {
   const outward = directionFromCoordinates(orientation.inertialLongitude, orientation.latitude);
   const longitudeRadians = orientation.inertialLongitude * Math.PI / 180;
-  const right = {x: Math.cos(longitudeRadians), y: 0, z: -Math.sin(longitudeRadians)};
-  const up = {
+  const east = {x: Math.cos(longitudeRadians), y: 0, z: -Math.sin(longitudeRadians)};
+  const north = {
     x: -outward.y * Math.sin(longitudeRadians),
     y: Math.cos(orientation.latitude * Math.PI / 180),
     z: -outward.y * Math.cos(longitudeRadians),
+  };
+  const bearing = (orientation.bearing ?? 0) * Math.PI / 180;
+  const right = {
+    x: east.x * Math.cos(bearing) - north.x * Math.sin(bearing),
+    y: east.y * Math.cos(bearing) - north.y * Math.sin(bearing),
+    z: east.z * Math.cos(bearing) - north.z * Math.sin(bearing),
+  };
+  const up = {
+    x: east.x * Math.sin(bearing) + north.x * Math.cos(bearing),
+    y: east.y * Math.sin(bearing) + north.y * Math.cos(bearing),
+    z: east.z * Math.sin(bearing) + north.z * Math.cos(bearing),
   };
   return {
     outward,
@@ -94,6 +104,16 @@ export function createCameraFrame(
     right,
     up,
   };
+}
+
+/**
+ * Legacy screen-space globe-radius helper retained for geometry tests and any
+ * future diagnostics. Rendering the night side no longer depends on it.
+ */
+export function globeRadiusPixels(zoom: number, latitude = 0) {
+  const worldSize = MAPLIBRE_TILE_SIZE * 2 ** zoom;
+  const latitudeScale = Math.cos(latitude * Math.PI / 180);
+  return worldSize / (2 * Math.PI * Math.max(0.08, latitudeScale));
 }
 
 export function dot(left: Vector3, right: Vector3) {

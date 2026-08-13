@@ -7,7 +7,6 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import {
   INITIAL_VIEW,
   ROTATION_DEGREES_PER_SECOND,
-  ROTATION_RESUME_DELAY_MS,
   inertialCameraLongitude,
   shouldAutoRotate,
   shouldLockCameraToEarth,
@@ -17,17 +16,24 @@ import type {Basemap, MapSession, MapState} from "../../domain/types";
 import type {Satellite} from "../../domain/satellite";
 import {fallbackStyle, loadBasemapStyle} from "../../maps/styles";
 
+type RotationReason = "active" | "follow" | "zoom";
+
 type GlobeMapProps = {
   basemap: Basemap;
   children?: ReactNode;
   followSatellite: boolean;
   resetKey: number;
   satellite: Satellite;
+  timeResetKey: number;
+  timeScale: number;
   onMapSession: (session: MapSession | null) => void;
   onMapState: (state: MapState) => void;
   onOrientationChange: (orientation: SceneOrientation) => void;
-  onRotationChange: (active: boolean, reason: "active" | "follow" | "interaction" | "zoom") => void;
+  onRotationChange: (active: boolean, reason: RotationReason) => void;
 };
+
+const ORIENTATION_REPORT_INTERVAL_MS = 33;
+const WHEEL_INTERACTION_RELEASE_MS = 120;
 
 function makeOrientation(
   map: MapLibreMap,
@@ -66,6 +72,8 @@ export function GlobeMap({
   followSatellite,
   resetKey,
   satellite,
+  timeResetKey,
+  timeScale,
   onMapSession,
   onMapState,
   onOrientationChange,
@@ -78,9 +86,14 @@ export function GlobeMap({
   const styleRevisionRef = useRef(0);
   const basemapRef = useRef(basemap);
   const followRef = useRef(followSatellite);
+  const timeScaleRef = useRef(timeScale);
+  const earthRotationRef = useRef(0);
+  const appliedMapRotationRef = useRef(0);
+  const pendingMapRotationRef = useRef(0);
   const callbacksRef = useRef({onMapSession, onMapState, onOrientationChange, onRotationChange});
 
   useEffect(() => { followRef.current = followSatellite; }, [followSatellite]);
+  useEffect(() => { timeScaleRef.current = timeScale; }, [timeScale]);
   useEffect(() => {
     callbacksRef.current = {onMapSession, onMapState, onOrientationChange, onRotationChange};
   }, [onMapSession, onMapState, onOrientationChange, onRotationChange]);
@@ -91,18 +104,19 @@ export function GlobeMap({
     let animationFrame = 0;
     let lastFrame = performance.now();
     let lastOrientationReport = 0;
-    let rotationPausedUntil = 0;
-    let earthRotationDegrees = 0;
     let cameraLockedToEarth = false;
-    let lastRotationReason: "active" | "follow" | "interaction" | "zoom" | null = null;
+    let lastRotationReason: RotationReason | null = null;
+    let userInteracting = false;
+    let wheelReleaseTimer = 0;
+    let cleanupInteraction: (() => void) | null = null;
 
     const reportOrientation = (force = false) => {
       if (!map) return;
       const timestamp = performance.now();
-      if (!force && timestamp - lastOrientationReport < 90) return;
+      if (!force && timestamp - lastOrientationReport < ORIENTATION_REPORT_INTERVAL_MS) return;
       lastOrientationReport = timestamp;
       callbacksRef.current.onOrientationChange(
-        makeOrientation(map, earthRotationDegrees, cameraLockedToEarth),
+        makeOrientation(map, earthRotationRef.current, cameraLockedToEarth),
       );
     };
 
@@ -142,55 +156,81 @@ export function GlobeMap({
       map.on("move", () => reportOrientation());
       map.once("load", () => reportOrientation(true));
 
-      const pauseRotation = () => {
-        rotationPausedUntil = performance.now() + ROTATION_RESUME_DELAY_MS;
-      };
       const canvas = map.getCanvasContainer();
-      canvas.addEventListener("pointerdown", pauseRotation);
-      canvas.addEventListener("wheel", pauseRotation, {passive: true});
-      canvas.addEventListener("touchstart", pauseRotation, {passive: true});
+      const beginPointerInteraction = () => {
+        userInteracting = true;
+      };
+      const endPointerInteraction = () => {
+        userInteracting = false;
+      };
+      const beginWheelInteraction = () => {
+        userInteracting = true;
+        window.clearTimeout(wheelReleaseTimer);
+        wheelReleaseTimer = window.setTimeout(() => {
+          userInteracting = false;
+        }, WHEEL_INTERACTION_RELEASE_MS);
+      };
+      canvas.addEventListener("pointerdown", beginPointerInteraction);
+      canvas.addEventListener("wheel", beginWheelInteraction, {passive: true});
+      window.addEventListener("pointerup", endPointerInteraction);
+      window.addEventListener("pointercancel", endPointerInteraction);
+      cleanupInteraction = () => {
+        canvas.removeEventListener("pointerdown", beginPointerInteraction);
+        canvas.removeEventListener("wheel", beginWheelInteraction);
+        window.removeEventListener("pointerup", endPointerInteraction);
+        window.removeEventListener("pointercancel", endPointerInteraction);
+        window.clearTimeout(wheelReleaseTimer);
+      };
 
       const rotate = (timestamp: number) => {
         if (!map || disposed) return;
         const elapsedSeconds = Math.min((timestamp - lastFrame) / 1000, 0.1);
         lastFrame = timestamp;
-        const interactionPaused = timestamp < rotationPausedUntil;
-        const mapMoving = map.isMoving();
         cameraLockedToEarth = shouldLockCameraToEarth({
           followSatellite: followRef.current,
           zoom: map.getZoom(),
         });
         const earthMovesUnderCamera = shouldAutoRotate({
           followSatellite: followRef.current,
-          isInteracting: interactionPaused,
-          isMoving: mapMoving,
           zoom: map.getZoom(),
         });
-        const rotationRunning = !interactionPaused && !mapMoving;
-        const reason = rotationRunning
-          ? followRef.current
-            ? "follow"
-            : cameraLockedToEarth
-              ? "zoom"
-              : "active"
-          : "interaction";
+        const reason: RotationReason = followRef.current
+          ? "follow"
+          : cameraLockedToEarth
+            ? "zoom"
+            : "active";
 
         if (reason !== lastRotationReason) {
           lastRotationReason = reason;
-          callbacksRef.current.onRotationChange(rotationRunning, reason);
+          callbacksRef.current.onRotationChange(true, reason);
         }
 
-        if (rotationRunning) {
-          const rotationDelta = ROTATION_DEGREES_PER_SECOND * elapsedSeconds;
-          earthRotationDegrees += rotationDelta;
-          if (earthMovesUnderCamera) {
+        // Simulation time and physical Earth rotation never pause. Camera input
+        // is handled independently below so dragging cannot stall the scene.
+        const rotationDelta = ROTATION_DEGREES_PER_SECOND
+          * elapsedSeconds
+          * Math.max(0, timeScaleRef.current);
+        earthRotationRef.current += rotationDelta;
+
+        if (earthMovesUnderCamera && rotationDelta !== 0) {
+          if (userInteracting || map.isMoving()) {
+            // Preserve the rotation that occurs while MapLibre owns the camera.
+            // Applying jumpTo during a drag is what made the far view unusable.
+            pendingMapRotationRef.current += rotationDelta;
+          } else {
+            const visualRotation = rotationDelta + pendingMapRotationRef.current;
+            pendingMapRotationRef.current = 0;
             const center = map.getCenter();
-            // Earth rotates eastward, so progressively more westerly Earth
-            // longitudes move under an inertially fixed camera.
-            map.jumpTo({center: [center.lng - rotationDelta, center.lat]});
+            map.jumpTo({center: [center.lng - visualRotation, center.lat]});
+            appliedMapRotationRef.current += visualRotation;
           }
-          reportOrientation();
+        } else {
+          // Close/follow views co-rotate with Earth, so there is no inertial
+          // camera compensation to catch up after an interaction.
+          pendingMapRotationRef.current = 0;
         }
+
+        reportOrientation();
         animationFrame = requestAnimationFrame(rotate);
       };
       animationFrame = requestAnimationFrame(rotate);
@@ -199,6 +239,7 @@ export function GlobeMap({
     return () => {
       disposed = true;
       cancelAnimationFrame(animationFrame);
+      cleanupInteraction?.();
       callbacksRef.current.onMapSession(null);
       map?.remove();
       mapRef.current = null;
@@ -238,6 +279,24 @@ export function GlobeMap({
     if (resetKey === 0) return;
     mapRef.current?.easeTo({...INITIAL_VIEW, duration: 850});
   }, [resetKey]);
+
+  useEffect(() => {
+    if (timeResetKey === 0) return;
+    const map = mapRef.current;
+    if (map && appliedMapRotationRef.current !== 0) {
+      const center = map.getCenter();
+      map.jumpTo({
+        center: [center.lng + appliedMapRotationRef.current, center.lat],
+      });
+    }
+    earthRotationRef.current = 0;
+    appliedMapRotationRef.current = 0;
+    pendingMapRotationRef.current = 0;
+    if (map) {
+      const locked = shouldLockCameraToEarth({followSatellite: followRef.current, zoom: map.getZoom()});
+      callbacksRef.current.onOrientationChange(makeOrientation(map, 0, locked));
+    }
+  }, [timeResetKey]);
 
   return (
     <div

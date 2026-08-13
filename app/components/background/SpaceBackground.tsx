@@ -3,33 +3,129 @@
 import {useEffect, useRef} from "react";
 import type {SceneOrientation} from "../../domain/scene";
 import {
-  cameraRayToInertial,
   createCameraFrame,
   directionFromCoordinates,
-  toCameraSpace,
 } from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
 import {inertialSolarLongitude} from "../../domain/solar";
+import {
+  createFullscreenWebGL,
+  createWebGLProgram,
+  destroyFullscreenWebGL,
+  drawFullscreen,
+  resizeWebGLCanvas,
+  type FullscreenWebGL,
+} from "../rendering/webgl";
 
-const TEXTURE_WIDTH = 2048;
-const TEXTURE_HEIGHT = 1024;
-const MAX_RENDER_WIDTH = 720;
-const FIELD_OF_VIEW = 68 * Math.PI / 180;
+const STAR_COUNT = 5_200;
+const STAR_STRIDE_FLOATS = 7;
+const STAR_STRIDE_BYTES = STAR_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
+const FIELD_OF_VIEW_TANGENT = Math.tan(68 * Math.PI / 360);
 
-type RayField = {
-  x: Float32Array;
-  y: Float32Array;
-  z: Float32Array;
+const SKY_FRAGMENT_SHADER = `
+  precision highp float;
+
+  varying vec2 vUv;
+  uniform float uAspect;
+  uniform vec3 uForward;
+  uniform vec3 uRight;
+  uniform vec3 uSun;
+  uniform float uTangent;
+  uniform vec3 uUp;
+
+  void main() {
+    vec2 screen = vUv * 2.0 - 1.0;
+    vec3 ray = normalize(
+      uRight * (screen.x * uTangent * uAspect) +
+      uUp * (screen.y * uTangent) +
+      uForward
+    );
+
+    vec3 color = vec3(0.0039, 0.0196, 0.0431);
+    float separation = max(0.0, 1.0 - dot(ray, uSun));
+    float wideGlow = exp(-separation * 180.0) * 0.12;
+    float corona = exp(-separation * 1800.0) * 0.72;
+    float disc = 1.0 - smoothstep(0.000015, 0.00006, separation);
+    color += vec3(0.28, 0.48, 0.72) * wideGlow;
+    color += vec3(1.0, 0.72, 0.28) * corona;
+    color = mix(color, vec3(1.0, 0.965, 0.82), disc);
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+const STAR_VERTEX_SHADER = `
+  precision highp float;
+
+  attribute vec4 aStar;
+  attribute vec3 aColor;
+  uniform float uAspect;
+  uniform vec3 uForward;
+  uniform float uPixelRatio;
+  uniform vec3 uRight;
+  uniform float uTangent;
+  uniform vec3 uUp;
+  varying vec3 vColor;
+
+  void main() {
+    vec3 direction = aStar.xyz;
+    float forward = dot(direction, uForward);
+    float right = dot(direction, uRight);
+    float up = dot(direction, uUp);
+    vColor = aColor;
+
+    if (forward <= 0.001) {
+      gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+
+    vec2 ndc = vec2(
+      right / (forward * uTangent * uAspect),
+      up / (forward * uTangent)
+    );
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    gl_PointSize = aStar.w * uPixelRatio;
+  }
+`;
+
+const STAR_FRAGMENT_SHADER = `
+  precision mediump float;
+
+  varying vec3 vColor;
+
+  void main() {
+    vec2 point = gl_PointCoord - 0.5;
+    float distanceFromCenter = length(point);
+    if (distanceFromCenter > 0.5) discard;
+    float alpha = 1.0 - smoothstep(0.18, 0.5, distanceFromCenter);
+    gl_FragColor = vec4(vColor * alpha, alpha);
+  }
+`;
+
+type SkyRuntime = FullscreenWebGL & {
+  aspect: WebGLUniformLocation | null;
+  canvas: HTMLCanvasElement;
+  forward: WebGLUniformLocation | null;
+  right: WebGLUniformLocation | null;
+  starAspect: WebGLUniformLocation | null;
+  starBuffer: WebGLBuffer;
+  starColor: number;
+  starForward: WebGLUniformLocation | null;
+  starPixelRatio: WebGLUniformLocation | null;
+  starPosition: number;
+  starProgram: WebGLProgram;
+  starRight: WebGLUniformLocation | null;
+  starTangent: WebGLUniformLocation | null;
+  starUp: WebGLUniformLocation | null;
+  sun: WebGLUniformLocation | null;
+  tangent: WebGLUniformLocation | null;
+  up: WebGLUniformLocation | null;
 };
 
-type SkyRuntime = {
-  context: CanvasRenderingContext2D;
-  height: number;
-  image: ImageData;
-  rays: RayField;
-  renderQueued: boolean;
-  starTexture: Uint8ClampedArray;
-  width: number;
+type SkyState = {
+  enabled: boolean;
+  orientation: SceneOrientation;
+  solarState: SolarState;
 };
 
 function seededRandom(seed: number) {
@@ -40,111 +136,126 @@ function seededRandom(seed: number) {
   };
 }
 
-function createStarTexture() {
-  const canvas = document.createElement("canvas");
-  canvas.width = TEXTURE_WIDTH;
-  canvas.height = TEXTURE_HEIGHT;
-  const context = canvas.getContext("2d", {willReadFrequently: true});
-  if (!context) return new Uint8ClampedArray(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
-
-  context.fillStyle = "#01050b";
-  context.fillRect(0, 0, canvas.width, canvas.height);
+/**
+ * Generates inertial unit vectors once. Stars are GPU point sprites rather
+ * than a sampled texture, so their brightness cannot disappear through texture
+ * minification or mip-level averaging.
+ */
+function createStarField() {
   const random = seededRandom(0x57534d);
-  for (let index = 0; index < 2600; index += 1) {
-    const x = random() * canvas.width;
-    const y = random() * canvas.height;
-    const radius = random() > 0.965 ? 1.6 : random() > 0.72 ? 0.85 : 0.48;
-    const warmth = random();
-    context.fillStyle = warmth > 0.92
-      ? `rgba(255,238,200,${0.4 + random() * 0.5})`
-      : `rgba(${185 + Math.floor(random() * 70)},${210 + Math.floor(random() * 45)},255,${0.28 + random() * 0.64})`;
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.fill();
-  }
-  return context.getImageData(0, 0, canvas.width, canvas.height).data;
-}
+  const data = new Float32Array(STAR_COUNT * STAR_STRIDE_FLOATS);
 
-function createRayField(width: number, height: number): RayField {
-  const count = width * height;
-  const x = new Float32Array(count);
-  const y = new Float32Array(count);
-  const z = new Float32Array(count);
-  const tangent = Math.tan(FIELD_OF_VIEW / 2);
-  const aspect = width / height;
+  for (let index = 0; index < STAR_COUNT; index += 1) {
+    const y = random() * 2 - 1;
+    const longitude = random() * Math.PI * 2;
+    const horizontal = Math.sqrt(Math.max(0, 1 - y * y));
+    const bright = random();
+    const warm = random() > 0.9;
+    const offset = index * STAR_STRIDE_FLOATS;
 
-  for (let py = 0; py < height; py += 1) {
-    for (let px = 0; px < width; px += 1) {
-      const index = py * width + px;
-      const rayX = (2 * (px + 0.5) / width - 1) * tangent * aspect;
-      const rayY = (1 - 2 * (py + 0.5) / height) * tangent;
-      const inverseLength = 1 / Math.hypot(rayX, rayY, 1);
-      x[index] = rayX * inverseLength;
-      y[index] = rayY * inverseLength;
-      z[index] = -inverseLength;
+    data[offset] = Math.sin(longitude) * horizontal;
+    data[offset + 1] = y;
+    data[offset + 2] = Math.cos(longitude) * horizontal;
+    data[offset + 3] = bright > 0.993 ? 3.8 : bright > 0.94 ? 2.35 : 1.45;
+    if (warm) {
+      data[offset + 4] = 1.0;
+      data[offset + 5] = 0.82 + random() * 0.12;
+      data[offset + 6] = 0.58 + random() * 0.18;
+    } else {
+      data[offset + 4] = 0.72 + random() * 0.22;
+      data[offset + 5] = 0.82 + random() * 0.15;
+      data[offset + 6] = 1.0;
     }
   }
-  return {x, y, z};
+  return data;
 }
 
-function drawSun(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  orientation: SceneOrientation,
-  sun: SolarState,
-) {
-  const frame = createCameraFrame(orientation);
-  const sunDirection = directionFromCoordinates(
-    inertialSolarLongitude(sun, orientation.earthRotationDegrees),
-    sun.latitude,
-  );
-  const cameraSun = toCameraSpace(sunDirection, frame);
-  if (cameraSun.forward <= 0.02) return;
-
-  const tangent = Math.tan(FIELD_OF_VIEW / 2);
-  const aspect = width / height;
-  const screenX = (cameraSun.x / cameraSun.forward / (tangent * aspect) + 1) * width / 2;
-  const screenY = (1 - cameraSun.y / cameraSun.forward / tangent) * height / 2;
-  if (screenX < -80 || screenX > width + 80 || screenY < -80 || screenY > height + 80) return;
-
-  const radius = Math.max(22, width * 0.065);
-  const glow = context.createRadialGradient(screenX, screenY, 1, screenX, screenY, radius);
-  glow.addColorStop(0, "rgba(255,255,238,1)");
-  glow.addColorStop(0.08, "rgba(255,242,180,1)");
-  glow.addColorStop(0.22, "rgba(255,190,83,.55)");
-  glow.addColorStop(0.58, "rgba(87,156,213,.12)");
-  glow.addColorStop(1, "rgba(0,0,0,0)");
-  context.fillStyle = glow;
-  context.fillRect(screenX - radius, screenY - radius, radius * 2, radius * 2);
-}
-
-function renderSky(runtime: SkyRuntime, orientation: SceneOrientation, sun: SolarState) {
-  const frame = createCameraFrame(orientation);
-  const output = runtime.image.data;
-
-  for (let index = 0; index < runtime.rays.x.length; index += 1) {
-    const inertialRay = cameraRayToInertial({
-      x: runtime.rays.x[index],
-      y: runtime.rays.y[index],
-      z: runtime.rays.z[index],
-    }, frame);
-    const longitude = Math.atan2(inertialRay.x, inertialRay.z);
-    const latitude = Math.asin(Math.max(-1, Math.min(1, inertialRay.y)));
-    const textureX = Math.floor((longitude / (Math.PI * 2) + 0.5) * TEXTURE_WIDTH) % TEXTURE_WIDTH;
-    const textureY = Math.min(
-      TEXTURE_HEIGHT - 1,
-      Math.max(0, Math.floor((0.5 - latitude / Math.PI) * TEXTURE_HEIGHT)),
-    );
-    const source = (textureY * TEXTURE_WIDTH + textureX) * 4;
-    const target = index * 4;
-    output[target] = runtime.starTexture[source];
-    output[target + 1] = runtime.starTexture[source + 1];
-    output[target + 2] = runtime.starTexture[source + 2];
-    output[target + 3] = 255;
+function createStarRuntime(fullscreen: FullscreenWebGL) {
+  const {gl} = fullscreen;
+  const starProgram = createWebGLProgram(gl, STAR_VERTEX_SHADER, STAR_FRAGMENT_SHADER);
+  const starBuffer = gl.createBuffer();
+  if (!starBuffer) {
+    gl.deleteProgram(starProgram);
+    throw new Error("Unable to create star buffer");
   }
-  runtime.context.putImageData(runtime.image, 0, 0);
-  drawSun(runtime.context, runtime.width, runtime.height, orientation, sun);
+  gl.bindBuffer(gl.ARRAY_BUFFER, starBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, createStarField(), gl.STATIC_DRAW);
+  return {
+    starAspect: gl.getUniformLocation(starProgram, "uAspect"),
+    starBuffer,
+    starColor: gl.getAttribLocation(starProgram, "aColor"),
+    starForward: gl.getUniformLocation(starProgram, "uForward"),
+    starPixelRatio: gl.getUniformLocation(starProgram, "uPixelRatio"),
+    starPosition: gl.getAttribLocation(starProgram, "aStar"),
+    starProgram,
+    starRight: gl.getUniformLocation(starProgram, "uRight"),
+    starTangent: gl.getUniformLocation(starProgram, "uTangent"),
+    starUp: gl.getUniformLocation(starProgram, "uUp"),
+  };
+}
+
+function drawStars(runtime: SkyRuntime, state: SkyState) {
+  const {canvas, gl} = runtime;
+  const frame = createCameraFrame(state.orientation);
+  const bounds = canvas.getBoundingClientRect();
+  const pixelRatio = bounds.width > 0 ? canvas.width / bounds.width : 1;
+
+  gl.useProgram(runtime.starProgram);
+  gl.bindBuffer(gl.ARRAY_BUFFER, runtime.starBuffer);
+  gl.enableVertexAttribArray(runtime.starPosition);
+  gl.vertexAttribPointer(
+    runtime.starPosition,
+    4,
+    gl.FLOAT,
+    false,
+    STAR_STRIDE_BYTES,
+    0,
+  );
+  gl.enableVertexAttribArray(runtime.starColor);
+  gl.vertexAttribPointer(
+    runtime.starColor,
+    3,
+    gl.FLOAT,
+    false,
+    STAR_STRIDE_BYTES,
+    4 * Float32Array.BYTES_PER_ELEMENT,
+  );
+  gl.uniform1f(runtime.starAspect, canvas.width / canvas.height);
+  gl.uniform3f(runtime.starForward, frame.forward.x, frame.forward.y, frame.forward.z);
+  gl.uniform1f(runtime.starPixelRatio, pixelRatio);
+  gl.uniform3f(runtime.starRight, frame.right.x, frame.right.y, frame.right.z);
+  gl.uniform1f(runtime.starTangent, FIELD_OF_VIEW_TANGENT);
+  gl.uniform3f(runtime.starUp, frame.up.x, frame.up.y, frame.up.z);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArrays(gl.POINTS, 0, STAR_COUNT);
+  gl.disable(gl.BLEND);
+}
+
+function renderSky(runtime: SkyRuntime, state: SkyState) {
+  const {canvas, gl, program} = runtime;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  if (!state.enabled) {
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    return;
+  }
+
+  const frame = createCameraFrame(state.orientation);
+  const sun = directionFromCoordinates(
+    inertialSolarLongitude(state.solarState, state.orientation.earthRotationDegrees),
+    state.solarState.latitude,
+  );
+  gl.useProgram(program);
+  gl.uniform1f(runtime.aspect, canvas.width / canvas.height);
+  gl.uniform3f(runtime.forward, frame.forward.x, frame.forward.y, frame.forward.z);
+  gl.uniform3f(runtime.right, frame.right.x, frame.right.y, frame.right.z);
+  gl.uniform3f(runtime.sun, sun.x, sun.y, sun.z);
+  gl.uniform1f(runtime.tangent, FIELD_OF_VIEW_TANGENT);
+  gl.uniform3f(runtime.up, frame.up.x, frame.up.y, frame.up.z);
+  drawFullscreen(runtime);
+  drawStars(runtime, state);
 }
 
 type SpaceBackgroundProps = {
@@ -156,55 +267,49 @@ type SpaceBackgroundProps = {
 export function SpaceBackground({enabled, orientation, solarState}: SpaceBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runtimeRef = useRef<SkyRuntime | null>(null);
-  const latestRef = useRef({orientation, solarState});
+  const latestRef = useRef<SkyState>({enabled, orientation, solarState});
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const starTexture = createStarTexture();
+    const fullscreen = createFullscreenWebGL(canvas, SKY_FRAGMENT_SHADER);
+    if (!fullscreen) return;
+    const starRuntime = createStarRuntime(fullscreen);
+    const runtime: SkyRuntime = {
+      ...fullscreen,
+      ...starRuntime,
+      aspect: fullscreen.gl.getUniformLocation(fullscreen.program, "uAspect"),
+      canvas,
+      forward: fullscreen.gl.getUniformLocation(fullscreen.program, "uForward"),
+      right: fullscreen.gl.getUniformLocation(fullscreen.program, "uRight"),
+      sun: fullscreen.gl.getUniformLocation(fullscreen.program, "uSun"),
+      tangent: fullscreen.gl.getUniformLocation(fullscreen.program, "uTangent"),
+      up: fullscreen.gl.getUniformLocation(fullscreen.program, "uUp"),
+    };
+    runtimeRef.current = runtime;
 
     const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const width = Math.min(MAX_RENDER_WIDTH, Math.max(320, Math.round(rect.width)));
-      const height = Math.max(180, Math.round(width * rect.height / rect.width));
-      canvas.width = width;
-      canvas.height = height;
-      const runtime = {
-        context,
-        height,
-        image: context.createImageData(width, height),
-        rays: createRayField(width, height),
-        renderQueued: false,
-        starTexture,
-        width,
-      };
-      runtimeRef.current = runtime;
-      renderSky(runtime, latestRef.current.orientation, latestRef.current.solarState);
+      resizeWebGLCanvas(canvas);
+      renderSky(runtime, latestRef.current);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     resize();
+
     return () => {
       observer.disconnect();
-      runtimeRef.current = null;
+      fullscreen.gl.deleteBuffer(runtime.starBuffer);
+      fullscreen.gl.deleteProgram(runtime.starProgram);
+      destroyFullscreenWebGL(fullscreen);
+      if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    latestRef.current = {orientation, solarState};
+    latestRef.current = {enabled, orientation, solarState};
     const runtime = runtimeRef.current;
-    if (!runtime || runtime.renderQueued) return;
-    runtime.renderQueued = true;
-    requestAnimationFrame(() => {
-      const current = runtimeRef.current;
-      if (!current) return;
-      current.renderQueued = false;
-      renderSky(current, latestRef.current.orientation, latestRef.current.solarState);
-    });
-  }, [orientation, solarState]);
+    if (runtime) renderSky(runtime, latestRef.current);
+  }, [enabled, orientation, solarState]);
 
   return (
     <canvas

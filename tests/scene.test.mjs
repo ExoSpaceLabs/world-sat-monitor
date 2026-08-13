@@ -8,6 +8,7 @@ import {
   cameraRayToInertial,
   createCameraFrame,
   directionFromCoordinates,
+  globeRadiusPixels,
   inertialCameraLongitude,
   shouldAutoRotate,
   shouldLockCameraToEarth,
@@ -53,11 +54,29 @@ test("Earth uses a real 24-hour rotation rate", () => {
   assert.equal(ROTATION_DEGREES_PER_SECOND * 24 * 60 * 60, 360);
 });
 
-test("automatic map rotation stops when the camera locks to Earth", () => {
-  const base = {followSatellite: false, isInteracting: false, isMoving: false};
-  assert.equal(shouldAutoRotate({...base, zoom: AUTO_ROTATION_MAX_ZOOM - 0.01}), true);
-  assert.equal(shouldAutoRotate({...base, zoom: AUTO_ROTATION_MAX_ZOOM}), false);
-  assert.equal(shouldAutoRotate({...base, zoom: AUTO_ROTATION_MAX_ZOOM + 1}), false);
-  assert.equal(shouldAutoRotate({...base, zoom: 1, followSatellite: true}), false);
-  assert.equal(shouldAutoRotate({...base, zoom: 1, isInteracting: true}), false);
+test("shadow sphere radius follows MapLibre latitude scaling", () => {
+  const equator = globeRadiusPixels(0, 0);
+  assert.ok(Math.abs(equator - 512 / (2 * Math.PI)) < 1e-12);
+  assert.equal(globeRadiusPixels(2, 0), equator * 4);
+  assert.ok(Math.abs(globeRadiusPixels(0, 60) - equator * 2) < 1e-12);
+  assert.ok(Math.abs(globeRadiusPixels(0, -60) - equator * 2) < 1e-12);
+  assert.ok(Number.isFinite(globeRadiusPixels(0, 90)));
+});
+
+test("camera bearing rotates its screen axes without changing its outward direction", () => {
+  const northUp = createCameraFrame({inertialLongitude: 30, latitude: 20, bearing: 0});
+  const eastUp = createCameraFrame({inertialLongitude: 30, latitude: 20, bearing: 90});
+  assert.deepEqual(eastUp.outward, northUp.outward);
+  assert.ok(Math.abs(eastUp.right.x + northUp.up.x) < 1e-12);
+  assert.ok(Math.abs(eastUp.right.y + northUp.up.y) < 1e-12);
+  assert.ok(Math.abs(eastUp.right.z + northUp.up.z) < 1e-12);
+});
+
+test("camera frame locks at close zoom while Earth rotation remains continuous", () => {
+  assert.equal(shouldAutoRotate({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM - 0.01}), true);
+  assert.equal(shouldAutoRotate({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM}), false);
+  assert.equal(shouldAutoRotate({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM + 1}), false);
+  assert.equal(shouldAutoRotate({followSatellite: true, zoom: 1}), false);
+  assert.equal(shouldLockCameraToEarth({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM - 0.01}), false);
+  assert.equal(shouldLockCameraToEarth({followSatellite: false, zoom: AUTO_ROTATION_MAX_ZOOM}), true);
 });

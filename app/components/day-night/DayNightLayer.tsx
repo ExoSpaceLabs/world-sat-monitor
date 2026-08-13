@@ -9,41 +9,79 @@ import {
 } from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
 import {inertialSolarLongitude, shadowAlpha} from "../../domain/solar";
+import type {MapSession} from "../../domain/types";
+import {estimateRenderedGlobeRadius} from "../globe/projection";
 
 const MAX_RENDER_WIDTH = 960;
-const SHADOW_GLOBE_SCALE = 1.018;
-const MAPLIBRE_TILE_SIZE = 512;
+const SHADOW_GLOBE_SCALE = 1.004;
+
+export type ShadowDebugState = {
+  ready: boolean;
+  radiusPx: number | null;
+};
 
 type ShadowRuntime = {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
+  lastDebugRadius: number | null;
+  lastDebugReady: boolean | null;
   renderQueued: boolean;
 };
 
 type ShadowState = {
   enabled: boolean;
+  mapSession: MapSession | null;
+  onDebugState?: (state: ShadowDebugState) => void;
+  opacity: number;
   orientation: SceneOrientation;
   solarState: SolarState;
 };
 
-function earthRadiusPixels(orientation: SceneOrientation) {
-  const worldSize = MAPLIBRE_TILE_SIZE * 2 ** orientation.zoom;
-  const latitudeScale = Math.cos(orientation.latitude * Math.PI / 180);
-  return worldSize / (2 * Math.PI * Math.max(0.08, latitudeScale));
+function reportDebug(
+  runtime: ShadowRuntime,
+  state: ShadowState,
+  ready: boolean,
+  radiusPx: number | null,
+) {
+  const roundedRadius = radiusPx === null ? null : Math.round(radiusPx);
+  if (
+    runtime.lastDebugReady === ready
+    && runtime.lastDebugRadius === roundedRadius
+  ) return;
+  runtime.lastDebugReady = ready;
+  runtime.lastDebugRadius = roundedRadius;
+  state.onDebugState?.({ready, radiusPx: roundedRadius});
 }
 
 function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
   const {canvas, context} = runtime;
   context.clearRect(0, 0, canvas.width, canvas.height);
-  if (!state.enabled || canvas.width === 0 || canvas.height === 0) return;
+
+  const map = state.mapSession?.map;
+  if (!map || canvas.width === 0 || canvas.height === 0) {
+    reportDebug(runtime, state, false, null);
+    return;
+  }
 
   const bounds = canvas.getBoundingClientRect();
-  if (bounds.width <= 0 || bounds.height <= 0) return;
+  if (bounds.width <= 0 || bounds.height <= 0) {
+    reportDebug(runtime, state, false, null);
+    return;
+  }
+
+  const cssRadius = estimateRenderedGlobeRadius(map) * SHADOW_GLOBE_SCALE;
+  if (!Number.isFinite(cssRadius) || cssRadius <= 0) {
+    reportDebug(runtime, state, false, null);
+    return;
+  }
+  reportDebug(runtime, state, true, cssRadius);
+  if (!state.enabled) return;
+
   const scale = canvas.width / bounds.width;
-  const centerX = canvas.width / 2;
-  const centerY = canvas.height / 2;
-  const radius = earthRadiusPixels(state.orientation) * SHADOW_GLOBE_SCALE * scale;
-  if (radius <= 0) return;
+  const center = map.project(map.getCenter());
+  const centerX = center.x * scale;
+  const centerY = center.y * scale;
+  const radius = cssRadius * scale;
 
   const sunDirection = directionFromCoordinates(
     inertialSolarLongitude(state.solarState, state.orientation.earthRotationDegrees),
@@ -54,7 +92,12 @@ function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
   const right = Math.min(canvas.width, Math.ceil(centerX + radius + 1));
   const top = Math.max(0, Math.floor(centerY - radius - 1));
   const bottom = Math.min(canvas.height, Math.ceil(centerY + radius + 1));
-  const image = context.createImageData(canvas.width, canvas.height);
+  const width = Math.max(0, right - left);
+  const height = Math.max(0, bottom - top);
+  if (width === 0 || height === 0) return;
+
+  const image = context.createImageData(width, height);
+  const opacity = Math.max(0, Math.min(1, state.opacity));
 
   for (let py = top; py < bottom; py += 1) {
     const normalY = -(py + 0.5 - centerY) / radius;
@@ -66,40 +109,63 @@ function renderShadowGlobe(runtime: ShadowRuntime, state: ShadowState) {
       const illumination = normalX * cameraSun.x
         + normalY * cameraSun.y
         + normalZ * cameraSun.outward;
-      const alpha = shadowAlpha(illumination);
+      const alpha = shadowAlpha(illumination, opacity);
       if (alpha <= 0) continue;
-      const index = (py * canvas.width + px) * 4;
+      const index = ((py - top) * width + (px - left)) * 4;
       image.data[index] = 0;
       image.data[index + 1] = 3;
       image.data[index + 2] = 10;
       image.data[index + 3] = Math.round(alpha * 255);
     }
   }
-  context.putImageData(image, 0, 0);
+  context.putImageData(image, left, top);
 }
 
 type DayNightLayerProps = {
   enabled: boolean;
+  mapSession: MapSession | null;
+  onDebugState?: (state: ShadowDebugState) => void;
+  opacity: number;
   orientation: SceneOrientation;
   solarState: SolarState;
 };
 
 export function DayNightLayer({
   enabled,
+  mapSession,
+  onDebugState,
+  opacity,
   orientation,
   solarState,
 }: DayNightLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runtimeRef = useRef<ShadowRuntime | null>(null);
-  const latestRef = useRef<ShadowState>({enabled, orientation, solarState});
+  const latestRef = useRef<ShadowState>({
+    enabled,
+    mapSession,
+    onDebugState,
+    opacity,
+    orientation,
+    solarState,
+  });
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const runtime = {canvas, context, renderQueued: false};
+    const context = canvas.getContext("2d", {alpha: true});
+    if (!context) {
+      onDebugState?.({ready: false, radiusPx: null});
+      return;
+    }
+    const runtime: ShadowRuntime = {
+      canvas,
+      context,
+      lastDebugRadius: null,
+      lastDebugReady: null,
+      renderQueued: false,
+    };
     runtimeRef.current = runtime;
+
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
@@ -114,12 +180,20 @@ export function DayNightLayer({
 
     return () => {
       observer.disconnect();
+      onDebugState?.({ready: false, radiusPx: null});
       if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
-  }, []);
+  }, [onDebugState]);
 
   useEffect(() => {
-    latestRef.current = {enabled, orientation, solarState};
+    latestRef.current = {
+      enabled,
+      mapSession,
+      onDebugState,
+      opacity,
+      orientation,
+      solarState,
+    };
     const runtime = runtimeRef.current;
     if (!runtime || runtime.renderQueued) return;
     runtime.renderQueued = true;
@@ -129,7 +203,7 @@ export function DayNightLayer({
       current.renderQueued = false;
       renderShadowGlobe(current, latestRef.current);
     });
-  }, [enabled, orientation, solarState]);
+  }, [enabled, mapSession, onDebugState, opacity, orientation, solarState]);
 
   return (
     <canvas
