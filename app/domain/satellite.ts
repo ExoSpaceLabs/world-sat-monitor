@@ -7,6 +7,8 @@ export type Satellite = {
   heading: number;
 };
 
+export type GlobeVector = readonly [number, number, number];
+
 export const MOCK_SATELLITE: Satellite = {
   name: "WORLDSAT-01",
   norad: "99001",
@@ -17,52 +19,66 @@ export const MOCK_SATELLITE: Satellite = {
 };
 
 export const EARTH_RADIUS_KM = 6371;
-const LIMB_OCCLUSION_MARGIN_DEGREES = 2;
+const RAY_EPSILON = 1e-7;
 
-function coordinatesDot(
-  leftLongitude: number,
-  leftLatitude: number,
-  rightLongitude: number,
-  rightLatitude: number,
-) {
-  const radians = Math.PI / 180;
-  const leftLat = leftLatitude * radians;
-  const rightLat = rightLatitude * radians;
-  const longitudeDelta = (leftLongitude - rightLongitude) * radians;
-  return Math.sin(leftLat) * Math.sin(rightLat) +
-    Math.cos(leftLat) * Math.cos(rightLat) * Math.cos(longitudeDelta);
+function dot(left: GlobeVector, right: GlobeVector) {
+  return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
 }
 
 /**
- * Determines whether Earth blocks a satellite.
+ * Converts geodetic longitude/latitude and altitude into MapLibre globe space.
+ * MapLibre's unit sphere uses X toward +90° longitude, Y toward the north pole,
+ * and Z toward 0° longitude.
+ */
+export function satelliteGlobePosition(
+  satellite: Pick<Satellite, "altitude" | "lat" | "lon">,
+): GlobeVector {
+  const longitude = satellite.lon * Math.PI / 180;
+  const latitude = satellite.lat * Math.PI / 180;
+  const radius = 1 + Math.max(0, satellite.altitude) / EARTH_RADIUS_KM;
+  const latitudeRadius = Math.cos(latitude) * radius;
+  return [
+    Math.sin(longitude) * latitudeRadius,
+    Math.sin(latitude) * radius,
+    Math.cos(longitude) * latitudeRadius,
+  ];
+}
+
+/**
+ * Returns true when the finite camera-to-satellite segment intersects Earth.
  *
- * The geometric horizon is altitude-aware, but the UI applies a small margin
- * before exact tangency. MapLibre's globe projection and the DOM marker do not
- * share an identical depth buffer, so waiting until the mathematical tangent
- * made the marker appear to float on the far side for roughly half a degree
- * in the observed 547 km regression case. The margin also removes limb
- * flicker while preserving the extra horizon visibility provided by altitude.
+ * Both camera and satellite positions are expressed in MapLibre globe space,
+ * where Earth is a unit sphere. Unlike the previous angular horizon test, this
+ * uses the actual camera position, so perspective changes caused by zoom and
+ * pitch are part of the visibility calculation instead of being ignored.
  */
 export function isSatelliteOccluded(
   satellite: Pick<Satellite, "altitude" | "lat" | "lon">,
-  camera: {latitude: number; longitude: number},
+  cameraPosition: GlobeVector,
 ) {
-  const cameraDot = coordinatesDot(
-    satellite.lon,
-    satellite.lat,
-    camera.longitude,
-    camera.latitude,
-  );
-  const orbitalRadius = EARTH_RADIUS_KM + Math.max(0, satellite.altitude);
-  const earthRatio = EARTH_RADIUS_KM / orbitalRadius;
-  const geometricLimb = Math.acos(
-    -Math.sqrt(Math.max(0, 1 - earthRatio * earthRatio)),
-  );
-  const visualLimb = Math.max(
-    Math.PI / 2,
-    geometricLimb - LIMB_OCCLUSION_MARGIN_DEGREES * Math.PI / 180,
-  );
-  return cameraDot < Math.cos(visualLimb);
+  const satellitePosition = satelliteGlobePosition(satellite);
+  const direction: GlobeVector = [
+    satellitePosition[0] - cameraPosition[0],
+    satellitePosition[1] - cameraPosition[1],
+    satellitePosition[2] - cameraPosition[2],
+  ];
+  const a = dot(direction, direction);
+  if (a <= RAY_EPSILON) return false;
+
+  const b = 2 * dot(cameraPosition, direction);
+  const c = dot(cameraPosition, cameraPosition) - 1;
+  const discriminant = b * b - 4 * a * c;
+  if (discriminant <= 0) return false;
+
+  const root = Math.sqrt(discriminant);
+  const inverseDenominator = 1 / (2 * a);
+  const near = (-b - root) * inverseDenominator;
+  const far = (-b + root) * inverseDenominator;
+
+  // The ray is a finite segment from camera (t=0) to satellite (t=1).
+  // Intersections outside that segment do not block the line of sight.
+  return (near > RAY_EPSILON && near < 1 - RAY_EPSILON)
+    || (far > RAY_EPSILON && far < 1 - RAY_EPSILON);
 }
 
 export function headingEndpoint(

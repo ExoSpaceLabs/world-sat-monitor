@@ -4,34 +4,54 @@ import test from "node:test";
 import {
   EARTH_RADIUS_KM,
   isSatelliteOccluded,
+  satelliteGlobePosition,
 } from "../app/domain/satellite.ts";
 
-test("surface objects disappear at the Earth limb", () => {
-  const camera = {longitude: 0, latitude: 0};
-  assert.equal(isSatelliteOccluded({lon: 89, lat: 0, altitude: 0}, camera), false);
-  assert.equal(isSatelliteOccluded({lon: 91, lat: 0, altitude: 0}, camera), true);
+test("satellite position uses MapLibre globe axes and orbital radius", () => {
+  const position = satelliteGlobePosition({lon: 0, lat: 0, altitude: 547});
+  const expectedRadius = (EARTH_RADIUS_KM + 547) / EARTH_RADIUS_KM;
+  assert.ok(Math.abs(position[0]) < 1e-12);
+  assert.ok(Math.abs(position[1]) < 1e-12);
+  assert.ok(Math.abs(position[2] - expectedRadius) < 1e-12);
 });
 
-test("orbital altitude extends visibility beyond the surface limb", () => {
-  const camera = {longitude: 0, latitude: 0};
-  const lowEarthOrbit = {lon: 110, lat: 0, altitude: 547};
-  assert.equal(isSatelliteOccluded(lowEarthOrbit, camera), false);
-  assert.equal(isSatelliteOccluded({...lowEarthOrbit, lon: 120}, camera), true);
-  assert.ok(EARTH_RADIUS_KM + lowEarthOrbit.altitude > EARTH_RADIUS_KM);
+test("Earth blocks the finite camera-to-satellite segment", () => {
+  const camera = [0, 0, 10];
+  assert.equal(
+    isSatelliteOccluded({lon: 0, lat: 0, altitude: 547}, camera),
+    false,
+  );
+  assert.equal(
+    isSatelliteOccluded({lon: 180, lat: 0, altitude: 547}, camera),
+    true,
+  );
 });
 
-test("547 km marker dims before the MapLibre visual limb mismatch", () => {
-  const camera = {longitude: -78.967, latitude: -6.301};
-  const satellite = {lon: 32.7, lat: 18.4, altitude: 547};
-  assert.equal(isSatelliteOccluded(satellite, camera), true);
+test("orbital altitude remains visible beyond the surface horizon", () => {
+  const camera = [0, 0, 10];
+  assert.equal(
+    isSatelliteOccluded({lon: 100, lat: 0, altitude: 0}, camera),
+    true,
+  );
+  assert.equal(
+    isSatelliteOccluded({lon: 100, lat: 0, altitude: 547}, camera),
+    false,
+  );
 });
 
-test("a satellite remains occluded across the anti-camera hemisphere", () => {
-  const camera = {longitude: 12, latitude: 18};
-  for (const longitude of [150, 170, -170, -150]) {
-    assert.equal(
-      isSatelliteOccluded({lon: longitude, lat: -18, altitude: 547}, camera),
-      true,
-    );
-  }
+test("closer camera occludes a LEO satellite earlier than a distant camera", () => {
+  const satellite = {lon: 100, lat: 0, altitude: 547};
+  assert.equal(isSatelliteOccluded(satellite, [0, 0, 10]), false);
+  assert.equal(isSatelliteOccluded(satellite, [0, 0, 2]), true);
+});
+
+test("tangent and intersections beyond the satellite do not occlude", () => {
+  assert.equal(
+    isSatelliteOccluded({lon: 0, lat: 0, altitude: 547}, [0, 0, 1.5]),
+    false,
+  );
+  assert.equal(
+    isSatelliteOccluded({lon: 90, lat: 0, altitude: 547}, [0, 0, 10]),
+    false,
+  );
 });
