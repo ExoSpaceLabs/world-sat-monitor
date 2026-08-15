@@ -15,6 +15,7 @@ import {
 export const ORBIT_TRACK_LAYER_ID = "satellite-orbit-track";
 
 const DEG = Math.PI / 180;
+const MAX_RENDER_SEGMENT_ANGLE = 1 * DEG;
 const HEADING_VECTOR_LENGTH_KM = 1750;
 const HEADING_VECTOR_SAMPLES = 32;
 const VERTEX_STRIDE_FLOATS = 4;
@@ -103,6 +104,68 @@ function segmentDistanceKm(left: WorldPoint, right: WorldPoint, mode: OrbitTrack
   return centralAngle(left, right) * (EARTH_RADIUS_KM + altitude);
 }
 
+function toUnitVector(point: WorldPoint): [number, number, number] {
+  const latitude = point.lat * DEG;
+  const longitude = point.lon * DEG;
+  const latitudeRadius = Math.cos(latitude);
+  return [
+    latitudeRadius * Math.cos(longitude),
+    latitudeRadius * Math.sin(longitude),
+    Math.sin(latitude),
+  ];
+}
+
+function interpolateGreatCircle(left: WorldPoint, right: WorldPoint, fraction: number): WorldPoint {
+  const start = toUnitVector(left);
+  const end = toUnitVector(right);
+  const dot = Math.max(-1, Math.min(1,
+    start[0] * end[0] + start[1] * end[1] + start[2] * end[2],
+  ));
+  const omega = Math.acos(dot);
+
+  let x: number;
+  let y: number;
+  let z: number;
+  if (omega < 1e-9) {
+    x = start[0] + (end[0] - start[0]) * fraction;
+    y = start[1] + (end[1] - start[1]) * fraction;
+    z = start[2] + (end[2] - start[2]) * fraction;
+  } else {
+    const denominator = Math.sin(omega);
+    const startWeight = Math.sin((1 - fraction) * omega) / denominator;
+    const endWeight = Math.sin(fraction * omega) / denominator;
+    x = start[0] * startWeight + end[0] * endWeight;
+    y = start[1] * startWeight + end[1] * endWeight;
+    z = start[2] * startWeight + end[2] * endWeight;
+  }
+
+  const length = Math.hypot(x, y, z) || 1;
+  x /= length;
+  y /= length;
+  z /= length;
+  return {
+    altitude: left.altitude + (right.altitude - left.altitude) * fraction,
+    lat: Math.asin(Math.max(-1, Math.min(1, z))) / DEG,
+    lon: normalizeLongitude(Math.atan2(y, x) / DEG),
+  };
+}
+
+function densifyForGlobe(points: WorldPoint[]) {
+  if (points.length < 2) return points;
+
+  const dense: WorldPoint[] = [{...points[0], lon: normalizeLongitude(points[0].lon)}];
+  for (let index = 1; index < points.length; index += 1) {
+    const left = points[index - 1];
+    const right = points[index];
+    const angle = centralAngle(left, right);
+    const subdivisions = Math.max(1, Math.ceil(angle / MAX_RENDER_SEGMENT_ANGLE));
+    for (let part = 1; part <= subdivisions; part += 1) {
+      dense.push(interpolateGreatCircle(left, right, part / subdivisions));
+    }
+  }
+  return dense;
+}
+
 function splitAtDateline(points: WorldPoint[]) {
   const strips: WorldPoint[][] = [];
   let current: WorldPoint[] = [];
@@ -129,8 +192,9 @@ function buildGeometry(
 ): PathGeometry {
   const values: number[] = [];
   const ranges: LineRange[] = [];
+  const densePoints = densifyForGlobe(points);
 
-  for (const strip of splitAtDateline(points)) {
+  for (const strip of splitAtDateline(densePoints)) {
     const first = values.length / VERTEX_STRIDE_FLOATS;
     let distance = 0;
     let previous: WorldPoint | null = null;
@@ -433,9 +497,6 @@ export class OrbitTrackLayer implements CustomLayerInterface {
 
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
-      // projectTileFor3D performs globe horizon clipping. Keeping depth writes
-      // disabled lets the overlay remain readable over the basemap without
-      // corrupting MapLibre's shared depth buffer.
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
       gl.enable(gl.BLEND);
