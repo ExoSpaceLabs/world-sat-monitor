@@ -1,12 +1,75 @@
 name: world-sat-monitor
 
 services:
-  ui:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: world-sat-monitor-ui:local
-    container_name: world-sat-monitor-ui
+  gateway:
+    image: nginx:stable-alpine
+    container_name: world-sat-monitor-gateway
     restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
     ports:
-      - "3000:3000"
+      - "3000:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: world-sat-monitor-frontend:local
+    container_name: world-sat-monitor-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: world-sat-monitor-backend:local
+    container_name: world-sat-monitor-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://worldsat:worldsat@db:5432/worldsat
+      MOCK_SEED_ENABLED: "true"
+      MOCK_HISTORY_HOURS: "3"
+      MOCK_PREDICTION_HOURS: "48"
+      MOCK_STEP_SECONDS: "10"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  db:
+    image: postgres:17-bookworm
+    container_name: world-sat-monitor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: worldsat
+      POSTGRES_USER: worldsat
+      POSTGRES_PASSWORD: worldsat
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worldsat -d worldsat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
