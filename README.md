@@ -83,7 +83,7 @@ Orbit-display policy is global across tracked satellites. The Orbit Settings pan
 
 `GROUND` forces path elevation to zero and displays the satellite nadir track on Earth. `ORBIT` uses the propagated altitude for each sample.
 
-History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Backend samples are densified only for display, split at the dateline, and remain geographic until MapLibre performs the final projection. The renderer carries altitude both as metres for the globe projection and conformal Mercator z for the flat/high-zoom projection variant.
+History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Backend samples are densified only for display, split at the dateline, and remain geographic until MapLibre performs the final projection. Each render vertex carries altitude in both coordinate systems needed by MapLibre: physical metres for the globe shader and conformal Mercator z for the Mercator shader.
 
 ## Persistent settings
 
