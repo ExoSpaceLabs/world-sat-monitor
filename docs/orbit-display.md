@@ -46,7 +46,7 @@ flowchart TD
 
 The orbit renderer deliberately uses the same projection contract as the existing day/night shadow layer: tile-local geometry for the base `0/0/0` tile plus projection data obtained through `args.getProjectionData(...)`.
 
-For this contract, elevation is supplied in **physical metres**. MapLibre's Mercator custom-layer matrix rescales its Z axis by `worldSize / pixelsPerMeter`, while the globe shader converts elevation metres into radius above the unit sphere. Application code therefore does not maintain a second conformal-Z representation.
+For this contract, elevation is supplied in **physical metres**. MapLibre 6.1.0's Mercator custom-layer matrix rescales its Z axis by `worldSize / pixelsPerMeter`, while the globe shader converts elevation metres into radius above the unit sphere. Application code therefore does not maintain a second conformal-Z representation.
 
 The previous screen-space renderer projected each point to 2D and then simulated altitude by moving that pixel radially away from the apparent globe centre. That approximation caused close-zoom spurious lines and ORBIT paths that bent around the camera focus point. That code path is no longer used.
 
