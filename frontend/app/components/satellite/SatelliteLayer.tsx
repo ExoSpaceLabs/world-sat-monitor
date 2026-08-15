@@ -14,7 +14,11 @@ import {
   type SatelliteTrackPoint,
 } from "../../domain/satellite";
 import {ORBIT_DISPLAY_CHANGE_EVENT} from "./OrbitSettingsPanel";
-import {OrbitTrackLayer, ORBIT_TRACK_LAYER_ID} from "./OrbitTrackLayer";
+import {
+  OrbitTrackLayer,
+  ORBIT_TRACK_LAYER_ID,
+  type OrbitDebugState,
+} from "./OrbitTrackLayer";
 
 type MarkerElements = {
   heading: HTMLElement;
@@ -77,12 +81,24 @@ function updateMarkerPresentation(
   elements.node.dataset.visibility = occluded ? "occluded" : "visible";
 }
 
+function installationFailure(error: unknown): OrbitDebugState {
+  return {
+    error: error instanceof Error ? error.message : String(error),
+    headingVertices: 0,
+    historyVertices: 0,
+    predictionVertices: 0,
+    ready: false,
+    shaderVariant: "INSTALL",
+  };
+}
+
 type SatelliteLayerProps = {
   mapSession: MapSession | null;
   satellite: Satellite;
   track: SatelliteTrackPoint[];
   selected: boolean;
   onSelect: () => void;
+  onDebugState?: (state: OrbitDebugState) => void;
 };
 
 export function SatelliteLayer({
@@ -91,6 +107,7 @@ export function SatelliteLayer({
   track,
   selected,
   onSelect,
+  onDebugState,
 }: SatelliteLayerProps) {
   const map = mapSession?.map;
   const Marker = mapSession?.maplibre.Marker;
@@ -198,6 +215,7 @@ export function SatelliteLayer({
         track: latestTrackRef.current,
       },
       mapSession.maplibre,
+      onDebugState,
     );
     trackLayerRef.current = layer;
 
@@ -206,6 +224,7 @@ export function SatelliteLayer({
         if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
         map.addLayer(layer);
       } catch (error) {
+        onDebugState?.(installationFailure(error));
         console.error("Unable to install orbit-track layer", error);
       }
     };
@@ -221,7 +240,7 @@ export function SatelliteLayer({
     // styleRevision in MapSession intentionally recreates the custom layer
     // after a basemap replacement because MapLibre removes custom layers with
     // the old style.
-  }, [mapSession]);
+  }, [mapSession, onDebugState]);
 
   return null;
 }
