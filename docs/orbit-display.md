@@ -56,7 +56,18 @@ Dateline crossings are split before drawing because normalized world-Mercator x 
 
 ## Runtime diagnostics
 
-`OrbitTrackLayer` reports whether the custom layer has reached a successful draw, which shader projection variant is active, how many vertices exist in each geometry set, and the latest WebGL/shader error if rendering fails. This prevents a failed custom layer from degenerating into an unexplained empty display.
+`OrbitTrackLayer` reports whether the custom layer has reached a successful draw, which shader projection variant is active, how many vertices exist in each geometry set, and the latest WebGL/shader error if rendering fails.
+
+With Scene Debug enabled, a healthy renderer should therefore show approximately:
+
+```text
+ORBIT RENDER    READY
+ORBIT SHADER    GLOBE       # MERCATOR after the close-zoom projection switch
+ORBIT VERTICES  <nonzero H> · <nonzero P> · <nonzero V>
+ORBIT ERROR     --
+```
+
+If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. The accompanying shader/error rows provide the runtime failure rather than reducing the diagnosis to whether cyan pixels happened to appear.
 
 ## Rendering ownership
 
