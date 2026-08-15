@@ -206,15 +206,21 @@ function ensureOrbitLayers(map: MapLibreMap) {
 }
 
 function promoteOrbitLayers(map: MapLibreMap) {
-  const layers = map.getStyle().layers ?? [];
-  const ids = layers.map((layer) => layer.id);
-  const currentTop = ids.slice(-ORBIT_LAYER_IDS.length);
-  const alreadyTop = ORBIT_LAYER_IDS.every((id, index) => currentTop[index] === id);
+  // getStyle().layers is a serialized style view and deliberately omits
+  // custom layers. The day/night illumination is a custom layer, so using the
+  // serialized list can falsely report that the orbit layers are already on
+  // top while the illumination layer is actually above them. getLayersOrder()
+  // is the authoritative runtime order and includes custom layers.
+  const layerOrder = map.getLayersOrder();
+  const orbitLayers = ORBIT_LAYER_IDS.filter((id) => map.getLayer(id));
+  if (orbitLayers.length === 0) return;
+
+  const currentTop = layerOrder.slice(-orbitLayers.length);
+  const alreadyTop = orbitLayers.every((id, index) => currentTop[index] === id);
   if (alreadyTop) return;
 
-  for (const id of ORBIT_LAYER_IDS) {
-    if (map.getLayer(id)) map.moveLayer(id);
-  }
+  for (const id of orbitLayers) map.moveLayer(id);
+  map.triggerRepaint();
 }
 
 function installOrbitLayers(
@@ -348,9 +354,10 @@ export function SatelliteLayer({
       }
     };
 
-    // style.load is normally enough. idle is the recovery path for the case
-    // where React receives the map session while MapLibre is still completing
-    // a style/projection transition.
+    // style.load is normally enough. idle is also important because another
+    // runtime custom layer can be installed after this effect. At idle we
+    // re-check the complete runtime layer order and move orbit overlays back
+    // above illumination if necessary.
     install();
     map.on("style.load", install);
     map.on("idle", install);
