@@ -56,7 +56,7 @@ Dateline crossings are split before drawing. Prediction and direction-vector das
 flowchart TD
     STYLE[MapLibre style.load] --> SESSION[GlobeMap publishes MapSession]
     SESSION --> SHADOW[install day/night custom layer]
-    SESSION --> ORBIT[install orbit custom layer]
+    SESSION --> ORBIT[install orbit custom layer immediately]
     ORBIT --> DRAW[MapLibre render callback]
     STYLE2[basemap replacement<br/>new style.load] --> SESSION2[new MapSession revision]
     SESSION2 --> RECREATE[recreate custom overlays]
@@ -79,7 +79,7 @@ ORBIT VERTICES  <nonzero H> · <nonzero P> · <nonzero V>
 ORBIT ERROR     --
 ```
 
-If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. `ORBIT SHADER = PENDING` with non-zero vertices means the custom layer has not reached its render callback; this points to layer installation/lifecycle rather than geometry generation.
+If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. `ORBIT SHADER = PENDING` with non-zero vertices means the custom layer has not reached its render callback; this is specifically an installation/lifecycle failure, not a geometry or shader-projection failure.
 
 ## Rendering ownership
 
