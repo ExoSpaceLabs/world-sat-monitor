@@ -17,9 +17,13 @@ class Settings:
         "DATABASE_URL",
         "postgresql://worldsat:worldsat@db:5432/worldsat",
     )
+    app_settings_path: str = os.getenv(
+        "APP_SETTINGS_PATH",
+        "/data/settings.json",
+    )
     mock_seed_enabled: bool = _as_bool("MOCK_SEED_ENABLED", True)
-    mock_history_hours: int = int(os.getenv("MOCK_HISTORY_HOURS", "3"))
-    mock_prediction_hours: int = int(os.getenv("MOCK_PREDICTION_HOURS", "48"))
+    mock_history_hours: int = int(os.getenv("MOCK_HISTORY_HOURS", "48"))
+    mock_prediction_hours: int = int(os.getenv("MOCK_PREDICTION_HOURS", "360"))
     mock_step_seconds: int = int(os.getenv("MOCK_STEP_SECONDS", "10"))
 
 

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Query
 
+from .config import settings
 from .db import connect, wait_for_database
 from .orbit import (
     GeodeticState,
@@ -21,6 +22,9 @@ from .repository import (
     list_satellites,
 )
 from .seed import ensure_mock_data
+from .settings_store import AppSettings, JsonSettingsStore
+
+app_settings_store = JsonSettingsStore(settings.app_settings_path)
 
 
 def _normalize_utc(value: datetime | None, default: datetime) -> datetime:
@@ -32,6 +36,7 @@ def _normalize_utc(value: datetime | None, default: datetime) -> datetime:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    app_settings_store.ensure()
     wait_for_database()
     ensure_mock_data()
     yield
@@ -39,7 +44,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="WorldSat Monitor API",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -49,6 +54,21 @@ def health() -> dict[str, str]:
     with connect() as connection:
         connection.execute("SELECT 1")
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/v1/settings", response_model=AppSettings)
+def get_app_settings() -> AppSettings:
+    return app_settings_store.load()
+
+
+@app.put("/api/v1/settings", response_model=AppSettings)
+def put_app_settings(value: AppSettings) -> AppSettings:
+    return app_settings_store.save(value)
+
+
+@app.post("/api/v1/settings/reset", response_model=AppSettings)
+def reset_app_settings() -> AppSettings:
+    return app_settings_store.reset()
 
 
 @app.get("/api/v1/satellites")
@@ -139,8 +159,8 @@ def satellite_track(
     end_utc = _normalize_utc(end, request_now + timedelta(minutes=90))
     if end_utc <= start_utc:
         raise HTTPException(status_code=422, detail="end must be after start")
-    if end_utc - start_utc > timedelta(days=14):
-        raise HTTPException(status_code=422, detail="track window cannot exceed 14 days")
+    if end_utc - start_utc > timedelta(days=15):
+        raise HTTPException(status_code=422, detail="track window cannot exceed 15 days")
 
     with connect() as connection:
         satellite = get_satellite(connection, norad_id)

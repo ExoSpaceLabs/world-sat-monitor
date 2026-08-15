@@ -7,6 +7,14 @@ export type Satellite = {
   heading: number;
 };
 
+export type SatelliteTrackPoint = {
+  time: string;
+  lat: number;
+  lon: number;
+  altitude: number;
+  segment: "history" | "prediction";
+};
+
 export type GlobeVector = readonly [number, number, number];
 
 export const MOCK_SATELLITE: Satellite = {
@@ -46,11 +54,6 @@ export function satelliteGlobePosition(
 
 /**
  * Returns true when the finite camera-to-satellite segment intersects Earth.
- *
- * Both camera and satellite positions are expressed in MapLibre globe space,
- * where Earth is a unit sphere. Unlike the previous angular horizon test, this
- * uses the actual camera position, so perspective changes caused by zoom and
- * pitch are part of the visibility calculation instead of being ignored.
  */
 export function isSatelliteOccluded(
   satellite: Pick<Satellite, "altitude" | "lat" | "lon">,
@@ -74,9 +77,6 @@ export function isSatelliteOccluded(
   const inverseDenominator = 1 / (2 * a);
   const near = (-b - root) * inverseDenominator;
   const far = (-b + root) * inverseDenominator;
-
-  // The ray is a finite segment from camera (t=0) to satellite (t=1).
-  // Intersections outside that segment do not block the line of sight.
   return (near > RAY_EPSILON && near < 1 - RAY_EPSILON)
     || (far > RAY_EPSILON && far < 1 - RAY_EPSILON);
 }

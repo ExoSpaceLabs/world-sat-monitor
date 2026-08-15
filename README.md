@@ -2,48 +2,49 @@
 
 [![CI](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml)
 
-WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client; catalogue storage, propagated state, interpolation, and eventually TLE ingestion live outside the UI.
+WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client; catalogue storage, propagated state, interpolation, persistent settings, and eventually TLE ingestion live outside the UI.
 
 ## Repository layout
 
 ```text
-frontend/       Existing 3D web UI
-backend/        FastAPI position/query service
+frontend/       3D web UI and API client
+backend/        FastAPI position/query/settings service
 database/       PostgreSQL bootstrap schema
 gateway/        Same-origin nginx gateway
-docs/           Architecture notes
+config/         Documented settings JSON example
+docs/           Architecture and system-flow diagrams
 compose.yaml    Local multi-service deployment
 ```
 
-The previous repository-root application has been moved intact under `frontend/` so frontend tooling and future backend services no longer share a directory by historical accident.
+## Current backend/frontend slice
 
-## Current backend slice
-
-The first backend vertical slice provides:
+The current vertical slice provides:
 
 - PostgreSQL satellite, TLE, propagation-run, position-sample, job, and prediction-error tables
-- one dynamic mock satellite (`WORLDSAT-01`, NORAD `99001`)
-- mock propagated samples at a 10-second cadence
-- current/arbitrary UTC position lookup
-- ECEF interpolation between bracketing samples
-- past/future ground-track queries with API-side decimation
+- one dynamic backend-generated mock satellite (`WORLDSAT-01`, NORAD `99001`)
+- 10-second mock ECEF samples covering 48 hours of history and 15 days of future state
+- current/arbitrary UTC position lookup with ECEF interpolation
+- configurable history/prediction ground-track queries with API-side decimation
+- solid historical and dashed prediction tracks in the frontend
 - 14 daily mock prediction-disagreement buckets for future UI plotting
+- persistent map and satellite settings in a mounted JSON file
 - same-origin routing through nginx
 
-The mock generator is intentionally temporary. Its purpose is to stabilize the API and data flow before adding TLE-provider behavior and an actual SGP4/Orekit propagation service.
+The mock generator is temporary. Its purpose is to stabilize the API, database, rendering, and settings flows before adding a TLE provider and a real SGP4 propagation worker.
 
 ## Services
 
 | Service | Responsibility |
 | --- | --- |
 | `gateway` | Exposes the application on port 3000 and routes `/api/` to the backend. |
-| `frontend` | Renders the Earth, satellite state, controls, and future track/error overlays. |
-| `backend` | Queries stored state, interpolates current position, and serves API responses. |
+| `frontend` | Renders Earth, interpolated satellite state, history/prediction tracks, and controls. |
+| `backend` | Queries stored state, interpolates position, serves API responses, and persists settings. |
 | `db` | Stores managed satellites, immutable TLEs, propagation products, jobs, and quality metrics. |
+| `settings_data` | Docker volume containing `/data/settings.json`. |
 
-Planned next services are a TLE fetcher and orbit propagator. The database already contains a `propagation_jobs` queue so a new TLE can enqueue work without making the user-facing backend responsible for propagation.
+Planned next services are a TLE fetcher and SGP4 orbit propagator. PostgreSQL already contains a `propagation_jobs` queue so a newly accepted TLE can enqueue work without making the user-facing backend perform propagation.
 
-See [`docs/architecture.md`](docs/architecture.md) for the service boundaries and prediction-quality model.
+See [`docs/architecture.md`](docs/architecture.md) for Mermaid diagrams covering service topology, mock generation, interpolation, track rendering, settings persistence, and the planned TLE pipeline.
 
 ## Run
 
@@ -57,42 +58,53 @@ The API is available through the same origin:
 
 ```bash
 curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/settings
 curl http://localhost:3000/api/v1/satellites
 curl http://localhost:3000/api/v1/satellites/99001/position
 curl "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60"
 curl http://localhost:3000/api/v1/satellites/99001/prediction-error
 ```
 
-The backend accepts timezone-aware ISO 8601 timestamps. If `at` is omitted from the position endpoint, backend current UTC is used.
+## Persistent settings
 
-## Frontend development
+The backend creates `/data/settings.json` on first startup and stores it in the Compose `settings_data` volume. The frontend loads that document through `GET /api/v1/settings`. UI changes are validated by the backend and atomically persisted through `PUT /api/v1/settings`.
 
-Requirements are Node.js `>=22.13.0` and npm.
+The schema is documented in [`config/settings.example.json`](config/settings.example.json).
+
+Inspect the live file:
+
+```bash
+docker compose exec backend cat /data/settings.json
+```
+
+Reset the complete document to defaults:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/settings/reset
+```
+
+The Map Settings and Satellite Settings panels reset only their own section and persist the resulting full document.
+
+Satellite settings control history length, future prediction length up to 14 days, requested ground-track sample step, ground-track refresh period, backend interpolation request period, and path visibility.
+
+## Development
+
+Frontend:
 
 ```bash
 cd frontend
 npm ci
-npm run dev
-```
-
-Quality gates:
-
-```bash
 npm run lint
 npm test
 ```
 
-The frontend page entry point is `frontend/app/page.tsx`; rendering components and their styles remain under `frontend/app/components`, with shared rendering contracts under `frontend/app/domain`.
-
-## Backend development
-
-The backend targets Python 3.13. Orbit math tests do not require a running database:
+Backend:
 
 ```bash
 PYTHONPATH=backend python -m unittest discover -s backend/tests -v
 ```
 
-The normal development path is Docker Compose so the backend and PostgreSQL schema stay aligned.
+The normal integration path is Docker Compose so the backend, PostgreSQL schema, mock seed, frontend, and settings volume stay aligned.
 
 ## Prediction quality
 

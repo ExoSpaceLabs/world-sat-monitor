@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "map": {
+    "basemap": "dark",
+    "space_environment": true,
+    "shadow_opacity": 0.7,
+    "debug": false,
+    "time_scale": 1.0
+  },
+  "satellite": {
+    "selected_norad_id": 99001,
+    "position_update_ms": 1000,
+    "path": {
+      "enabled": true,
+      "history_minutes": 90,
+      "prediction_hours": 6,
+      "resolution_seconds": 60,
+      "refresh_seconds": 30
+    }
+  }
+}
