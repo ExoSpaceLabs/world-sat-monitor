@@ -54,22 +54,42 @@ Orbit settings are global. Every tracked satellite shares path history/predictio
 flowchart TD
     API[Backend track samples] --> SEG[Great-circle rendering subdivision]
     SEG --> SPLIT[Dateline split]
-    SPLIT --> BUF[World Mercator x/y + altitude representations]
-    BUF --> WEBGL[MapLibre custom WebGL overlay]
-    SETTINGS[Global Orbit Settings] --> WEBGL
-    WEBGL --> MODE{Track placement}
+    SPLIT --> WORLD[Mercator world x/y]
+    WORLD --> TILE[Base-tile coordinates\nx/y × EXTENT]
+    TILE --> BUF[WebGL vertices + elevation metres]
+    SETTINGS[Global Orbit Settings] --> BUF
+    BUF --> PD[MapLibre getProjectionData\ntile 0/0/0]
+    PD --> MODE{Track placement}
     MODE -->|GROUND| ZERO[Elevation = 0]
-    MODE -->|ORBIT| ALT[Propagated altitude]
-    ZERO --> PROJ[MapLibre projectTileWithElevation]
+    MODE -->|ORBIT| ALT[Propagated altitude in metres]
+    ZERO --> PROJ[projectTileWithElevation]
     ALT --> PROJ
     PROJ --> VIEW[History / prediction / direction vector]
 ```
 
-The orbit renderer is an elevated **2D custom overlay**, not a depth-sharing 3D custom layer. MapLibre still performs the globe-aware geographic projection, elevation, globe-to-Mercator transition, and horizon clipping. The overlay classification keeps history/prediction readable above the basemap instead of participating in a depth pipeline that the application would then disable anyway.
+The orbit renderer is an elevated **2D custom overlay**, not a depth-sharing 3D custom layer. It follows the same tile-0 projection contract already used successfully by the day/night illumination layer. MapLibre performs the globe-aware geographic projection, elevation scaling, globe-to-Mercator transition, and horizon clipping.
 
-Each vertex carries altitude both in metres and as conformal Mercator z. The globe shader consumes metres; the Mercator shader consumes conformal z. This keeps the same orbit visible through MapLibre's projection transition instead of relying on one unit system for two incompatible shader variants.
+The custom-layer projection matrix expects physical elevation in metres. MapLibre itself performs the corresponding Mercator Z scaling and globe-radius conversion, so the frontend does not maintain a second conformal-Z altitude representation.
 
 The frontend never derives authoritative orbital states during rendering. Great-circle subdivision only adds display vertices between backend samples so long line segments follow the globe smoothly.
+
+### Runtime orbit diagnostics
+
+The custom layer reports its actual rendering state to Scene Debug:
+
+```mermaid
+flowchart LR
+    L[OrbitTrackLayer] --> R[draw completed?]
+    L --> S[shader variant]
+    L --> V[history / prediction / heading vertex counts]
+    L --> E[shader or WebGL error]
+    R --> D[Scene Debug]
+    S --> D
+    V --> D
+    E --> D
+```
+
+This distinguishes an empty track from a renderer that failed to install, compile, or draw. A missing orbit overlay therefore has an observable failure state rather than silently disappearing.
 
 ## Persistent settings
 
