@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  application:
-    name: Application
+  frontend:
+    name: Frontend
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -28,23 +28,50 @@ jobs:
         with:
           node-version: 22.13.0
           cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install locked dependencies
+        working-directory: frontend
         run: npm ci
 
       - name: Lint
+        working-directory: frontend
         run: npm run lint
 
       - name: Build and test
+        working-directory: frontend
         run: npm test
 
       - name: Validate production artifact
+        working-directory: frontend
         run: npm run validate:artifact
 
-  container:
-    name: Container
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Compile backend
+        run: python -m compileall -q backend/app
+
+      - name: Test orbit math
+        env:
+          PYTHONPATH: backend
+        run: python -m unittest discover -s backend/tests -v
+
+  compose:
+    name: Compose integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Check out source
@@ -53,15 +80,28 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose config --quiet
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Build and start stack
+        run: docker compose up --build -d
 
-      - name: Build production image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          push: false
-          tags: world-sat-monitor-ui:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Verify API through gateway
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:3000/api/v1/health >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker compose logs
+              exit 1
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://localhost:3000/api/v1/satellites | grep 'WORLDSAT-01'
+          curl --fail --silent http://localhost:3000/api/v1/satellites/99001/position | grep 'position'
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+from .config import settings
+from .db import connect
+from .orbit import ecef_to_geodetic_spherical, mock_ecef_state
+
+MOCK_NORAD_ID = 99001
+MOCK_NAME = "WORLDSAT-01"
+
+
+def _floor_time(value: datetime, step_seconds: int) -> datetime:
+    timestamp = int(value.timestamp())
+    return datetime.fromtimestamp(
+        timestamp - (timestamp % step_seconds),
+        tz=timezone.utc,
+    )
+
+
+def ensure_mock_data() -> None:
+    if not settings.mock_seed_enabled:
+        return
+
+    now = datetime.now(timezone.utc)
+    step = settings.mock_step_seconds
+    start = _floor_time(
+        now - timedelta(hours=settings.mock_history_hours),
+        step,
+    )
+    end = _floor_time(
+        now + timedelta(hours=settings.mock_prediction_hours),
+        step,
+    )
+
+    with connect() as connection:
+        satellite = connection.execute(
+            """
+            INSERT INTO satellites (norad_id, name, active)
+            VALUES (%s, %s, TRUE)
+            ON CONFLICT (norad_id)
+            DO UPDATE SET name = EXCLUDED.name, active = TRUE
+            RETURNING id
+            """,
+            (MOCK_NORAD_ID, MOCK_NAME),
+        ).fetchone()
+        satellite_id = satellite["id"]
+
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM propagation_runs
+            WHERE satellite_id = %s
+              AND is_mock = TRUE
+              AND status = 'completed'
+              AND start_time <= %s
+              AND end_time >= %s
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            (satellite_id, now, now + timedelta(hours=12)),
+        ).fetchone()
+        if existing:
+            return
+
+        run_id = str(uuid4())
+        connection.execute(
+            """
+            INSERT INTO propagation_runs (
+                id, satellite_id, generated_at, start_time, end_time,
+                step_seconds, status, is_mock
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, 'completed', TRUE)
+            """,
+            (run_id, satellite_id, now, start, end, step),
+        )
+
+        epoch = _floor_time(now, step)
+        samples = []
+        cursor = start
+        while cursor <= end:
+            ecef = mock_ecef_state(cursor, epoch)
+            geodetic = ecef_to_geodetic_spherical(ecef)
+            samples.append(
+                (
+                    run_id,
+                    satellite_id,
+                    cursor,
+                    ecef.x_ecef_km,
+                    ecef.y_ecef_km,
+                    ecef.z_ecef_km,
+                    geodetic.lat_deg,
+                    geodetic.lon_deg,
+                    geodetic.altitude_km,
+                )
+            )
+            cursor += timedelta(seconds=step)
+
+        with connection.cursor() as db_cursor:
+            db_cursor.executemany(
+                """
+                INSERT INTO position_samples (
+                    run_id, satellite_id, sample_time,
+                    x_ecef_km, y_ecef_km, z_ecef_km,
+                    lat_deg, lon_deg, altitude_km
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                samples,
+            )
+
+        error_rows = []
+        for horizon_day in range(1, 15):
+            mean_error = 0.8 + 0.55 * (horizon_day**1.45)
+            error_rows.append(
+                (
+                    satellite_id,
+                    run_id,
+                    horizon_day,
+                    mean_error,
+                    mean_error * 1.25,
+                    mean_error * 2.0,
+                    mean_error * 3.0,
+                    100,
+                    "mock",
+                )
+            )
+
+        with connection.cursor() as db_cursor:
+            db_cursor.executemany(
+                """
+                INSERT INTO prediction_error_daily (
+                    satellite_id, evaluated_run_id, horizon_day,
+                    mean_error_km, rms_error_km, p95_error_km,
+                    max_error_km, sample_count, reference_kind
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (evaluated_run_id, horizon_day) DO NOTHING
+                """,
+                error_rows,
+            )
+
+        connection.commit()

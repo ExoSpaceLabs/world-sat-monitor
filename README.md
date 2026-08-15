@@ -2,68 +2,75 @@
 
 [![CI](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml)
 
-WorldSat Monitor is a web-based satellite mission display built around an
-interactive 3D Earth. The current checkpoint is intentionally frontend-only:
-it renders one stationary mock spacecraft and a mocked heading vector while
-the orbit-propagation and telemetry services remain offline.
+WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client; catalogue storage, propagated state, interpolation, and eventually TLE ingestion live outside the UI.
 
-## Current capabilities
+## Repository layout
 
-- MapLibre GL globe with view-dependent tile streaming
-- CARTO Dark, OpenStreetMap Standard, and Esri satellite-imagery basemaps
-- Optional starfield and time-driven sun position
-- Optional UTC solar terminator for daytime/nighttime differentiation
-- Continuous globe rotation with pauses after manual interaction and at close zoom
-- Camera follow mode for the selected satellite
-- Stationary `WORLDSAT-01` mock satellite and heading vector
-- Drag rotation, deep zoom, camera reset, and responsive mission UI
+```text
+frontend/       Existing 3D web UI
+backend/        FastAPI position/query service
+database/       PostgreSQL bootstrap schema
+gateway/        Same-origin nginx gateway
+docs/           Architecture notes
+compose.yaml    Local multi-service deployment
+```
 
-## Map data
+The previous repository-root application has been moved intact under `frontend/` so frontend tooling and future backend services no longer share a directory by historical accident.
 
-- Dark map: [CARTO Dark Matter](https://carto.com/basemaps/)
-- Street map: [OpenStreetMap](https://www.openstreetmap.org/)
-- Satellite imagery: [Esri World Imagery](https://www.esri.com/)
+## Current backend slice
 
-Only the tiles required for the visible camera position and zoom are loaded.
-For a production or high-traffic deployment, the public tile endpoints should
-be replaced by a contracted provider or self-hosted tile service.
+The first backend vertical slice provides:
 
-## Architecture direction
+- PostgreSQL satellite, TLE, propagation-run, position-sample, job, and prediction-error tables
+- one dynamic mock satellite (`WORLDSAT-01`, NORAD `99001`)
+- mock propagated samples at a 10-second cadence
+- current/arbitrary UTC position lookup
+- ECEF interpolation between bracketing samples
+- past/future ground-track queries with API-side decimation
+- 14 daily mock prediction-disagreement buckets for future UI plotting
+- same-origin routing through nginx
 
-The browser is the rendering client. Future services will own TLE ingestion,
-catalogue storage, orbit propagation, telemetry adapters, and API/WebSocket
-delivery. Those services are expected to be independently deployable through
-Docker Compose; the UI should consume propagated state rather than run the
-authoritative orbit model in the browser.
+The mock generator is intentionally temporary. Its purpose is to stabilize the API and data flow before adding TLE-provider behavior and an actual SGP4/Orekit propagation service.
 
-The frontend rendering stack has explicit top-to-bottom ownership:
+## Services
 
-1. `WorldSatMonitor` owns page information, controls, and future selection state.
-2. `SatelliteLayer` and `SatellitePanel` own the selected object, marker, heading,
-   follow control, and future path overlays.
-3. `DayNightLayer` owns the UTC solar shadow skin and its style reload lifecycle.
-4. `GlobeMap` owns MapLibre, basemaps, camera orientation, and automatic rotation.
-5. `SpaceBackground` owns one inward-facing spherical star texture and UTC sun.
+| Service | Responsibility |
+| --- | --- |
+| `gateway` | Exposes the application on port 3000 and routes `/api/` to the backend. |
+| `frontend` | Renders the Earth, satellite state, controls, and future track/error overlays. |
+| `backend` | Queries stored state, interpolates current position, and serves API responses. |
+| `db` | Stores managed satellites, immutable TLEs, propagation products, jobs, and quality metrics. |
 
-The globe publishes a single `SceneOrientation` contract. The outer sky sphere
-consumes the same signed rotation, while the shadow and sun consume the same
-UTC `SolarState`; none of those renderers mutates another renderer's state.
+Planned next services are a TLE fetcher and orbit propagator. The database already contains a `propagation_jobs` queue so a new TLE can enqueue work without making the user-facing backend responsible for propagation.
 
-## Development
+See [`docs/architecture.md`](docs/architecture.md) for the service boundaries and prediction-quality model.
 
-Run the Docker Compose project:
+## Run
 
 ```bash
 docker compose up --build
 ```
 
-The UI is available at `http://localhost:3000`. The Compose service is named
-`ui`, leaving the project ready for later backend, database, and external API
-services.
+Open `http://localhost:3000`.
 
-For development without Docker, requirements are Node.js `>=22.13.0` and npm.
+The API is available through the same origin:
 
 ```bash
+curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/satellites
+curl http://localhost:3000/api/v1/satellites/99001/position
+curl "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60"
+curl http://localhost:3000/api/v1/satellites/99001/prediction-error
+```
+
+The backend accepts timezone-aware ISO 8601 timestamps. If `at` is omitted from the position endpoint, backend current UTC is used.
+
+## Frontend development
+
+Requirements are Node.js `>=22.13.0` and npm.
+
+```bash
+cd frontend
 npm ci
 npm run dev
 ```
@@ -75,5 +82,20 @@ npm run lint
 npm test
 ```
 
-The page entry point is `app/page.tsx`; rendering components and their styles
-are isolated under `app/components`, with shared contracts under `app/domain`.
+The frontend page entry point is `frontend/app/page.tsx`; rendering components and their styles remain under `frontend/app/components`, with shared rendering contracts under `frontend/app/domain`.
+
+## Backend development
+
+The backend targets Python 3.13. Orbit math tests do not require a running database:
+
+```bash
+PYTHONPATH=backend python -m unittest discover -s backend/tests -v
+```
+
+The normal development path is Docker Compose so the backend and PostgreSQL schema stay aligned.
+
+## Prediction quality
+
+Prediction quality is stored per forecast-horizon day. The intended production evaluator compares an older propagation with a later reference ephemeris/TLE at matching timestamps and records mean, RMS, p95, maximum disagreement, and sample count.
+
+A later TLE is still an estimate, not physical ground truth. The UI should therefore present this as a prediction disagreement/error estimate. If precise GNSS or operator ephemerides are added later, the same model can identify them as a higher-quality reference source.
