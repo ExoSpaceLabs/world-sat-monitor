@@ -60,16 +60,40 @@ flowchart TD
     SETTINGS[Global Orbit Settings] --> BUF
     BUF --> PD[MapLibre getProjectionData\ntile 0/0/0]
     PD --> MODE{Track placement}
-    MODE -->|GROUND| ZERO[Elevation = 0]
-    MODE -->|ORBIT| ALT[Propagated altitude in metres]
-    ZERO --> PROJ[projectTileWithElevation]
-    ALT --> PROJ
-    PROJ --> VIEW[History / prediction / direction vector]
+    MODE -->|GROUND| SURFACE[projectTileWithElevation\ndepth disabled]
+    MODE -->|ORBIT| SPACE[projectTileFor3D\nshared Earth depth test]
+    SURFACE --> HORIZON[Surface horizon clipping]
+    SPACE --> OCCLUSION[Physical Earth occlusion]
+    HORIZON --> VIEW[History / prediction / direction vector]
+    OCCLUSION --> VIEW
 ```
 
-The orbit renderer is an elevated **2D custom overlay**, not a depth-sharing 3D custom layer. It follows the same tile-0 projection contract already used successfully by the day/night illumination layer. MapLibre performs the globe-aware geographic projection, elevation scaling, globe-to-Mercator transition, and horizon clipping.
+The orbit custom layer is declared as **3D** so MapLibre exposes the scene depth buffer, but the two display modes intentionally consume it differently. `GROUND` remains a readable surface overlay: depth testing is disabled and MapLibre's surface-horizon projection is used. `ORBIT` preserves real clip-space depth and keeps MapLibre's 3D depth test, so trajectory segments disappear only when the rendered Earth is actually in front of them.
 
-The custom-layer projection matrix expects physical elevation in metres. MapLibre itself performs the corresponding Mercator Z scaling and globe-radius conversion, so the frontend does not maintain a second conformal-Z altitude representation.
+This distinction matters because MapLibre's `projectTileWithElevation(...)` intentionally replaces clip-space Z with a synthetic globe-horizon clipping value. That is correct for objects constrained to the surface, but it clips an elevated spacecraft trajectory too early. `projectTileFor3D(...)` preserves the real depth required for orbital geometry.
+
+The custom-layer tile projection consumes physical elevation in metres. The frontend therefore stores one altitude representation and leaves projection scaling to MapLibre.
+
+### Satellite marker projection
+
+The satellite DOM marker is still anchored at its nadir longitude/latitude for interaction, but its visible element is translated to the actual 3D projected spacecraft location.
+
+```mermaid
+flowchart TD
+    SAT[Current satellite state] --> FRAME{Active MapLibre camera frame}
+    FRAME -->|Globe| G[Sphere position\nradius = 1 + altitude / R]
+    FRAME -->|Mercator| M[World x/y + altitude metres]
+    G --> MVP[MapLibre model-view-projection matrix]
+    M --> MVP
+    MVP --> SCREEN[Spacecraft screen position]
+    NADIR[Nadir marker anchor] --> DELTA[Screen-space offset]
+    SCREEN --> DELTA
+    DELTA --> MARKER[Visible satellite marker]
+```
+
+This removes the previous radial pixel approximation. The current marker, heading-vector origin, history endpoint, and prediction origin now use the same physical altitude model, so a propagated point at the satellite timestamp should visually intersect the satellite marker.
+
+Far-side marker visibility is handled separately with a finite camera-to-satellite ray/sphere test. It dims only when Earth actually intersects that line of sight.
 
 The frontend never derives authoritative orbital states during rendering. Great-circle subdivision only adds display vertices between backend samples so long line segments follow the globe smoothly.
 
