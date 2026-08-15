@@ -15,13 +15,9 @@ flowchart LR
 
 `GROUND` shows where the satellite path projects onto the Earth surface. `ORBIT` keeps the propagated altitude and sends it through MapLibre's globe-aware `projectTileWithElevation` projection path.
 
-The orbit renderer is intentionally a **2D custom overlay layer with elevated vertices**, not a depth-sharing 3D custom layer. The path must remain readable above the basemap while still using MapLibre's globe projection and horizon clipping.
-
-The direction vector is independent of path visibility. Disabling `DRAW ORBIT PATHS` hides history and prediction while `DRAW DIRECTION VECTOR` may remain enabled.
+The orbit renderer is intentionally a **2D custom overlay layer with elevated vertices**, not a depth-sharing 3D custom layer. The direction vector is independent of path visibility.
 
 ## Projection pipeline
-
-The orbit path is no longer projected into screen coordinates by application code.
 
 ```mermaid
 flowchart TD
@@ -44,21 +40,19 @@ flowchart TD
     MC --> F
 ```
 
-The orbit renderer deliberately uses the same projection contract as the existing day/night shadow layer: tile-local geometry for the base `0/0/0` tile plus projection data obtained through `args.getProjectionData(...)`.
+The orbit renderer uses the same projection contract as the existing day/night shadow layer: tile-local geometry for the base `0/0/0` tile plus projection data obtained through `args.getProjectionData(...)`.
 
 For this contract, elevation is supplied in **physical metres**. MapLibre 6.1.0's Mercator custom-layer matrix rescales its Z axis by `worldSize / pixelsPerMeter`, while the globe shader converts elevation metres into radius above the unit sphere. Application code therefore does not maintain a second conformal-Z representation.
 
-The previous screen-space renderer projected each point to 2D and then simulated altitude by moving that pixel radially away from the apparent globe centre. That approximation caused close-zoom spurious lines and ORBIT paths that bent around the camera focus point. That code path is no longer used.
+Backend samples are subdivided for rendering along great-circle arcs so consecutive custom-layer vertices are never more than roughly one angular degree apart. This is display-only interpolation and does not change authoritative backend orbit states.
 
-Backend samples are subdivided for rendering along great-circle arcs so consecutive custom-layer vertices are never more than roughly one angular degree apart. This is display-only interpolation. It does not alter the stored propagation cadence or create new authoritative orbit states.
-
-Dateline crossings are split before drawing because normalized world-Mercator x wraps from 1 back to 0 there. Prediction and direction-vector dash patterns use cumulative physical path distance rather than screen pixels, so their logical cadence does not change with zoom.
+Dateline crossings are split before drawing. Prediction and direction-vector dash patterns use cumulative physical path distance rather than screen pixels.
 
 ## Runtime diagnostics
 
 `OrbitTrackLayer` reports whether the custom layer has reached a successful draw, which shader projection variant is active, how many vertices exist in each geometry set, and the latest WebGL/shader error if rendering fails.
 
-With Scene Debug enabled, a healthy renderer should therefore show approximately:
+With Scene Debug enabled, a healthy renderer should show:
 
 ```text
 ORBIT RENDER    READY
@@ -67,7 +61,7 @@ ORBIT VERTICES  <nonzero H> · <nonzero P> · <nonzero V>
 ORBIT ERROR     --
 ```
 
-If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. The accompanying shader/error rows provide the runtime failure rather than reducing the diagnosis to whether cyan pixels happened to appear.
+If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. The shader/error rows provide the actual runtime failure.
 
 ## Rendering ownership
 
@@ -81,11 +75,11 @@ flowchart LR
     TRACK --> MAP[MapLibre projection + render frame]
 ```
 
-Orbital data remains owned by the backend. The frontend custom layer only decides how the already-propagated state is visualized.
+Orbital data remains owned by the backend. The frontend custom layer only decides how already-propagated state is visualized.
 
 ## Persistent settings
 
-Settings schema version 3 adds the orbit placement mode and direction-vector visibility:
+Settings schema version 3 adds orbit placement mode and direction-vector visibility:
 
 ```json
 {
@@ -105,4 +99,4 @@ Settings schema version 3 adds the orbit placement mode and direction-vector vis
 }
 ```
 
-Version 1 and version 2 settings are migrated automatically. Existing path/update values are retained; new fields default to `direction_vector_enabled=true` and `mode="ground"`.
+Older settings schemas are migrated automatically.
