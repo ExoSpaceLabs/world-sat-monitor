@@ -48,6 +48,24 @@ Backend samples are subdivided for rendering along great-circle arcs so consecut
 
 Dateline crossings are split before drawing. Prediction and direction-vector dash patterns use cumulative physical path distance rather than screen pixels.
 
+## Custom-layer lifecycle
+
+`GlobeMap` publishes a `MapSession` from its `style.load` callback. That session is the lifecycle boundary used by custom overlays.
+
+```mermaid
+flowchart TD
+    STYLE[MapLibre style.load] --> SESSION[GlobeMap publishes MapSession]
+    SESSION --> SHADOW[install day/night custom layer]
+    SESSION --> ORBIT[install orbit custom layer]
+    ORBIT --> DRAW[MapLibre render callback]
+    STYLE2[basemap replacement<br/>new style.load] --> SESSION2[new MapSession revision]
+    SESSION2 --> RECREATE[recreate custom overlays]
+```
+
+Once a `MapSession` exists, the orbit layer is installed immediately with `map.addLayer(...)`. It must **not** call `map.isStyleLoaded()` and then wait for another `style.load` event: the event that produced the session has already occurred, so that extra gate can leave the orbit layer permanently uninstalled.
+
+The `styleRevision` carried by `MapSession` causes React to recreate custom layers after a basemap replacement, because MapLibre removes custom layers together with the previous style.
+
 ## Runtime diagnostics
 
 `OrbitTrackLayer` reports whether the custom layer has reached a successful draw, which shader projection variant is active, how many vertices exist in each geometry set, and the latest WebGL/shader error if rendering fails.
@@ -61,7 +79,7 @@ ORBIT VERTICES  <nonzero H> · <nonzero P> · <nonzero V>
 ORBIT ERROR     --
 ```
 
-If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. The shader/error rows provide the actual runtime failure.
+If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. `ORBIT SHADER = PENDING` with non-zero vertices means the custom layer has not reached its render callback; this points to layer installation/lifecycle rather than geometry generation.
 
 ## Rendering ownership
 
