@@ -16,15 +16,21 @@ class JsonSettingsStoreTests(unittest.TestCase):
 
             defaults = store.ensure()
             self.assertTrue(path.exists())
-            self.assertEqual(defaults.version, 2)
+            self.assertEqual(defaults.version, 3)
+            self.assertTrue(defaults.orbit.direction_vector_enabled)
+            self.assertEqual(defaults.orbit.path.mode, "ground")
             self.assertEqual(defaults.orbit.path.prediction_hours, 6)
 
             changed = defaults.model_copy(deep=True)
+            changed.orbit.direction_vector_enabled = False
+            changed.orbit.path.mode = "orbit"
             changed.orbit.path.prediction_hours = 48
             changed.orbit.position_update_ms = 500
             store.save(changed)
 
             reloaded = store.load()
+            self.assertFalse(reloaded.orbit.direction_vector_enabled)
+            self.assertEqual(reloaded.orbit.path.mode, "orbit")
             self.assertEqual(reloaded.orbit.path.prediction_hours, 48)
             self.assertEqual(reloaded.orbit.position_update_ms, 500)
 
@@ -39,11 +45,14 @@ class JsonSettingsStoreTests(unittest.TestCase):
             changed = AppSettings()
             changed.map.basemap = "street"
             changed.orbit.path.enabled = False
+            changed.orbit.direction_vector_enabled = False
             store.save(changed)
 
             reset = store.reset()
             self.assertEqual(reset.map.basemap, "dark")
             self.assertTrue(reset.orbit.path.enabled)
+            self.assertTrue(reset.orbit.direction_vector_enabled)
+            self.assertEqual(reset.orbit.path.mode, "ground")
 
     def test_migrates_legacy_satellite_settings_to_global_orbit_settings(self):
         with TemporaryDirectory() as temporary:
@@ -74,16 +83,51 @@ class JsonSettingsStoreTests(unittest.TestCase):
             )
 
             migrated = JsonSettingsStore(path).load()
-            self.assertEqual(migrated.version, 2)
+            self.assertEqual(migrated.version, 3)
             self.assertEqual(migrated.map.basemap, "street")
             self.assertEqual(migrated.orbit.position_update_ms, 700)
             self.assertEqual(migrated.orbit.path.history_minutes, 120)
             self.assertEqual(migrated.orbit.path.prediction_hours, 24)
+            self.assertTrue(migrated.orbit.direction_vector_enabled)
+            self.assertEqual(migrated.orbit.path.mode, "ground")
 
             raw = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["version"], 2)
+            self.assertEqual(raw["version"], 3)
             self.assertIn("orbit", raw)
             self.assertNotIn("satellite", raw)
+
+    def test_migrates_version_two_orbit_settings(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(
+                json.dumps({
+                    "version": 2,
+                    "map": {
+                        "basemap": "dark",
+                        "space_environment": True,
+                        "shadow_opacity": 0.7,
+                        "debug": False,
+                        "time_scale": 1,
+                    },
+                    "orbit": {
+                        "position_update_ms": 600,
+                        "path": {
+                            "enabled": False,
+                            "history_minutes": 60,
+                            "prediction_hours": 12,
+                            "resolution_seconds": 20,
+                            "refresh_seconds": 10,
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            migrated = JsonSettingsStore(path).load()
+            self.assertEqual(migrated.version, 3)
+            self.assertTrue(migrated.orbit.direction_vector_enabled)
+            self.assertEqual(migrated.orbit.path.mode, "ground")
+            self.assertFalse(migrated.orbit.path.enabled)
 
 
 if __name__ == "__main__":

@@ -24,12 +24,13 @@ The current vertical slice provides:
 - one dynamic backend-generated mock satellite (`WORLDSAT-01`, NORAD `99001`)
 - 10-second mock ECEF samples covering 48 hours of history and 15 days of future state
 - current/arbitrary UTC position lookup with ECEF interpolation
-- configurable history/prediction ground-track queries with API-side decimation
-- visible solid historical, dashed prediction, and heading-vector overlays in the frontend
-- orbit overlays that survive delayed track responses and MapLibre style reloads
+- configurable history/prediction track queries with API-side decimation
+- solid historical, dashed prediction, and independently controlled direction-vector rendering
+- global `GROUND` / `ORBIT` track placement
+- MapLibre globe-aware elevated WebGL overlay rendering without screen-space altitude approximation
 - 14 daily mock prediction-disagreement buckets for future UI plotting
-- persistent map settings plus **global orbit display settings** in a mounted JSON file
-- automatic migration of the previous version-1 satellite settings section to version-2 global orbit settings
+- persistent map settings plus global orbit-display settings in a mounted JSON file
+- automatic migration of older settings files to the current schema
 - same-origin routing through nginx
 
 The mock generator is temporary. Its purpose is to stabilize the API, database, rendering, and settings flows before adding a TLE provider and a real SGP4 propagation worker.
@@ -46,7 +47,7 @@ The mock generator is temporary. Its purpose is to stabilize the API, database, 
 
 Planned next services are a TLE fetcher and SGP4 orbit propagator. PostgreSQL already contains a `propagation_jobs` queue so a newly accepted TLE can enqueue work without making the user-facing backend perform propagation.
 
-See [`docs/architecture.md`](docs/architecture.md) for Mermaid diagrams covering service topology, mock generation, interpolation, orbit-layer rendering, settings persistence/migration, multi-satellite display policy, and the planned TLE pipeline.
+See [`docs/architecture.md`](docs/architecture.md) for the complete service/data architecture and [`docs/orbit-display.md`](docs/orbit-display.md) for the globe-track rendering pipeline.
 
 ## Run
 
@@ -67,6 +68,12 @@ curl "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60"
 curl http://localhost:3000/api/v1/satellites/99001/prediction-error
 ```
 
+## Orbit display
+
+Orbit-display policy is global across tracked satellites. The Orbit Settings panel controls history/prediction lengths, path sampling/refresh, interpolated-position cadence, path visibility, direction-vector visibility, and `GROUND` versus `ORBIT` placement.
+
+`GROUND` forces elevation to zero and displays the satellite nadir track. `ORBIT` uses each propagated sample's altitude. History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Samples are densified only for rendering, split at the dateline, and kept in geographic/world coordinates until MapLibre performs the final projection. Each vertex carries physical altitude in metres for the globe projection and conformal Mercator z for the flat projection.
+
 ## Persistent settings
 
 The backend creates `/data/settings.json` on first startup and stores it in the Compose `settings_data` volume. The frontend loads that document through `GET /api/v1/settings`. UI changes are validated by the backend and atomically persisted through `PUT /api/v1/settings`.
@@ -85,11 +92,7 @@ Reset the complete document to defaults:
 curl -X POST http://localhost:3000/api/v1/settings/reset
 ```
 
-The Map Settings and Orbit Settings panels reset only their own section and persist the resulting full document.
-
-Orbit settings are application-wide. Every tracked satellite shares the same history length, future prediction length, requested ground-track sample step, track refresh period, interpolated-position request period, and path visibility. Satellite selection is runtime UI state and is deliberately not stored in the global settings file.
-
-Version-1 files containing a `satellite` settings section are migrated automatically to version 2. Path/update values are retained under `orbit`; the old selected-NORAD field is discarded.
+The Map Settings and Orbit Settings panels reset only their own section and persist the resulting full document. Satellite selection remains runtime UI state. Version-1 and version-2 settings documents are migrated automatically to schema version 3 while preserving applicable values.
 
 ## Development
 

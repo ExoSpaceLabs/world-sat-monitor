@@ -2,39 +2,29 @@
 
 import {useEffect, useRef} from "react";
 import type {Map as MapLibreMap, Marker as MapLibreMarker} from "maplibre-gl";
+import {DEFAULT_APP_SETTINGS, type OrbitDisplaySettings} from "../../domain/settings";
 import type {MapSession} from "../../domain/types";
+import {getAppSettings} from "../../services/worldsat-api";
 import {estimateRenderedGlobeRadius} from "../globe/projection";
 import {
   EARTH_RADIUS_KM,
-  headingEndpoint,
   isSatelliteOccluded,
   type GlobeVector,
   type Satellite,
   type SatelliteTrackPoint,
 } from "../../domain/satellite";
-
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-const HEADING_VECTOR_LENGTH_KM = 1750;
-const HEADING_VECTOR_SAMPLES = 20;
-const OVERLAY_REDRAW_INTERVAL_MS = 33;
+import {ORBIT_DISPLAY_CHANGE_EVENT} from "./OrbitSettingsPanel";
+import {
+  OrbitTrackLayer,
+  ORBIT_TRACK_LAYER_ID,
+  type OrbitDebugState,
+} from "./OrbitTrackLayer";
 
 type MarkerElements = {
   heading: HTMLElement;
   name: HTMLElement;
   node: HTMLButtonElement;
   visual: HTMLElement;
-};
-
-type OrbitOverlayElements = {
-  svg: SVGSVGElement;
-  history: SVGPathElement;
-  prediction: SVGPathElement;
-  heading: SVGPathElement;
-};
-
-type SurfacePoint = {
-  lat: number;
-  lon: number;
 };
 
 function createMarkerNode(onSelect: () => void): MarkerElements {
@@ -59,163 +49,11 @@ function createMarkerNode(onSelect: () => void): MarkerElements {
   return {heading, name, node, visual};
 }
 
-function createOrbitOverlay(map: MapLibreMap): OrbitOverlayElements {
-  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
-  svg.classList.add("orbit-vector-overlay");
-  svg.setAttribute("aria-hidden", "true");
-
-  const history = document.createElementNS(SVG_NAMESPACE, "path");
-  history.classList.add("orbit-history-path");
-  const prediction = document.createElementNS(SVG_NAMESPACE, "path");
-  prediction.classList.add("orbit-prediction-path");
-  const heading = document.createElementNS(SVG_NAMESPACE, "path");
-  heading.classList.add("orbit-heading-path");
-
-  svg.append(history, prediction, heading);
-  map.getContainer().append(svg);
-  return {svg, history, prediction, heading};
-}
-
-function normalizeLongitude(longitude: number) {
-  return ((longitude + 180) % 360 + 360) % 360 - 180;
-}
-
 function getGlobeCameraPosition(map: MapLibreMap): GlobeVector | null {
   const transform = map._camera.transform;
   if (!transform.getClippingPlane()) return null;
   const camera = transform.cameraPosition;
   return [camera[0], camera[1], camera[2]];
-}
-
-function isSurfacePointVisible(point: SurfacePoint, cameraPosition: GlobeVector | null) {
-  if (!cameraPosition) return true;
-  return !isSatelliteOccluded(
-    {lat: point.lat, lon: point.lon, altitude: 0},
-    cameraPosition,
-  );
-}
-
-function pointsToSvgPath(
-  map: MapLibreMap,
-  points: SurfacePoint[],
-  cameraPosition: GlobeVector | null,
-) {
-  if (points.length < 2) return "";
-
-  const container = map.getContainer();
-  const jumpThreshold = Math.max(container.clientWidth, container.clientHeight) * 0.55;
-  let path = "";
-  let previous: SurfacePoint | null = null;
-  let previousProjected: {x: number; y: number} | null = null;
-  let penDown = false;
-
-  for (const point of points) {
-    const longitude = normalizeLongitude(point.lon);
-    const normalized = {lat: point.lat, lon: longitude};
-    const visible = isSurfacePointVisible(normalized, cameraPosition);
-    if (!visible) {
-      previous = normalized;
-      previousProjected = null;
-      penDown = false;
-      continue;
-    }
-
-    const projected = map.project([longitude, point.lat]);
-    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
-      previous = normalized;
-      previousProjected = null;
-      penDown = false;
-      continue;
-    }
-
-    const crossesDateline = previous !== null
-      && Math.abs(normalized.lon - previous.lon) > 180;
-    const projectionJump = previousProjected !== null
-      && Math.hypot(
-        projected.x - previousProjected.x,
-        projected.y - previousProjected.y,
-      ) > jumpThreshold;
-
-    if (!penDown || crossesDateline || projectionJump) {
-      path += `M${projected.x.toFixed(2)},${projected.y.toFixed(2)}`;
-      penDown = true;
-    } else {
-      path += `L${projected.x.toFixed(2)},${projected.y.toFixed(2)}`;
-    }
-
-    previous = normalized;
-    previousProjected = projected;
-  }
-
-  return path;
-}
-
-function trackSegment(
-  track: SatelliteTrackPoint[],
-  segment: SatelliteTrackPoint["segment"],
-  satellite: Satellite,
-): SurfacePoint[] {
-  const points = track
-    .filter((point) => point.segment === segment)
-    .map((point) => ({lat: point.lat, lon: point.lon}));
-  const current = {lat: satellite.lat, lon: satellite.lon};
-  return segment === "history" ? [...points, current] : [current, ...points];
-}
-
-function headingVector(satellite: Satellite): SurfacePoint[] {
-  const points: SurfacePoint[] = [];
-  for (let sample = 0; sample <= HEADING_VECTOR_SAMPLES; sample += 1) {
-    const distance = HEADING_VECTOR_LENGTH_KM * sample / HEADING_VECTOR_SAMPLES;
-    if (distance === 0) {
-      points.push({lat: satellite.lat, lon: satellite.lon});
-      continue;
-    }
-    const [lon, lat] = headingEndpoint(
-      satellite.lon,
-      satellite.lat,
-      satellite.heading,
-      distance,
-    );
-    points.push({lat, lon});
-  }
-  return points;
-}
-
-function renderOrbitOverlay(
-  map: MapLibreMap,
-  overlay: OrbitOverlayElements,
-  track: SatelliteTrackPoint[],
-  satellite: Satellite,
-) {
-  const container = map.getContainer();
-  if (container.clientWidth <= 0 || container.clientHeight <= 0) return;
-
-  overlay.svg.setAttribute(
-    "viewBox",
-    `0 0 ${container.clientWidth} ${container.clientHeight}`,
-  );
-
-  const cameraPosition = getGlobeCameraPosition(map);
-  overlay.history.setAttribute(
-    "d",
-    pointsToSvgPath(
-      map,
-      trackSegment(track, "history", satellite),
-      cameraPosition,
-    ),
-  );
-  overlay.prediction.setAttribute(
-    "d",
-    pointsToSvgPath(
-      map,
-      trackSegment(track, "prediction", satellite),
-      cameraPosition,
-    ),
-  );
-  overlay.heading.setAttribute(
-    "d",
-    pointsToSvgPath(map, headingVector(satellite), cameraPosition),
-  );
 }
 
 function updateMarkerPresentation(
@@ -243,12 +81,24 @@ function updateMarkerPresentation(
   elements.node.dataset.visibility = occluded ? "occluded" : "visible";
 }
 
+function installationFailure(error: unknown): OrbitDebugState {
+  return {
+    error: error instanceof Error ? error.message : String(error),
+    headingVertices: 0,
+    historyVertices: 0,
+    predictionVertices: 0,
+    ready: false,
+    shaderVariant: "INSTALL",
+  };
+}
+
 type SatelliteLayerProps = {
   mapSession: MapSession | null;
   satellite: Satellite;
   track: SatelliteTrackPoint[];
   selected: boolean;
   onSelect: () => void;
+  onDebugState?: (state: OrbitDebugState) => void;
 };
 
 export function SatelliteLayer({
@@ -257,24 +107,64 @@ export function SatelliteLayer({
   track,
   selected,
   onSelect,
+  onDebugState,
 }: SatelliteLayerProps) {
   const map = mapSession?.map;
   const Marker = mapSession?.maplibre.Marker;
   const elementsRef = useRef<MarkerElements | null>(null);
   const markerRef = useRef<MapLibreMarker | null>(null);
-  const overlayRef = useRef<OrbitOverlayElements | null>(null);
+  const trackLayerRef = useRef<OrbitTrackLayer | null>(null);
   const latestSatelliteRef = useRef(satellite);
   const latestTrackRef = useRef(track);
+  const orbitSettingsRef = useRef<OrbitDisplaySettings>(DEFAULT_APP_SETTINGS.orbit);
 
   useEffect(() => {
     latestSatelliteRef.current = satellite;
+    trackLayerRef.current?.update({
+      satellite,
+      settings: orbitSettingsRef.current,
+      track: latestTrackRef.current,
+    });
     map?.triggerRepaint();
   }, [map, satellite]);
 
   useEffect(() => {
     latestTrackRef.current = track;
+    trackLayerRef.current?.update({
+      satellite: latestSatelliteRef.current,
+      settings: orbitSettingsRef.current,
+      track,
+    });
     map?.triggerRepaint();
   }, [map, track]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAppSettings().then((settings) => {
+      if (cancelled) return;
+      orbitSettingsRef.current = settings.orbit;
+      trackLayerRef.current?.update({
+        satellite: latestSatelliteRef.current,
+        settings: settings.orbit,
+        track: latestTrackRef.current,
+      });
+    }).catch(() => undefined);
+
+    const handleDisplayChange = (event: Event) => {
+      const custom = event as CustomEvent<OrbitDisplaySettings>;
+      orbitSettingsRef.current = custom.detail;
+      trackLayerRef.current?.update({
+        satellite: latestSatelliteRef.current,
+        settings: custom.detail,
+        track: latestTrackRef.current,
+      });
+    };
+    window.addEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (!map || !Marker) return;
@@ -316,31 +206,39 @@ export function SatelliteLayer({
   }, [map, satellite, selected]);
 
   useEffect(() => {
-    if (!map) return;
-    const overlay = createOrbitOverlay(map);
-    overlayRef.current = overlay;
-    let lastRender = 0;
+    if (!mapSession) return;
+    const map = mapSession.map;
+    const layer = new OrbitTrackLayer(
+      {
+        satellite: latestSatelliteRef.current,
+        settings: orbitSettingsRef.current,
+        track: latestTrackRef.current,
+      },
+      mapSession.maplibre,
+      onDebugState,
+    );
+    trackLayerRef.current = layer;
 
-    const render = () => {
-      const timestamp = performance.now();
-      if (timestamp - lastRender < OVERLAY_REDRAW_INTERVAL_MS) return;
-      lastRender = timestamp;
-      renderOrbitOverlay(
-        map,
-        overlay,
-        latestTrackRef.current,
-        latestSatelliteRef.current,
-      );
-    };
+    try {
+      // mapSession is only published from GlobeMap's style.load callback, so
+      // the style is already ready for custom-layer installation here. Waiting
+      // on isStyleLoaded()/another style.load creates a race where the only
+      // style.load event has already happened and this layer is never added.
+      if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
+      map.addLayer(layer);
+    } catch (error) {
+      onDebugState?.(installationFailure(error));
+      console.error("Unable to install orbit-track layer", error);
+    }
 
-    map.on("render", render);
-    render();
     return () => {
-      map.off("render", render);
-      overlay.svg.remove();
-      if (overlayRef.current === overlay) overlayRef.current = null;
+      if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
+      if (trackLayerRef.current === layer) trackLayerRef.current = null;
     };
-  }, [map]);
+    // styleRevision in MapSession intentionally recreates the custom layer
+    // after a basemap replacement because MapLibre removes custom layers with
+    // the old style.
+  }, [mapSession, onDebugState]);
 
   return null;
 }

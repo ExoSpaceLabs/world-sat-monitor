@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "map": {
     "basemap": "dark",
     "space_environment": true,
@@ -8,9 +8,11 @@
     "time_scale": 1.0
   },
   "orbit": {
+    "direction_vector_enabled": true,
     "position_update_ms": 1000,
     "path": {
       "enabled": true,
+      "mode": "ground",
       "history_minutes": 90,
       "prediction_hours": 6,
       "resolution_seconds": 60,
