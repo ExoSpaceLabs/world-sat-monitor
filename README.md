@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml)
 
-WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client; catalogue storage, propagated state, interpolation, persistent settings, and eventually TLE ingestion live outside the UI.
+WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client; catalogue storage, propagated state, interpolation, persistent configuration, and eventually TLE ingestion live outside the UI.
 
 ## Repository layout
 
@@ -25,9 +25,11 @@ The current vertical slice provides:
 - 10-second mock ECEF samples covering 48 hours of history and 15 days of future state
 - current/arbitrary UTC position lookup with ECEF interpolation
 - configurable history/prediction ground-track queries with API-side decimation
-- solid historical and dashed prediction tracks in the frontend
+- visible solid historical, dashed prediction, and heading-vector overlays in the frontend
+- orbit overlays that survive delayed track responses and MapLibre style reloads
 - 14 daily mock prediction-disagreement buckets for future UI plotting
-- persistent map and satellite settings in a mounted JSON file
+- persistent map settings plus **global orbit display settings** in a mounted JSON file
+- automatic migration of the previous version-1 satellite settings section to version-2 global orbit settings
 - same-origin routing through nginx
 
 The mock generator is temporary. Its purpose is to stabilize the API, database, rendering, and settings flows before adding a TLE provider and a real SGP4 propagation worker.
@@ -44,7 +46,7 @@ The mock generator is temporary. Its purpose is to stabilize the API, database, 
 
 Planned next services are a TLE fetcher and SGP4 orbit propagator. PostgreSQL already contains a `propagation_jobs` queue so a newly accepted TLE can enqueue work without making the user-facing backend perform propagation.
 
-See [`docs/architecture.md`](docs/architecture.md) for Mermaid diagrams covering service topology, mock generation, interpolation, track rendering, settings persistence, and the planned TLE pipeline.
+See [`docs/architecture.md`](docs/architecture.md) for Mermaid diagrams covering service topology, mock generation, interpolation, orbit-layer rendering, settings persistence/migration, multi-satellite display policy, and the planned TLE pipeline.
 
 ## Run
 
@@ -83,9 +85,11 @@ Reset the complete document to defaults:
 curl -X POST http://localhost:3000/api/v1/settings/reset
 ```
 
-The Map Settings and Satellite Settings panels reset only their own section and persist the resulting full document.
+The Map Settings and Orbit Settings panels reset only their own section and persist the resulting full document.
 
-Satellite settings control history length, future prediction length up to 14 days, requested ground-track sample step, ground-track refresh period, backend interpolation request period, and path visibility.
+Orbit settings are application-wide. Every tracked satellite shares the same history length, future prediction length, requested ground-track sample step, track refresh period, interpolated-position request period, and path visibility. Satellite selection is runtime UI state and is deliberately not stored in the global settings file.
+
+Version-1 files containing a `satellite` settings section are migrated automatically to version 2. Path/update values are retained under `orbit`; the old selected-NORAD field is discarded.
 
 ## Development
 

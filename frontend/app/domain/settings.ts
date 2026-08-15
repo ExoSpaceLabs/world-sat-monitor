@@ -8,7 +8,7 @@ export type PersistentMapSettings = {
   time_scale: number;
 };
 
-export type SatellitePathSettings = {
+export type OrbitPathSettings = {
   enabled: boolean;
   history_minutes: number;
   prediction_hours: number;
@@ -16,20 +16,19 @@ export type SatellitePathSettings = {
   refresh_seconds: number;
 };
 
-export type PersistentSatelliteSettings = {
-  selected_norad_id: number;
+export type OrbitDisplaySettings = {
   position_update_ms: number;
-  path: SatellitePathSettings;
+  path: OrbitPathSettings;
 };
 
 export type AppSettings = {
   version: number;
   map: PersistentMapSettings;
-  satellite: PersistentSatelliteSettings;
+  orbit: OrbitDisplaySettings;
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 1,
+  version: 2,
   map: {
     basemap: "dark",
     space_environment: true,
@@ -37,8 +36,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     debug: false,
     time_scale: 1,
   },
-  satellite: {
-    selected_norad_id: 99001,
+  orbit: {
     position_update_ms: 1000,
     path: {
       enabled: true,

@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+CURRENT_SETTINGS_VERSION = 2
+
 
 class MapSettings(BaseModel):
     basemap: Literal["dark", "street", "satellite"] = "dark"
@@ -17,7 +19,7 @@ class MapSettings(BaseModel):
     time_scale: float = Field(default=1.0, ge=0.0, le=360.0)
 
 
-class SatellitePathSettings(BaseModel):
+class OrbitPathSettings(BaseModel):
     enabled: bool = True
     history_minutes: int = Field(default=90, ge=0, le=1440)
     prediction_hours: int = Field(default=6, ge=0, le=336)
@@ -25,20 +27,39 @@ class SatellitePathSettings(BaseModel):
     refresh_seconds: int = Field(default=30, ge=5, le=3600)
 
 
-class SatelliteSettings(BaseModel):
-    selected_norad_id: int = Field(default=99001, gt=0)
+class OrbitDisplaySettings(BaseModel):
+    """Global orbit rendering/query policy shared by every tracked satellite."""
+
     position_update_ms: int = Field(default=1000, ge=100, le=10000)
-    path: SatellitePathSettings = Field(default_factory=SatellitePathSettings)
+    path: OrbitPathSettings = Field(default_factory=OrbitPathSettings)
 
 
 class AppSettings(BaseModel):
-    version: int = Field(default=1, ge=1)
+    version: int = Field(default=CURRENT_SETTINGS_VERSION, ge=CURRENT_SETTINGS_VERSION, le=CURRENT_SETTINGS_VERSION)
     map: MapSettings = Field(default_factory=MapSettings)
-    satellite: SatelliteSettings = Field(default_factory=SatelliteSettings)
+    orbit: OrbitDisplaySettings = Field(default_factory=OrbitDisplaySettings)
 
 
 def default_app_settings() -> AppSettings:
     return AppSettings()
+
+
+def _migrate_settings(raw: object) -> object:
+    """Migrate persisted settings while preserving user-visible configuration."""
+    if not isinstance(raw, dict):
+        return raw
+
+    migrated = dict(raw)
+    legacy_satellite = migrated.pop("satellite", None)
+
+    if "orbit" not in migrated and isinstance(legacy_satellite, dict):
+        migrated["orbit"] = {
+            "position_update_ms": legacy_satellite.get("position_update_ms", 1000),
+            "path": legacy_satellite.get("path", {}),
+        }
+
+    migrated["version"] = CURRENT_SETTINGS_VERSION
+    return migrated
 
 
 class JsonSettingsStore:
@@ -73,7 +94,8 @@ class JsonSettingsStore:
         with self.path.open("r", encoding="utf-8") as stream:
             raw = json.load(stream)
 
-        validated = AppSettings.model_validate(raw)
+        migrated = _migrate_settings(raw)
+        validated = AppSettings.model_validate(migrated)
         if validated.model_dump(mode="json") != raw:
             return self._write_unlocked(validated)
         return validated
