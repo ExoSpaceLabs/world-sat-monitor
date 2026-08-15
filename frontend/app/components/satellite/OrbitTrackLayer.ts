@@ -19,8 +19,8 @@ const MAX_RENDER_SEGMENT_ANGLE = 1 * DEG;
 const HEADING_VECTOR_LENGTH_KM = 1750;
 const HEADING_VECTOR_SAMPLES = 32;
 
-// x, y, elevation metres, elevation mercator/conformal, cumulative distance km
-const VERTEX_STRIDE_FLOATS = 5;
+// tile x, tile y, elevation metres, cumulative physical distance km
+const VERTEX_STRIDE_FLOATS = 4;
 const VERTEX_STRIDE_BYTES = VERTEX_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 
 const HISTORY_COLOR = [0.341, 0.894, 0.627, 0.98] as const;
@@ -69,8 +69,7 @@ type BufferState = {
 type ProgramState = {
   attributes: {
     distance: number;
-    elevationMercator: number;
-    elevationMeters: number;
+    elevation: number;
     position: number;
   };
   program: WebGLProgram;
@@ -84,6 +83,15 @@ type ProgramState = {
     tileMercatorCoords: WebGLUniformLocation | null;
     transition: WebGLUniformLocation | null;
   };
+};
+
+export type OrbitDebugState = {
+  error: string | null;
+  headingVertices: number;
+  historyVertices: number;
+  predictionVertices: number;
+  ready: boolean;
+  shaderVariant: string;
 };
 
 function normalizeLongitude(longitude: number) {
@@ -198,6 +206,10 @@ function buildGeometry(
   const values: number[] = [];
   const ranges: LineRange[] = [];
 
+  // The working day/night custom layer uses tile 0/0/0 coordinates together
+  // with args.getProjectionData(). Keep orbit geometry on the same contract.
+  // This avoids mixing the alternative world-coordinate custom-layer matrices
+  // with tile-local projection helpers and keeps altitude in physical metres.
   for (const strip of splitAtDateline(densifyForGlobe(points))) {
     const first = values.length / VERTEX_STRIDE_FLOATS;
     let distance = 0;
@@ -206,17 +218,14 @@ function buildGeometry(
     for (const point of strip) {
       if (previous) distance += segmentDistanceKm(previous, point, mode);
 
-      const altitudeMeters = mode === "orbit" ? Math.max(0, point.altitude) * 1000 : 0;
-      const coordinate = maplibre.MercatorCoordinate.fromLngLat(
-        {lng: point.lon, lat: point.lat},
-        altitudeMeters,
-      );
-
+      const coordinate = maplibre.MercatorCoordinate.fromLngLat({
+        lng: point.lon,
+        lat: point.lat,
+      });
       values.push(
-        coordinate.x,
-        coordinate.y,
-        altitudeMeters,
-        mode === "orbit" ? coordinate.z : 0,
+        coordinate.x * maplibre.EXTENT,
+        coordinate.y * maplibre.EXTENT,
+        mode === "orbit" ? Math.max(0, point.altitude) * 1000 : 0,
         distance,
       );
       previous = point;
@@ -340,18 +349,13 @@ ${shaderData.vertexShaderPrelude}
 ${shaderData.define}
 
 in vec2 a_pos;
-in float a_elevation_meters;
-in float a_elevation_mercator;
+in float a_elevation;
 in float a_distance;
 out highp float v_distance;
 
 void main() {
   v_distance = a_distance;
-#ifdef GLOBE
-  gl_Position = projectTileWithElevation(a_pos, a_elevation_meters);
-#else
-  gl_Position = projectTileWithElevation(a_pos, a_elevation_mercator);
-#endif
+  gl_Position = projectTileWithElevation(a_pos, a_elevation);
 }`;
 
   const fragmentSource = `#version 300 es
@@ -373,8 +377,7 @@ void main() {
     program,
     attributes: {
       position: gl.getAttribLocation(program, "a_pos"),
-      elevationMeters: gl.getAttribLocation(program, "a_elevation_meters"),
-      elevationMercator: gl.getAttribLocation(program, "a_elevation_mercator"),
+      elevation: gl.getAttribLocation(program, "a_elevation"),
       distance: gl.getAttribLocation(program, "a_distance"),
     },
     uniforms: {
@@ -422,9 +425,8 @@ function drawGeometry(
 
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
   enableAttribute(gl, program.attributes.position, 2, 0);
-  enableAttribute(gl, program.attributes.elevationMeters, 1, 2);
-  enableAttribute(gl, program.attributes.elevationMercator, 1, 3);
-  enableAttribute(gl, program.attributes.distance, 1, 4);
+  enableAttribute(gl, program.attributes.elevation, 1, 2);
+  enableAttribute(gl, program.attributes.distance, 1, 3);
 
   gl.uniform4f(program.uniforms.color, ...color);
   gl.uniform1f(program.uniforms.dashPeriod, dashPeriod);
@@ -441,27 +443,47 @@ function drawGeometry(
   }
 }
 
+function vertexCount(geometry: PathGeometry) {
+  return geometry.vertices.length / VERTEX_STRIDE_FLOATS;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class OrbitTrackLayer implements CustomLayerInterface {
   readonly id = ORBIT_TRACK_LAYER_ID;
   readonly type = "custom" as const;
-
-  // This is intentionally a 2D custom layer. The orbit still receives a real
-  // elevation in the projection shader, but it behaves as an overlay instead
-  // of participating in MapLibre's shared 3D depth buffer. That matches the UI
-  // requirement and lets projectTileWithElevation handle globe horizon clipping.
   readonly renderingMode = "2d" as const;
 
   private buffers: BufferState | null = null;
   private geometry: LayerGeometry;
   private geometryDirty = true;
+  private lastDebugSignature = "";
   private map: MapLibreMap | null = null;
   private readonly programs = new Map<string, ProgramState>();
 
   constructor(
     private state: OrbitTrackState,
     private readonly maplibre: MapLibreModule,
+    private readonly onDebugState?: (state: OrbitDebugState) => void,
   ) {
     this.geometry = buildLayerGeometry(maplibre, state);
+  }
+
+  private reportDebug(ready: boolean, shaderVariant: string, error: string | null) {
+    const next: OrbitDebugState = {
+      error,
+      headingVertices: vertexCount(this.geometry.heading),
+      historyVertices: vertexCount(this.geometry.history),
+      predictionVertices: vertexCount(this.geometry.prediction),
+      ready,
+      shaderVariant,
+    };
+    const signature = JSON.stringify(next);
+    if (signature === this.lastDebugSignature) return;
+    this.lastDebugSignature = signature;
+    this.onDebugState?.(next);
   }
 
   onAdd(map: MapLibreMap, gl: WebGL2RenderingContext) {
@@ -473,10 +495,13 @@ export class OrbitTrackLayer implements CustomLayerInterface {
       if (history) gl.deleteBuffer(history);
       if (prediction) gl.deleteBuffer(prediction);
       if (heading) gl.deleteBuffer(heading);
-      throw new Error("Unable to allocate orbit-track buffers");
+      const message = "Unable to allocate orbit-track buffers";
+      this.reportDebug(false, "--", message);
+      throw new Error(message);
     }
     this.buffers = {history, prediction, heading};
     this.geometryDirty = true;
+    this.reportDebug(false, "PENDING", null);
     map.triggerRepaint();
   }
 
@@ -484,6 +509,8 @@ export class OrbitTrackLayer implements CustomLayerInterface {
     this.state = state;
     this.geometry = buildLayerGeometry(this.maplibre, state);
     this.geometryDirty = true;
+    this.lastDebugSignature = "";
+    this.reportDebug(false, "PENDING", null);
     this.map?.triggerRepaint();
   }
 
@@ -508,13 +535,20 @@ export class OrbitTrackLayer implements CustomLayerInterface {
 
   render(gl: WebGL2RenderingContext, args: CustomRenderMethodInput) {
     if (!this.buffers) return;
-    if (!this.state.settings.path.enabled && !this.state.settings.direction_vector_enabled) return;
+    if (!this.state.settings.path.enabled && !this.state.settings.direction_vector_enabled) {
+      this.reportDebug(true, args.shaderData.variantName, null);
+      return;
+    }
 
     try {
       this.uploadGeometry(gl);
       const program = this.getProgram(gl, args);
-      const projection = args.defaultProjectionData;
+      const projection = args.getProjectionData({
+        tileID: {wrap: 0, canonical: {x: 0, y: 0, z: 0}},
+        applyGlobeMatrix: true,
+      });
 
+      // Match the known-good day/night custom-layer state and projection path.
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
@@ -564,7 +598,15 @@ export class OrbitTrackLayer implements CustomLayerInterface {
           HEADING_DASH_ON_KM,
         );
       }
+
+      const glError = gl.getError();
+      if (glError !== gl.NO_ERROR) {
+        throw new Error(`WebGL error 0x${glError.toString(16)}`);
+      }
+      this.reportDebug(true, args.shaderData.variantName, null);
     } catch (error) {
+      const message = errorMessage(error);
+      this.reportDebug(false, args.shaderData.variantName, message);
       console.error("Unable to render orbit tracks", error);
     } finally {
       gl.lineWidth(1);
@@ -581,5 +623,6 @@ export class OrbitTrackLayer implements CustomLayerInterface {
     this.programs.clear();
     this.buffers = null;
     this.map = null;
+    this.reportDebug(false, "REMOVED", null);
   }
 }
