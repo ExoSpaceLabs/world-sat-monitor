@@ -61,6 +61,9 @@ export function WorldSatMonitor() {
   const [orientation, setOrientation] = useState<SceneOrientation>({longitude: INITIAL_VIEW.center[0], inertialLongitude: INITIAL_VIEW.center[0], earthRotationDegrees: 0, cameraLockedToEarth: false, latitude: INITIAL_VIEW.center[1], zoom: INITIAL_VIEW.zoom, bearing: INITIAL_VIEW.bearing, pitch: INITIAL_VIEW.pitch});
   const [rotationReason, setRotationReason] = useState<RotationReason>("active");
 
+  const pathActive = appSettings.satellite.path.enabled
+    && (appSettings.satellite.path.history_minutes > 0 || appSettings.satellite.path.prediction_hours > 0);
+
   const applyTimeScale = useCallback((scale: number) => {
     const nextScale = Math.max(0, scale);
     const realTimestamp = Date.now();
@@ -120,10 +123,7 @@ export function WorldSatMonitor() {
   }, [appSettings.satellite.position_update_ms, appSettings.satellite.selected_norad_id, settingsLoaded]);
 
   useEffect(() => {
-    if (!settingsLoaded) return;
-    if (!appSettings.satellite.path.enabled || (appSettings.satellite.path.history_minutes === 0 && appSettings.satellite.path.prediction_hours === 0)) {
-      setSatelliteTrack([]); setEffectivePathResolution(null); return;
-    }
+    if (!settingsLoaded || !pathActive) return;
     let cancelled = false; let inFlight = false;
     const refresh = async () => {
       if (inFlight) return; inFlight = true;
@@ -137,7 +137,7 @@ export function WorldSatMonitor() {
     };
     void refresh(); const interval = window.setInterval(refresh, appSettings.satellite.path.refresh_seconds * 1000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [appSettings.satellite.path.enabled, appSettings.satellite.path.history_minutes, appSettings.satellite.path.prediction_hours, appSettings.satellite.path.refresh_seconds, appSettings.satellite.path.resolution_seconds, appSettings.satellite.selected_norad_id, settingsLoaded]);
+  }, [appSettings.satellite.path.history_minutes, appSettings.satellite.path.prediction_hours, appSettings.satellite.path.refresh_seconds, appSettings.satellite.path.resolution_seconds, appSettings.satellite.selected_norad_id, pathActive, settingsLoaded]);
 
   const solarState = useMemo(() => getSolarState(now), [now]);
   const persistMapSettings = useCallback((patch: Partial<AppSettings["map"]>) => { updateSettings({...appSettings, map: {...appSettings.map, ...patch}}); }, [appSettings, updateSettings]);
@@ -175,12 +175,12 @@ export function WorldSatMonitor() {
         <GlobeMap basemap={basemap} followSatellite={followSatellite} resetKey={resetKey} satellite={satellite} timeResetKey={timeResetKey} timeScale={timeScale} onMapSession={setMapSession} onMapState={setMapState} onOrientationChange={setOrientation} onRotationChange={handleRotationChange}>
           <DayNightLayer enabled={scene.spaceEnvironment} mapSession={mapSession} onDebugState={handleShadowDebugChange} opacity={scene.shadowOpacity} solarState={solarState}/>
         </GlobeMap>
-        <SatelliteLayer mapSession={mapSession} satellite={satellite} track={appSettings.satellite.path.enabled ? satelliteTrack : []} selected onSelect={handleSatelliteSelect}/>
+        <SatelliteLayer mapSession={mapSession} satellite={satellite} track={pathActive ? satelliteTrack : []} selected onSelect={handleSatelliteSelect}/>
         <div className="eyebrow">ORBITAL VIEW / EARTH DETAIL</div>
         <div className="coordinates">{formatCoordinate(orientation.latitude, "N", "S")}&nbsp;&nbsp; {formatCoordinate(orientation.longitude, "E", "W")}&nbsp;&nbsp; Z{orientation.zoom.toFixed(1)}</div>
-        {scene.debug && <aside className="debug-overlay" data-layer="debug-overlay" aria-label="Scene debug telemetry"><strong>SCENE DEBUG</strong><dl><div><dt>SIM UTC</dt><dd>{now.toISOString()}</dd></div><div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div><div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div><div><dt>CAMERA FRAME</dt><dd>{orientation.cameraLockedToEarth ? "EARTH-LOCKED" : "INERTIAL"}</dd></div><div><dt>MAP PROJECTION</dt><dd>{mapProjection.toUpperCase()}</dd></div><div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div><div><dt>SUN RA (ECI)</dt><dd>{solarState.rightAscension.toFixed(3)}°</dd></div><div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div><div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div><div><dt>SHADOW MESH</dt><dd>{shadowDebug.triangleCount} TRIANGLES</dd></div><div><dt>SAT ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div><div><dt>PATH POINTS</dt><dd>{satelliteTrack.length}</dd></div><div><dt>PATH STEP</dt><dd>{effectivePathResolution ? `${effectivePathResolution} s` : "--"}</dd></div></dl></aside>}
+        {scene.debug && <aside className="debug-overlay" data-layer="debug-overlay" aria-label="Scene debug telemetry"><strong>SCENE DEBUG</strong><dl><div><dt>SIM UTC</dt><dd>{now.toISOString()}</dd></div><div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div><div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div><div><dt>CAMERA FRAME</dt><dd>{orientation.cameraLockedToEarth ? "EARTH-LOCKED" : "INERTIAL"}</dd></div><div><dt>MAP PROJECTION</dt><dd>{mapProjection.toUpperCase()}</dd></div><div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div><div><dt>SUN RA (ECI)</dt><dd>{solarState.rightAscension.toFixed(3)}°</dd></div><div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div><div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div><div><dt>SHADOW MESH</dt><dd>{shadowDebug.triangleCount} TRIANGLES</dd></div><div><dt>SAT ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div><div><dt>PATH POINTS</dt><dd>{pathActive ? satelliteTrack.length : 0}</dd></div><div><dt>PATH STEP</dt><dd>{pathActive && effectivePathResolution ? `${effectivePathResolution} s` : "--"}</dd></div></dl></aside>}
         {mapSettingsOpen && <MapSettingsPanel basemap={basemap} scene={scene} timeScale={timeScale} onBasemapChange={handleBasemapChange} onDebugChange={handleDebugChange} onEnvironmentChange={handleEnvironmentChange} onShadowOpacityChange={handleShadowOpacityChange} onTimeReset={handleTimeReset} onTimeScaleChange={handleTimeScaleChange} onReset={handleMapSettingsReset} onClose={() => setMapSettingsOpen(false)}/>} 
-        {satelliteSettingsOpen && <SatelliteSettingsPanel settings={appSettings.satellite} effectivePathResolution={effectivePathResolution} onChange={handleSatelliteSettingsChange} onReset={handleSatelliteSettingsReset} onClose={() => setSatelliteSettingsOpen(false)}/>} 
+        {satelliteSettingsOpen && <SatelliteSettingsPanel settings={appSettings.satellite} effectivePathResolution={pathActive ? effectivePathResolution : null} onChange={handleSatelliteSettingsChange} onReset={handleSatelliteSettingsReset} onClose={() => setSatelliteSettingsOpen(false)}/>} 
         <SatellitePanel basemap={basemap} followSatellite={followSatellite} satellite={satellite} solarState={solarState} isMock={satelliteIsMock} interpolated={positionInterpolated} onToggleFollow={() => setFollowSatellite((active) => !active)}/>
         <div className="map-credit"><BasemapCredit basemap={basemap}/></div>
         <div className="legend"><span><i className="sat-symbol"/> SATELLITE</span><span><i className="history-symbol"/> HISTORY</span><span><i className="prediction-symbol"/> PREDICTION</span><span><i className="vector-symbol"/> HEADING VECTOR</span></div>
