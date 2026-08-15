@@ -45,5 +45,7 @@ test("orbit renderer reports runtime WebGL failures instead of silently disappea
 
   assert.match(text, /OrbitDebugState/);
   assert.match(text, /gl\.getError\(\)/);
+  assert.match(text, /reportDebug\(true/);
+  assert.match(text, /reportDebug\(false/);
   assert.match(text, /Unable to render orbit tracks/);
 });
