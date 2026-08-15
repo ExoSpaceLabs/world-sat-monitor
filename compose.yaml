@@ -34,15 +34,18 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://worldsat:worldsat@db:5432/worldsat
+      APP_SETTINGS_PATH: /data/settings.json
       MOCK_SEED_ENABLED: "true"
-      MOCK_HISTORY_HOURS: "3"
-      MOCK_PREDICTION_HOURS: "48"
+      MOCK_HISTORY_HOURS: "48"
+      MOCK_PREDICTION_HOURS: "360"
       MOCK_STEP_SECONDS: "10"
     depends_on:
       db:
         condition: service_healthy
     expose:
       - "8000"
+    volumes:
+      - settings_data:/data
     healthcheck:
       test:
         - CMD
@@ -51,8 +54,8 @@ services:
         - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=2)"
       interval: 10s
       timeout: 3s
-      retries: 5
-      start_period: 20s
+      retries: 8
+      start_period: 30s
 
   db:
     image: postgres:17-bookworm
@@ -73,3 +76,4 @@ services:
 
 volumes:
   postgres_data:
+  settings_data:

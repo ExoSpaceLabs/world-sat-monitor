@@ -18,30 +18,24 @@ jobs:
     name: Frontend
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Check out source
         uses: actions/checkout@v7
-
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 22.13.0
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
       - name: Install locked dependencies
         working-directory: frontend
         run: npm ci
-
       - name: Lint
         working-directory: frontend
         run: npm run lint
-
       - name: Build and test
         working-directory: frontend
         run: npm test
-
       - name: Validate production artifact
         working-directory: frontend
         run: npm run validate:artifact
@@ -50,20 +44,18 @@ jobs:
     name: Backend
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Check out source
         uses: actions/checkout@v7
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
       - name: Compile backend
         run: python -m compileall -q backend/app
-
-      - name: Test orbit math
+      - name: Test backend
         env:
           PYTHONPATH: backend
         run: python -m unittest discover -s backend/tests -v
@@ -72,36 +64,33 @@ jobs:
     name: Compose integration
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     steps:
       - name: Check out source
         uses: actions/checkout@v7
-
       - name: Validate Compose configuration
         run: docker compose config --quiet
-
       - name: Build and start stack
         run: docker compose up --build -d
-
-      - name: Verify API through gateway
+      - name: Verify API and persistent settings through gateway
         run: |
-          for attempt in {1..30}; do
+          for attempt in {1..45}; do
             if curl --fail --silent http://localhost:3000/api/v1/health >/dev/null; then
               break
             fi
-            if [ "$attempt" -eq 30 ]; then
+            if [ "$attempt" -eq 45 ]; then
               docker compose logs
               exit 1
             fi
             sleep 2
           done
+          curl --fail --silent http://localhost:3000/api/v1/settings | grep 'prediction_hours'
           curl --fail --silent http://localhost:3000/api/v1/satellites | grep 'WORLDSAT-01'
           curl --fail --silent http://localhost:3000/api/v1/satellites/99001/position | grep 'position'
-
+          curl --fail --silent "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60" | grep 'points'
+          docker compose exec -T backend test -s /data/settings.json
       - name: Show logs on failure
         if: failure()
         run: docker compose logs
-
       - name: Stop stack
         if: always()
         run: docker compose down -v
