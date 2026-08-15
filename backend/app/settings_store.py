@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CURRENT_SETTINGS_VERSION = 2
+CURRENT_SETTINGS_VERSION = 3
 
 
 class MapSettings(BaseModel):
@@ -21,6 +21,7 @@ class MapSettings(BaseModel):
 
 class OrbitPathSettings(BaseModel):
     enabled: bool = True
+    mode: Literal["ground", "orbit"] = "ground"
     history_minutes: int = Field(default=90, ge=0, le=1440)
     prediction_hours: int = Field(default=6, ge=0, le=336)
     resolution_seconds: int = Field(default=60, ge=10, le=3600)
@@ -30,6 +31,7 @@ class OrbitPathSettings(BaseModel):
 class OrbitDisplaySettings(BaseModel):
     """Global orbit rendering/query policy shared by every tracked satellite."""
 
+    direction_vector_enabled: bool = True
     position_update_ms: int = Field(default=1000, ge=100, le=10000)
     path: OrbitPathSettings = Field(default_factory=OrbitPathSettings)
 
@@ -57,6 +59,24 @@ def _migrate_settings(raw: object) -> object:
             "position_update_ms": legacy_satellite.get("position_update_ms", 1000),
             "path": legacy_satellite.get("path", {}),
         }
+
+    orbit = migrated.get("orbit")
+    if not isinstance(orbit, dict):
+        orbit = {}
+        migrated["orbit"] = orbit
+    else:
+        orbit = dict(orbit)
+        migrated["orbit"] = orbit
+
+    orbit.setdefault("direction_vector_enabled", True)
+    path = orbit.get("path")
+    if not isinstance(path, dict):
+        path = {}
+        orbit["path"] = path
+    else:
+        path = dict(path)
+        orbit["path"] = path
+    path.setdefault("mode", "ground")
 
     migrated["version"] = CURRENT_SETTINGS_VERSION
     return migrated

@@ -2,7 +2,9 @@
 
 import {useEffect, useRef} from "react";
 import type {Map as MapLibreMap, Marker as MapLibreMarker} from "maplibre-gl";
+import {DEFAULT_APP_SETTINGS, type OrbitDisplaySettings, type OrbitTrackMode} from "../../domain/settings";
 import type {MapSession} from "../../domain/types";
+import {getAppSettings} from "../../services/worldsat-api";
 import {estimateRenderedGlobeRadius} from "../globe/projection";
 import {
   EARTH_RADIUS_KM,
@@ -12,11 +14,13 @@ import {
   type Satellite,
   type SatelliteTrackPoint,
 } from "../../domain/satellite";
+import {ORBIT_DISPLAY_CHANGE_EVENT} from "./OrbitSettingsPanel";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const HEADING_VECTOR_LENGTH_KM = 1750;
 const HEADING_VECTOR_SAMPLES = 20;
 const OVERLAY_REDRAW_INTERVAL_MS = 33;
+const CLOSE_VIEW_OCCLUSION_ZOOM = 4;
 
 type MarkerElements = {
   heading: HTMLElement;
@@ -33,9 +37,12 @@ type OrbitOverlayElements = {
 };
 
 type SurfacePoint = {
+  altitude: number;
   lat: number;
   lon: number;
 };
+
+type ScreenPoint = {x: number; y: number};
 
 function createMarkerNode(onSelect: () => void): MarkerElements {
   const node = document.createElement("button");
@@ -87,56 +94,95 @@ function getGlobeCameraPosition(map: MapLibreMap): GlobeVector | null {
   return [camera[0], camera[1], camera[2]];
 }
 
-function isSurfacePointVisible(point: SurfacePoint, cameraPosition: GlobeVector | null) {
-  if (!cameraPosition) return true;
+function isPointVisible(
+  map: MapLibreMap,
+  point: SurfacePoint,
+  cameraPosition: GlobeVector | null,
+  mode: OrbitTrackMode,
+) {
+  // At close zoom the globe is effectively a local surface view. MapLibre's
+  // globe camera/clipping internals become unsuitable for whole-Earth
+  // occlusion tests, and the previous check could hide every path point.
+  // Off-screen SVG geometry is clipped by the viewport naturally.
+  if (map.getZoom() >= CLOSE_VIEW_OCCLUSION_ZOOM || !cameraPosition) return true;
   return !isSatelliteOccluded(
-    {lat: point.lat, lon: point.lon, altitude: 0},
+    {
+      lat: point.lat,
+      lon: point.lon,
+      altitude: mode === "orbit" ? point.altitude : 0,
+    },
     cameraPosition,
   );
+}
+
+function projectAtAltitude(
+  map: MapLibreMap,
+  point: SurfacePoint,
+  mode: OrbitTrackMode,
+): ScreenPoint {
+  const longitude = normalizeLongitude(point.lon);
+  const projected = map.project([longitude, point.lat]);
+  if (mode === "ground" || point.altitude <= 0) return projected;
+
+  // Keep the altitude representation consistent with the satellite marker:
+  // project the nadir point first, then move radially away from the rendered
+  // Earth by altitude / Earth radius. This avoids introducing a second 3D
+  // projection model that would drift away from MapLibre's globe rendering.
+  const earthCenter = map.project(map.getCenter());
+  const radialX = projected.x - earthCenter.x;
+  const radialY = projected.y - earthCenter.y;
+  const radialDistance = Math.hypot(radialX, radialY);
+  const globeRadius = estimateRenderedGlobeRadius(map);
+  const altitudePixels = globeRadius * Math.max(0, point.altitude) / EARTH_RADIUS_KM;
+
+  if (radialDistance <= 1e-6) {
+    return {x: projected.x, y: projected.y - altitudePixels};
+  }
+
+  return {
+    x: projected.x + radialX / radialDistance * altitudePixels,
+    y: projected.y + radialY / radialDistance * altitudePixels,
+  };
 }
 
 function pointsToSvgPath(
   map: MapLibreMap,
   points: SurfacePoint[],
   cameraPosition: GlobeVector | null,
+  mode: OrbitTrackMode,
 ) {
   if (points.length < 2) return "";
 
-  const container = map.getContainer();
-  const jumpThreshold = Math.max(container.clientWidth, container.clientHeight) * 0.55;
   let path = "";
   let previous: SurfacePoint | null = null;
-  let previousProjected: {x: number; y: number} | null = null;
   let penDown = false;
 
   for (const point of points) {
-    const longitude = normalizeLongitude(point.lon);
-    const normalized = {lat: point.lat, lon: longitude};
-    const visible = isSurfacePointVisible(normalized, cameraPosition);
-    if (!visible) {
+    const normalized: SurfacePoint = {
+      ...point,
+      lon: normalizeLongitude(point.lon),
+    };
+    if (!isPointVisible(map, normalized, cameraPosition, mode)) {
       previous = normalized;
-      previousProjected = null;
       penDown = false;
       continue;
     }
 
-    const projected = map.project([longitude, point.lat]);
+    const projected = projectAtAltitude(map, normalized, mode);
     if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
       previous = normalized;
-      previousProjected = null;
       penDown = false;
       continue;
     }
 
     const crossesDateline = previous !== null
       && Math.abs(normalized.lon - previous.lon) > 180;
-    const projectionJump = previousProjected !== null
-      && Math.hypot(
-        projected.x - previousProjected.x,
-        projected.y - previousProjected.y,
-      ) > jumpThreshold;
 
-    if (!penDown || crossesDateline || projectionJump) {
+    // Do not use screen-space distance as a discontinuity criterion. At high
+    // zoom a perfectly valid 60-second orbital sample can span more than the
+    // viewport width. Treating that as a jump made the renderer repeatedly
+    // lift the pen, which is why tracks disappeared as the user zoomed in.
+    if (!penDown || crossesDateline) {
       path += `M${projected.x.toFixed(2)},${projected.y.toFixed(2)}`;
       penDown = true;
     } else {
@@ -144,7 +190,6 @@ function pointsToSvgPath(
     }
 
     previous = normalized;
-    previousProjected = projected;
   }
 
   return path;
@@ -157,8 +202,8 @@ function trackSegment(
 ): SurfacePoint[] {
   const points = track
     .filter((point) => point.segment === segment)
-    .map((point) => ({lat: point.lat, lon: point.lon}));
-  const current = {lat: satellite.lat, lon: satellite.lon};
+    .map((point) => ({altitude: point.altitude, lat: point.lat, lon: point.lon}));
+  const current = {altitude: satellite.altitude, lat: satellite.lat, lon: satellite.lon};
   return segment === "history" ? [...points, current] : [current, ...points];
 }
 
@@ -167,7 +212,7 @@ function headingVector(satellite: Satellite): SurfacePoint[] {
   for (let sample = 0; sample <= HEADING_VECTOR_SAMPLES; sample += 1) {
     const distance = HEADING_VECTOR_LENGTH_KM * sample / HEADING_VECTOR_SAMPLES;
     if (distance === 0) {
-      points.push({lat: satellite.lat, lon: satellite.lon});
+      points.push({altitude: satellite.altitude, lat: satellite.lat, lon: satellite.lon});
       continue;
     }
     const [lon, lat] = headingEndpoint(
@@ -176,7 +221,7 @@ function headingVector(satellite: Satellite): SurfacePoint[] {
       satellite.heading,
       distance,
     );
-    points.push({lat, lon});
+    points.push({altitude: satellite.altitude, lat, lon});
   }
   return points;
 }
@@ -186,6 +231,7 @@ function renderOrbitOverlay(
   overlay: OrbitOverlayElements,
   track: SatelliteTrackPoint[],
   satellite: Satellite,
+  settings: OrbitDisplaySettings,
 ) {
   const container = map.getContainer();
   if (container.clientWidth <= 0 || container.clientHeight <= 0) return;
@@ -196,25 +242,25 @@ function renderOrbitOverlay(
   );
 
   const cameraPosition = getGlobeCameraPosition(map);
+  const mode = settings.path.mode;
+
   overlay.history.setAttribute(
     "d",
-    pointsToSvgPath(
-      map,
-      trackSegment(track, "history", satellite),
-      cameraPosition,
-    ),
+    settings.path.enabled
+      ? pointsToSvgPath(map, trackSegment(track, "history", satellite), cameraPosition, mode)
+      : "",
   );
   overlay.prediction.setAttribute(
     "d",
-    pointsToSvgPath(
-      map,
-      trackSegment(track, "prediction", satellite),
-      cameraPosition,
-    ),
+    settings.path.enabled
+      ? pointsToSvgPath(map, trackSegment(track, "prediction", satellite), cameraPosition, mode)
+      : "",
   );
   overlay.heading.setAttribute(
     "d",
-    pointsToSvgPath(map, headingVector(satellite), cameraPosition),
+    settings.direction_vector_enabled
+      ? pointsToSvgPath(map, headingVector(satellite), cameraPosition, mode)
+      : "",
   );
 }
 
@@ -265,6 +311,7 @@ export function SatelliteLayer({
   const overlayRef = useRef<OrbitOverlayElements | null>(null);
   const latestSatelliteRef = useRef(satellite);
   const latestTrackRef = useRef(track);
+  const orbitSettingsRef = useRef<OrbitDisplaySettings>(DEFAULT_APP_SETTINGS.orbit);
 
   useEffect(() => {
     latestSatelliteRef.current = satellite;
@@ -275,6 +322,26 @@ export function SatelliteLayer({
     latestTrackRef.current = track;
     map?.triggerRepaint();
   }, [map, track]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAppSettings().then((settings) => {
+      if (cancelled) return;
+      orbitSettingsRef.current = settings.orbit;
+      map?.triggerRepaint();
+    }).catch(() => undefined);
+
+    const handleDisplayChange = (event: Event) => {
+      const custom = event as CustomEvent<OrbitDisplaySettings>;
+      orbitSettingsRef.current = custom.detail;
+      map?.triggerRepaint();
+    };
+    window.addEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
+    };
+  }, [map]);
 
   useEffect(() => {
     if (!map || !Marker) return;
@@ -330,6 +397,7 @@ export function SatelliteLayer({
         overlay,
         latestTrackRef.current,
         latestSatelliteRef.current,
+        orbitSettingsRef.current,
       );
     };
 

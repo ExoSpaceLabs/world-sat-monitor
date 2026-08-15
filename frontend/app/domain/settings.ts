@@ -8,8 +8,11 @@ export type PersistentMapSettings = {
   time_scale: number;
 };
 
+export type OrbitTrackMode = "ground" | "orbit";
+
 export type OrbitPathSettings = {
   enabled: boolean;
+  mode: OrbitTrackMode;
   history_minutes: number;
   prediction_hours: number;
   resolution_seconds: number;
@@ -17,6 +20,7 @@ export type OrbitPathSettings = {
 };
 
 export type OrbitDisplaySettings = {
+  direction_vector_enabled: boolean;
   position_update_ms: number;
   path: OrbitPathSettings;
 };
@@ -28,7 +32,7 @@ export type AppSettings = {
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 2,
+  version: 3,
   map: {
     basemap: "dark",
     space_environment: true,
@@ -37,9 +41,11 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     time_scale: 1,
   },
   orbit: {
+    direction_vector_enabled: true,
     position_update_ms: 1000,
     path: {
       enabled: true,
+      mode: "ground",
       history_minutes: 90,
       prediction_hours: 6,
       resolution_seconds: 60,
