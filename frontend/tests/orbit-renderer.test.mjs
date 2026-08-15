@@ -4,6 +4,7 @@ import test from "node:test";
 
 const rendererSourceUrl = new URL("../app/components/satellite/OrbitTrackLayer.ts", import.meta.url);
 const satelliteLayerSourceUrl = new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url);
+const satelliteProjectionSourceUrl = new URL("../app/components/satellite/satelliteProjection.ts", import.meta.url);
 
 async function rendererSource() {
   return readFile(rendererSourceUrl, "utf8");
@@ -13,19 +14,25 @@ async function satelliteLayerSource() {
   return readFile(satelliteLayerSourceUrl, "utf8");
 }
 
-test("orbit renderer uses the same tile projection contract as the globe shadow layer", async () => {
+async function satelliteProjectionSource() {
+  return readFile(satelliteProjectionSourceUrl, "utf8");
+}
+
+test("orbit renderer uses tile-local projection with depth only for elevated orbit mode", async () => {
   const text = await rendererSource();
 
-  assert.match(text, /renderingMode = "2d"/);
+  assert.match(text, /renderingMode = "3d"/);
+  assert.match(text, /projectTileFor3D/);
   assert.match(text, /projectTileWithElevation/);
+  assert.match(text, /u_depth_aware/);
+  assert.match(text, /path\.mode === "orbit"/);
+  assert.match(text, /gl\.depthMask\(false\)/);
+  assert.match(text, /gl\.disable\(gl\.DEPTH_TEST\)/);
   assert.match(text, /args\.getProjectionData/);
   assert.match(text, /canonical: \{x: 0, y: 0, z: 0\}/);
   assert.match(text, /coordinate\.x \* maplibre\.EXTENT/);
   assert.match(text, /coordinate\.y \* maplibre\.EXTENT/);
-  assert.doesNotMatch(text, /projectTileFor3D/);
   assert.doesNotMatch(text, /defaultProjectionData/);
-  assert.doesNotMatch(text, /map\.project\(/);
-  assert.doesNotMatch(text, /estimateRenderedGlobeRadius/);
 });
 
 test("orbit renderer keeps altitude in physical metres for MapLibre tile projection", async () => {
@@ -53,6 +60,18 @@ test("orbit renderer reports runtime WebGL failures instead of silently disappea
   assert.match(text, /reportDebug\(true/);
   assert.match(text, /reportDebug\(false/);
   assert.match(text, /Unable to render orbit tracks/);
+});
+
+test("satellite marker uses the active 3D camera transform instead of radial pixel altitude", async () => {
+  const layerText = await satelliteLayerSource();
+  const projectionText = await satelliteProjectionSource();
+
+  assert.match(layerText, /projectSatelliteScreenPosition/);
+  assert.doesNotMatch(layerText, /estimateRenderedGlobeRadius/);
+  assert.match(projectionText, /modelViewProjectionMatrix/);
+  assert.match(projectionText, /satelliteGlobePosition/);
+  assert.match(projectionText, /coordinate\.x \* transform\.worldSize/);
+  assert.match(projectionText, /Math\.max\(0, satellite\.altitude\) \* 1000/);
 });
 
 test("orbit layer installs immediately from an already style-loaded map session", async () => {
