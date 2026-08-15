@@ -5,9 +5,9 @@ import type {SceneOrientation} from "../../domain/scene";
 import {
   createCameraFrame,
   directionFromCoordinates,
+  normalizeLongitude,
 } from "../../domain/scene";
 import type {SolarState} from "../../domain/solar";
-import {inertialSolarLongitude} from "../../domain/solar";
 import {
   createFullscreenWebGL,
   createWebGLProgram,
@@ -136,11 +136,6 @@ function seededRandom(seed: number) {
   };
 }
 
-/**
- * Generates inertial unit vectors once. Stars are GPU point sprites rather
- * than a sampled texture, so their brightness cannot disappear through texture
- * minification or mip-level averaging.
- */
 function createStarField() {
   const random = seededRandom(0x57534d);
   const data = new Float32Array(STAR_COUNT * STAR_STRIDE_FLOATS);
@@ -242,18 +237,29 @@ function renderSky(runtime: SkyRuntime, state: SkyState) {
     return;
   }
 
-  const frame = createCameraFrame(state.orientation);
+  // Stars only need a stable relative inertial frame, but the Sun is an
+  // absolute celestial direction. Convert the Earth-fixed map camera into ECI
+  // with the UTC-derived Greenwich sidereal angle before comparing it to solar
+  // right ascension. Using the scene's relative rotation here caused a fixed
+  // azimuth offset that depended on when the app was opened.
+  const sunFrame = createCameraFrame({
+    inertialLongitude: normalizeLongitude(
+      state.orientation.longitude + state.solarState.siderealAngle,
+    ),
+    latitude: state.orientation.latitude,
+    bearing: state.orientation.bearing,
+  });
   const sun = directionFromCoordinates(
-    inertialSolarLongitude(state.solarState, state.orientation.earthRotationDegrees),
+    state.solarState.rightAscension,
     state.solarState.latitude,
   );
   gl.useProgram(program);
   gl.uniform1f(runtime.aspect, canvas.width / canvas.height);
-  gl.uniform3f(runtime.forward, frame.forward.x, frame.forward.y, frame.forward.z);
-  gl.uniform3f(runtime.right, frame.right.x, frame.right.y, frame.right.z);
+  gl.uniform3f(runtime.forward, sunFrame.forward.x, sunFrame.forward.y, sunFrame.forward.z);
+  gl.uniform3f(runtime.right, sunFrame.right.x, sunFrame.right.y, sunFrame.right.z);
   gl.uniform3f(runtime.sun, sun.x, sun.y, sun.z);
   gl.uniform1f(runtime.tangent, FIELD_OF_VIEW_TANGENT);
-  gl.uniform3f(runtime.up, frame.up.x, frame.up.y, frame.up.z);
+  gl.uniform3f(runtime.up, sunFrame.up.x, sunFrame.up.y, sunFrame.up.z);
   drawFullscreen(runtime);
   drawStars(runtime, state);
 }
