@@ -72,7 +72,7 @@ curl http://localhost:3000/api/v1/satellites/99001/prediction-error
 
 Orbit-display policy is global across tracked satellites. The Orbit Settings panel controls history/prediction lengths, path sampling/refresh, interpolated-position cadence, path visibility, direction-vector visibility, and `GROUND` versus `ORBIT` placement.
 
-`GROUND` forces elevation to zero and displays the satellite nadir track. `ORBIT` uses each propagated sample's altitude. History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Samples are densified only for rendering, split at the dateline, and kept in geographic/world coordinates until MapLibre performs the final projection. Each vertex carries physical altitude in metres for the globe shader and conformal Mercator z for the Mercator shader.
+`GROUND` forces elevation to zero and displays the satellite nadir track. `ORBIT` uses each propagated sample's altitude. History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Samples are densified only for rendering, split at the dateline, and kept in geographic/world coordinates until MapLibre performs the final projection. Each vertex carries physical altitude in metres for the globe projection and conformal Mercator z for the flat projection.
 
 ## Persistent settings
 
