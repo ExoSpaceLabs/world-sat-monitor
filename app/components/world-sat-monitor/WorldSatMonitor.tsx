@@ -63,7 +63,7 @@ export function WorldSatMonitor() {
   const [now, setNow] = useState(INITIAL_UTC);
   const [shadowDebug, setShadowDebug] = useState<ShadowDebugState>({
     ready: false,
-    sampleCount: 0,
+    triangleCount: 0,
   });
   const simulationClockRef = useRef<SimulationClock>({
     initialized: false,
@@ -120,7 +120,7 @@ export function WorldSatMonitor() {
   }, []);
   const handleShadowDebugChange = useCallback((next: ShadowDebugState) => {
     setShadowDebug((current) => (
-      current.ready === next.ready && current.sampleCount === next.sampleCount
+      current.ready === next.ready && current.triangleCount === next.triangleCount
         ? current
         : next
     ));
@@ -235,10 +235,10 @@ export function WorldSatMonitor() {
               <div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div>
               <div><dt>SUN RA (ECI)</dt><dd>{solarState.rightAscension.toFixed(3)}°</dd></div>
               <div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div>
-              <div><dt>SHADOW FRAME</dt><dd>MAP PROJECTION / ECEF</dd></div>
-              <div><dt>SHADOW MODE</dt><dd>GEOGRAPHIC SAMPLES</dd></div>
+              <div><dt>SHADOW FRAME</dt><dd>MAPLIBRE / ECEF</dd></div>
+              <div><dt>SHADOW MODE</dt><dd>GPU CUSTOM LAYER</dd></div>
               <div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div>
-              <div><dt>SHADOW SAMPLES</dt><dd>{shadowDebug.sampleCount}</dd></div>
+              <div><dt>SHADOW MESH</dt><dd>{shadowDebug.triangleCount} TRIANGLES</dd></div>
               <div><dt>SAT ALTITUDE</dt><dd>{MOCK_SATELLITE.altitude} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div>
             </dl>
           </aside>

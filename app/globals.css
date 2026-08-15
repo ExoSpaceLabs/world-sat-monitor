@@ -1,7 +1,6 @@
 @import "tailwindcss";
 @import "./components/world-sat-monitor/styles.css";
 @import "./components/background/styles.css";
-@import "./components/day-night/styles.css";
 @import "./components/globe/styles.css";
 @import "./components/satellite/styles.css";
 @import "./components/settings/styles.css";

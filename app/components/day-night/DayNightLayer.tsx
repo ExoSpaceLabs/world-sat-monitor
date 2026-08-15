@@ -1,275 +1,306 @@
 "use client";
 
 import {useEffect, useRef} from "react";
+import type {
+  CustomLayerInterface,
+  CustomRenderMethodInput,
+  Map as MapLibreMap,
+} from "maplibre-gl";
 import type {SolarState} from "../../domain/solar";
-import {shadowAlpha} from "../../domain/solar";
 import type {MapSession} from "../../domain/types";
 
 const DEG = Math.PI / 180;
-const MAX_OUTPUT_WIDTH = 1280;
-const MIN_OUTPUT_WIDTH = 480;
-const MAX_SAMPLE_WIDTH = 400;
-const MIN_SAMPLE_WIDTH = 220;
-const MAX_INTERACTION_SAMPLE_WIDTH = 150;
-const MIN_INTERACTION_SAMPLE_WIDTH = 96;
-const OUTPUT_WIDTH_SCALE = 0.75;
-const SAMPLE_WIDTH_SCALE = 0.24;
-const INTERACTION_SAMPLE_WIDTH_SCALE = 0.08;
-const MIN_RENDER_INTERVAL_MS = 40;
-const INTERACTION_PROJECTION_INTERVAL_MS = 90;
-const PASSIVE_PROJECTION_INTERVAL_MS = 250;
-const WHEEL_INTERACTION_RELEASE_MS = 140;
-const ROUND_TRIP_TOLERANCE_PX = 2.5;
+const LAYER_ID = "day-night-illumination";
+const MESH_GRANULARITY = 128;
 
-export type ShadowDebugState = {
-  ready: boolean;
-  sampleCount: number;
-};
-
-type ShadowState = {
+type IlluminationState = {
   enabled: boolean;
-  mapSession: MapSession | null;
-  onDebugState?: (state: ShadowDebugState) => void;
   opacity: number;
   solarState: SolarState;
 };
 
-type ShadowRuntime = {
-  canvas: HTMLCanvasElement;
-  context: CanvasRenderingContext2D;
-  forceProjection: boolean;
-  frameId: number;
-  interactionActive: boolean;
-  lastDebugReady: boolean | null;
-  lastDebugSampleCount: number | null;
-  lastProjectionAt: number;
-  lastRenderAt: number;
-  normals: Float32Array;
-  projectionDirty: boolean;
-  sampleCanvas: HTMLCanvasElement;
-  sampleContext: CanvasRenderingContext2D;
-  sampleCount: number;
-  sampleImage: ImageData | null;
-  validSamples: Uint8Array;
+export type ShadowDebugState = {
+  ready: boolean;
+  triangleCount: number;
 };
 
-function reportDebug(
-  runtime: ShadowRuntime,
-  state: ShadowState,
-  ready: boolean,
-  sampleCount: number,
-) {
-  if (
-    runtime.lastDebugReady === ready
-    && runtime.lastDebugSampleCount === sampleCount
-  ) return;
-  runtime.lastDebugReady = ready;
-  runtime.lastDebugSampleCount = sampleCount;
-  state.onDebugState?.({ready, sampleCount});
-}
-
-function sampleWidthFor(bounds: DOMRect, interactionActive: boolean) {
-  if (interactionActive) {
-    return Math.min(
-      MAX_INTERACTION_SAMPLE_WIDTH,
-      Math.max(
-        MIN_INTERACTION_SAMPLE_WIDTH,
-        Math.round(bounds.width * INTERACTION_SAMPLE_WIDTH_SCALE),
-      ),
-    );
-  }
-  return Math.min(
-    MAX_SAMPLE_WIDTH,
-    Math.max(MIN_SAMPLE_WIDTH, Math.round(bounds.width * SAMPLE_WIDTH_SCALE)),
-  );
-}
-
-function configureSampleGrid(
-  runtime: ShadowRuntime,
-  bounds: DOMRect,
-  interactionActive: boolean,
-) {
-  const width = sampleWidthFor(bounds, interactionActive);
-  const height = Math.max(1, Math.round(width * bounds.height / bounds.width));
-  if (runtime.sampleCanvas.width === width && runtime.sampleCanvas.height === height) {
-    runtime.projectionDirty = true;
-    return;
-  }
-
-  runtime.sampleCanvas.width = width;
-  runtime.sampleCanvas.height = height;
-  const sampleTotal = width * height;
-  runtime.normals = new Float32Array(sampleTotal * 3);
-  runtime.validSamples = new Uint8Array(sampleTotal);
-  runtime.sampleImage = runtime.sampleContext.createImageData(width, height);
-  runtime.sampleCount = 0;
-  runtime.projectionDirty = true;
-}
-
-function resizeBuffers(runtime: ShadowRuntime, bounds: DOMRect) {
-  const outputWidth = Math.min(
-    MAX_OUTPUT_WIDTH,
-    Math.max(MIN_OUTPUT_WIDTH, Math.round(bounds.width * OUTPUT_WIDTH_SCALE)),
-  );
-  const outputHeight = Math.max(1, Math.round(outputWidth * bounds.height / bounds.width));
-  if (runtime.canvas.width !== outputWidth || runtime.canvas.height !== outputHeight) {
-    runtime.canvas.width = outputWidth;
-    runtime.canvas.height = outputHeight;
-  }
-  configureSampleGrid(runtime, bounds, runtime.interactionActive);
-}
-
-function rebuildProjection(
-  runtime: ShadowRuntime,
-  state: ShadowState,
-  bounds: DOMRect,
-  timestamp: number,
-) {
-  const map = state.mapSession?.map;
-  if (!map) return;
-
-  const width = runtime.sampleCanvas.width;
-  const height = runtime.sampleCanvas.height;
-  const cssPerSampleX = bounds.width / width;
-  const cssPerSampleY = bounds.height / height;
-  runtime.validSamples.fill(0);
-  let sampleCount = 0;
-
-  // MapLibre remains the projection authority. This is intentionally cached:
-  // rebuilding screen -> globe coordinates is far more expensive than updating
-  // illumination for an already projected surface grid.
-  for (let sy = 0; sy < height; sy += 1) {
-    const cssY = (sy + 0.5) * cssPerSampleY;
-    for (let sx = 0; sx < width; sx += 1) {
-      const cssX = (sx + 0.5) * cssPerSampleX;
-      const location = map.unproject([cssX, cssY]);
-      if (!Number.isFinite(location.lng) || !Number.isFinite(location.lat)) continue;
-
-      // Globe unprojection snaps sky pixels to the nearest horizon coordinate.
-      // Reject those by checking that MapLibre projects the coordinate back to
-      // the screen sample that requested it.
-      const projected = map.project(location);
-      if (
-        Math.hypot(projected.x - cssX, projected.y - cssY)
-        > ROUND_TRIP_TOLERANCE_PX
-      ) continue;
-
-      const latitude = location.lat * DEG;
-      const longitude = location.lng * DEG;
-      const latitudeRadius = Math.cos(latitude);
-      const index = sy * width + sx;
-      const normalOffset = index * 3;
-      runtime.normals[normalOffset] = latitudeRadius * Math.cos(longitude);
-      runtime.normals[normalOffset + 1] = latitudeRadius * Math.sin(longitude);
-      runtime.normals[normalOffset + 2] = Math.sin(latitude);
-      runtime.validSamples[index] = 1;
-      sampleCount += 1;
-    }
-  }
-
-  runtime.sampleCount = sampleCount;
-  runtime.projectionDirty = false;
-  runtime.lastProjectionAt = timestamp;
-}
-
-function renderShadow(
-  runtime: ShadowRuntime,
-  state: ShadowState,
-  timestamp: number,
-  forceProjection: boolean,
-) {
-  const {canvas, context, sampleCanvas, sampleContext} = runtime;
-
-  const map = state.mapSession?.map;
-  if (!map || canvas.width === 0 || canvas.height === 0) {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    reportDebug(runtime, state, false, 0);
-    return;
-  }
-
-  const bounds = canvas.getBoundingClientRect();
-  if (bounds.width <= 0 || bounds.height <= 0) {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    reportDebug(runtime, state, false, 0);
-    return;
-  }
-
-  if (!state.enabled) {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    reportDebug(runtime, state, true, runtime.sampleCount);
-    return;
-  }
-
-  if (runtime.projectionDirty) {
-    const projectionInterval = runtime.interactionActive
-      ? INTERACTION_PROJECTION_INTERVAL_MS
-      : PASSIVE_PROJECTION_INTERVAL_MS;
-    const projectionDue = forceProjection
-      || runtime.sampleCount === 0
-      || timestamp - runtime.lastProjectionAt >= projectionInterval;
-    if (projectionDue) rebuildProjection(runtime, state, bounds, timestamp);
-  }
-
-  if (runtime.sampleCount === 0 || !runtime.sampleImage) {
-    reportDebug(runtime, state, false, 0);
-    return;
-  }
-
-  const image = runtime.sampleImage;
-  image.data.fill(0);
-  const opacity = Math.max(0, Math.min(1, state.opacity));
-  const sunLatitude = state.solarState.latitude * DEG;
-  const sunLongitude = state.solarState.longitude * DEG;
-  const sunLatitudeRadius = Math.cos(sunLatitude);
-  const sunX = sunLatitudeRadius * Math.cos(sunLongitude);
-  const sunY = sunLatitudeRadius * Math.sin(sunLongitude);
-  const sunZ = Math.sin(sunLatitude);
-
-  for (let index = 0; index < runtime.validSamples.length; index += 1) {
-    if (runtime.validSamples[index] === 0) continue;
-    const normalOffset = index * 3;
-    const illumination = runtime.normals[normalOffset] * sunX
-      + runtime.normals[normalOffset + 1] * sunY
-      + runtime.normals[normalOffset + 2] * sunZ;
-    const alpha = shadowAlpha(illumination, opacity);
-    if (alpha <= 0) continue;
-
-    const pixelOffset = index * 4;
-    image.data[pixelOffset] = 0;
-    image.data[pixelOffset + 1] = 3;
-    image.data[pixelOffset + 2] = 10;
-    image.data[pixelOffset + 3] = Math.round(alpha * 255);
-  }
-
-  sampleContext.putImageData(image, 0, 0);
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  context.drawImage(sampleCanvas, 0, 0, canvas.width, canvas.height);
-  reportDebug(runtime, state, true, runtime.sampleCount);
-}
-
-function queueRender(
-  runtime: ShadowRuntime,
-  stateRef: {current: ShadowState},
-  forceProjection = false,
-) {
-  runtime.forceProjection ||= forceProjection;
-  if (runtime.frameId !== 0) return;
-
-  const renderFrame = (timestamp: number) => {
-    if (timestamp - runtime.lastRenderAt < MIN_RENDER_INTERVAL_MS) {
-      runtime.frameId = requestAnimationFrame(renderFrame);
-      return;
-    }
-    runtime.frameId = 0;
-    runtime.lastRenderAt = timestamp;
-    const force = runtime.forceProjection;
-    runtime.forceProjection = false;
-    renderShadow(runtime, stateRef.current, timestamp, force);
+type ProgramState = {
+  aPos: number;
+  program: WebGLProgram;
+  uniforms: {
+    clippingPlane: WebGLUniformLocation | null;
+    fallbackMatrix: WebGLUniformLocation | null;
+    mainMatrix: WebGLUniformLocation | null;
+    opacity: WebGLUniformLocation | null;
+    sun: WebGLUniformLocation | null;
+    tileMercatorCoords: WebGLUniformLocation | null;
+    transition: WebGLUniformLocation | null;
   };
+};
 
-  runtime.frameId = requestAnimationFrame(renderFrame);
+function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+) {
+  const shader = gl.createShader(type);
+  if (!shader) throw new Error("Unable to allocate illumination shader");
+
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader) ?? "Unknown shader compile error";
+    gl.deleteShader(shader);
+    throw new Error(log);
+  }
+  return shader;
+}
+
+function linkProgram(
+  gl: WebGL2RenderingContext,
+  vertexSource: string,
+  fragmentSource: string,
+) {
+  const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  if (!program) {
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error("Unable to allocate illumination program");
+  }
+
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
+
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program) ?? "Unknown illumination link error";
+    gl.deleteProgram(program);
+    throw new Error(log);
+  }
+  return program;
+}
+
+function createProgram(
+  gl: WebGL2RenderingContext,
+  shaderData: CustomRenderMethodInput["shaderData"],
+  extent: number,
+) {
+  // MapLibre injects PI and all projection helpers in vertexShaderPrelude.
+  // Do not redeclare PI here: doing so makes the runtime GLSL compiler reject
+  // the shader even though TypeScript/CI cannot see the generated source.
+  const vertexSource = `#version 300 es
+${shaderData.vertexShaderPrelude}
+${shaderData.define}
+
+in vec2 a_pos;
+out highp vec3 v_surface_normal;
+
+const highp float TILE_EXTENT = ${extent.toFixed(1)};
+
+highp vec3 mercatorEarthNormal(vec2 tilePosition) {
+  highp float mercatorX = tilePosition.x / TILE_EXTENT;
+  highp float mercatorY = clamp(tilePosition.y / TILE_EXTENT, 0.0, 1.0);
+  highp float longitude = mercatorX * 2.0 * PI - PI;
+  highp float latitude = atan(sinh(PI * (1.0 - 2.0 * mercatorY)));
+  highp float latitudeRadius = cos(latitude);
+  return vec3(
+    latitudeRadius * cos(longitude),
+    latitudeRadius * sin(longitude),
+    sin(latitude)
+  );
+}
+
+void main() {
+#ifdef GLOBE
+  // Reuse MapLibre's own sphere conversion, including its special pole
+  // vertices. MapLibre sphere axes are [lon90, north, lon0], while the solar
+  // model uses conventional ECEF [lon0, lon90, north].
+  highp vec3 mapSphere = projectToSphere(a_pos, a_pos);
+  v_surface_normal = vec3(mapSphere.z, mapSphere.x, mapSphere.y);
+  gl_Position = projectTile(a_pos, a_pos);
+#else
+  highp vec2 position = a_pos;
+  position.y = clamp(position.y, 0.0, TILE_EXTENT);
+  v_surface_normal = mercatorEarthNormal(position);
+  gl_Position = projectTile(position);
+#endif
+}`;
+
+  const fragmentSource = `#version 300 es
+precision highp float;
+
+in highp vec3 v_surface_normal;
+uniform highp vec3 u_sun_ecef;
+uniform highp float u_shadow_opacity;
+out highp vec4 fragColor;
+
+void main() {
+  highp float illumination = dot(normalize(v_surface_normal), normalize(u_sun_ecef));
+  highp float night = 1.0 - smoothstep(-0.025, 0.025, illumination);
+  highp float alpha = clamp(u_shadow_opacity, 0.0, 1.0) * night;
+
+  // Premultiplied black. The blend state below multiplies the existing
+  // MapLibre framebuffer by (1 - alpha) while preserving its alpha channel.
+  fragColor = vec4(0.0, 0.0, 0.0, alpha);
+}`;
+
+  const program = linkProgram(gl, vertexSource, fragmentSource);
+  return {
+    aPos: gl.getAttribLocation(program, "a_pos"),
+    program,
+    uniforms: {
+      clippingPlane: gl.getUniformLocation(program, "u_projection_clipping_plane"),
+      fallbackMatrix: gl.getUniformLocation(program, "u_projection_fallback_matrix"),
+      mainMatrix: gl.getUniformLocation(program, "u_projection_matrix"),
+      opacity: gl.getUniformLocation(program, "u_shadow_opacity"),
+      sun: gl.getUniformLocation(program, "u_sun_ecef"),
+      tileMercatorCoords: gl.getUniformLocation(program, "u_projection_tile_mercator_coords"),
+      transition: gl.getUniformLocation(program, "u_projection_transition"),
+    },
+  } satisfies ProgramState;
+}
+
+class GlobeIlluminationLayer implements CustomLayerInterface {
+  readonly id = LAYER_ID;
+  readonly type = "custom" as const;
+  readonly renderingMode = "2d" as const;
+
+  private readonly programs = new Map<string, ProgramState>();
+  private readonly triangleCount: number;
+  private indexBuffer: WebGLBuffer | null = null;
+  private indexCount: number;
+  private map: MapLibreMap | null = null;
+  private pendingMesh: ReturnType<MapSession["maplibre"]["createTileMesh"]> | null;
+  private ready = false;
+  private state: IlluminationState;
+  private vertexBuffer: WebGLBuffer | null = null;
+
+  constructor(
+    initialState: IlluminationState,
+    private readonly maplibre: MapSession["maplibre"],
+    private readonly onDebugState?: (state: ShadowDebugState) => void,
+  ) {
+    this.state = initialState;
+    this.pendingMesh = this.maplibre.createTileMesh({
+      granularity: MESH_GRANULARITY,
+      extendToNorthPole: true,
+      extendToSouthPole: true,
+    }, "16bit");
+    this.indexCount = this.pendingMesh.indices.byteLength / Uint16Array.BYTES_PER_ELEMENT;
+    this.triangleCount = this.indexCount / 3;
+  }
+
+  onAdd(map: MapLibreMap, gl: WebGL2RenderingContext) {
+    this.map = map;
+    const mesh = this.pendingMesh;
+    if (!mesh) throw new Error("Illumination mesh is unavailable");
+
+    this.vertexBuffer = gl.createBuffer();
+    this.indexBuffer = gl.createBuffer();
+    if (!this.vertexBuffer || !this.indexBuffer) {
+      this.destroy(gl);
+      throw new Error("Unable to allocate illumination mesh buffers");
+    }
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+    this.pendingMesh = null;
+    if (this.state.enabled) map.triggerRepaint();
+  }
+
+  private getProgram(gl: WebGL2RenderingContext, args: CustomRenderMethodInput) {
+    const cached = this.programs.get(args.shaderData.variantName);
+    if (cached) return cached;
+
+    const program = createProgram(gl, args.shaderData, this.maplibre.EXTENT);
+    this.programs.set(args.shaderData.variantName, program);
+    return program;
+  }
+
+  render(gl: WebGL2RenderingContext, args: CustomRenderMethodInput) {
+    if (!this.state.enabled || !this.vertexBuffer || !this.indexBuffer) return;
+
+    try {
+      const shader = this.getProgram(gl, args);
+      const projection = args.getProjectionData({
+        tileID: {wrap: 0, canonical: {x: 0, y: 0, z: 0}},
+        applyGlobeMatrix: true,
+      });
+      const sunLatitude = this.state.solarState.latitude * DEG;
+      const sunLongitude = this.state.solarState.longitude * DEG;
+      const latitudeRadius = Math.cos(sunLatitude);
+
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+      gl.useProgram(shader.program);
+
+      gl.uniformMatrix4fv(shader.uniforms.fallbackMatrix, false, projection.fallbackMatrix);
+      gl.uniformMatrix4fv(shader.uniforms.mainMatrix, false, projection.mainMatrix);
+      gl.uniform4f(shader.uniforms.tileMercatorCoords, ...projection.tileMercatorCoords);
+      gl.uniform4f(shader.uniforms.clippingPlane, ...projection.clippingPlane);
+      gl.uniform1f(shader.uniforms.transition, projection.projectionTransition);
+      gl.uniform1f(shader.uniforms.opacity, this.state.opacity);
+      gl.uniform3f(
+        shader.uniforms.sun,
+        latitudeRadius * Math.cos(sunLongitude),
+        latitudeRadius * Math.sin(sunLongitude),
+        Math.sin(sunLatitude),
+      );
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+      gl.enableVertexAttribArray(shader.aPos);
+      gl.vertexAttribPointer(shader.aPos, 2, gl.SHORT, false, 0, 0);
+      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0);
+
+      if (!this.ready) {
+        this.ready = true;
+        this.onDebugState?.({ready: true, triangleCount: this.triangleCount});
+      }
+    } catch (error) {
+      if (this.ready) this.ready = false;
+      this.onDebugState?.({ready: false, triangleCount: this.triangleCount});
+      console.error("Unable to render globe illumination", error);
+    }
+  }
+
+  update(nextState: IlluminationState) {
+    const current = this.state;
+    const visualChange = current.enabled !== nextState.enabled
+      || (nextState.enabled && (
+        current.opacity !== nextState.opacity
+        || current.solarState.latitude !== nextState.solarState.latitude
+        || current.solarState.longitude !== nextState.solarState.longitude
+      ));
+    this.state = nextState;
+    if (visualChange) this.map?.triggerRepaint();
+  }
+
+  onRemove(_map: MapLibreMap, gl: WebGL2RenderingContext) {
+    this.destroy(gl);
+    this.map = null;
+    this.ready = false;
+    this.onDebugState?.({ready: false, triangleCount: 0});
+  }
+
+  private destroy(gl: WebGL2RenderingContext) {
+    if (this.vertexBuffer) gl.deleteBuffer(this.vertexBuffer);
+    if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
+    for (const shader of this.programs.values()) gl.deleteProgram(shader.program);
+    this.programs.clear();
+    this.vertexBuffer = null;
+    this.indexBuffer = null;
+  }
 }
 
 type DayNightLayerProps = {
@@ -287,129 +318,37 @@ export function DayNightLayer({
   opacity,
   solarState,
 }: DayNightLayerProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const runtimeRef = useRef<ShadowRuntime | null>(null);
-  const latestRef = useRef<ShadowState>({
-    enabled,
-    mapSession,
-    onDebugState,
-    opacity,
-    solarState,
-  });
+  const layerRef = useRef<GlobeIlluminationLayer | null>(null);
 
   useEffect(() => {
-    latestRef.current = {
-      enabled,
-      mapSession,
-      onDebugState,
-      opacity,
-      solarState,
-    };
-    const runtime = runtimeRef.current;
-    if (runtime) queueRender(runtime, latestRef);
-  }, [enabled, mapSession, onDebugState, opacity, solarState]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
     const map = mapSession?.map;
-    if (!canvas || !map) return;
+    if (!mapSession || !map) return;
 
-    const context = canvas.getContext("2d", {alpha: true});
-    const sampleCanvas = document.createElement("canvas");
-    const sampleContext = sampleCanvas.getContext("2d", {alpha: true});
-    if (!context || !sampleContext) {
-      onDebugState?.({ready: false, sampleCount: 0});
-      return;
+    const layer = new GlobeIlluminationLayer(
+      {enabled, opacity, solarState},
+      mapSession.maplibre,
+      onDebugState,
+    );
+    layerRef.current = layer;
+
+    try {
+      if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
+      map.addLayer(layer);
+    } catch (error) {
+      layerRef.current = null;
+      onDebugState?.({ready: false, triangleCount: 0});
+      console.error("Unable to install globe illumination layer", error);
     }
 
-    const runtime: ShadowRuntime = {
-      canvas,
-      context,
-      forceProjection: false,
-      frameId: 0,
-      interactionActive: false,
-      lastDebugReady: null,
-      lastDebugSampleCount: null,
-      lastProjectionAt: 0,
-      lastRenderAt: 0,
-      normals: new Float32Array(),
-      projectionDirty: true,
-      sampleCanvas,
-      sampleContext,
-      sampleCount: 0,
-      sampleImage: null,
-      validSamples: new Uint8Array(),
-    };
-    runtimeRef.current = runtime;
-    let wheelReleaseTimer = 0;
-
-    const currentBounds = () => canvas.getBoundingClientRect();
-    const setInteraction = (active: boolean) => {
-      if (runtime.interactionActive === active) return;
-      runtime.interactionActive = active;
-      const bounds = currentBounds();
-      if (bounds.width <= 0 || bounds.height <= 0) return;
-      configureSampleGrid(runtime, bounds, active);
-      runtime.lastProjectionAt = 0;
-      queueRender(runtime, latestRef, true);
-    };
-    const resize = () => {
-      const rect = currentBounds();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      resizeBuffers(runtime, rect);
-      runtime.lastProjectionAt = 0;
-      queueRender(runtime, latestRef, true);
-    };
-    const move = () => {
-      runtime.projectionDirty = true;
-      const interval = runtime.interactionActive
-        ? INTERACTION_PROJECTION_INTERVAL_MS
-        : PASSIVE_PROJECTION_INTERVAL_MS;
-      if (performance.now() - runtime.lastProjectionAt >= interval) {
-        queueRender(runtime, latestRef, true);
-      }
-    };
-    const pointerDown = () => setInteraction(true);
-    const pointerUp = () => setInteraction(false);
-    const wheel = () => {
-      setInteraction(true);
-      window.clearTimeout(wheelReleaseTimer);
-      wheelReleaseTimer = window.setTimeout(
-        () => setInteraction(false),
-        WHEEL_INTERACTION_RELEASE_MS,
-      );
-    };
-
-    const observer = new ResizeObserver(resize);
-    const mapCanvas = map.getCanvasContainer();
-    observer.observe(canvas);
-    map.on("move", move);
-    mapCanvas.addEventListener("pointerdown", pointerDown);
-    mapCanvas.addEventListener("wheel", wheel, {passive: true});
-    window.addEventListener("pointerup", pointerUp);
-    window.addEventListener("pointercancel", pointerUp);
-    resize();
-
     return () => {
-      observer.disconnect();
-      map.off("move", move);
-      mapCanvas.removeEventListener("pointerdown", pointerDown);
-      mapCanvas.removeEventListener("wheel", wheel);
-      window.removeEventListener("pointerup", pointerUp);
-      window.removeEventListener("pointercancel", pointerUp);
-      window.clearTimeout(wheelReleaseTimer);
-      if (runtime.frameId !== 0) cancelAnimationFrame(runtime.frameId);
-      onDebugState?.({ready: false, sampleCount: 0});
-      if (runtimeRef.current === runtime) runtimeRef.current = null;
+      if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
+      if (layerRef.current === layer) layerRef.current = null;
     };
   }, [mapSession, onDebugState]);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className={`day-night-globe ${enabled ? "visible" : ""}`}
-      data-layer="day-night-globe"
-      aria-hidden="true"
-    />
-  );
+  useEffect(() => {
+    layerRef.current?.update({enabled, opacity, solarState});
+  }, [enabled, opacity, solarState]);
+
+  return null;
 }
