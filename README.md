@@ -70,20 +70,9 @@ curl http://localhost:3000/api/v1/satellites/99001/prediction-error
 
 ## Orbit display
 
-Orbit-display policy is global across tracked satellites. The Orbit Settings panel controls:
+Orbit-display policy is global across tracked satellites. The Orbit Settings panel controls history/prediction lengths, path sampling/refresh, interpolated-position cadence, path visibility, direction-vector visibility, and `GROUND` versus `ORBIT` placement.
 
-- history length
-- future prediction length
-- requested path sample step
-- path refresh period
-- interpolated-position request period
-- orbit-path visibility
-- direction-vector visibility
-- `GROUND` versus `ORBIT` track placement
-
-`GROUND` forces path elevation to zero and displays the satellite nadir track on Earth. `ORBIT` uses the propagated altitude for each sample.
-
-History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Backend samples are densified only for display, split at the dateline, and remain geographic until MapLibre performs the final projection. Each render vertex carries altitude in both coordinate systems needed by MapLibre: physical metres for the globe shader and conformal Mercator z for the Mercator shader.
+`GROUND` forces elevation to zero and displays the satellite nadir track. `ORBIT` uses each propagated sample's altitude. History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Samples are densified only for rendering, split at the dateline, and kept in geographic/world coordinates until MapLibre performs the final projection. Each vertex carries physical altitude in metres for the globe shader and conformal Mercator z for the Mercator shader.
 
 ## Persistent settings
 
@@ -103,9 +92,7 @@ Reset the complete document to defaults:
 curl -X POST http://localhost:3000/api/v1/settings/reset
 ```
 
-The Map Settings and Orbit Settings panels reset only their own section and persist the resulting full document.
-
-Satellite selection is runtime UI state and is deliberately not stored in the global settings file. Version-1 and version-2 settings documents are migrated automatically to schema version 3 while preserving applicable map/path/update values.
+The Map Settings and Orbit Settings panels reset only their own section and persist the resulting full document. Satellite selection remains runtime UI state. Version-1 and version-2 settings documents are migrated automatically to schema version 3 while preserving applicable values.
 
 ## Development
 
