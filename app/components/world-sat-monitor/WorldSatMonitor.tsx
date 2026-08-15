@@ -22,7 +22,7 @@ import {
   type MapState,
   type SceneOptions,
 } from "../../domain/types";
-import {getSolarState, inertialSolarLongitude} from "../../domain/solar";
+import {getSolarState} from "../../domain/solar";
 
 type SimulationClock = {
   initialized: boolean;
@@ -32,6 +32,9 @@ type SimulationClock = {
 };
 
 type RotationReason = "active" | "follow" | "zoom";
+
+const NORMAL_SIMULATION_TICK_MS = 250;
+const ACCELERATED_SIMULATION_TICK_MS = 33;
 
 function formatCoordinate(value: number, positive: string, negative: string) {
   return `${Math.abs(value).toFixed(3)}° ${value >= 0 ? positive : negative}`;
@@ -60,7 +63,7 @@ export function WorldSatMonitor() {
   const [now, setNow] = useState(INITIAL_UTC);
   const [shadowDebug, setShadowDebug] = useState<ShadowDebugState>({
     ready: false,
-    radiusPx: null,
+    sampleCount: 0,
   });
   const simulationClockRef = useRef<SimulationClock>({
     initialized: false,
@@ -82,21 +85,30 @@ export function WorldSatMonitor() {
 
   useEffect(() => {
     const realNow = Date.now();
-    simulationClockRef.current = {
-      initialized: true,
-      realAnchorMs: realNow,
-      simulationAnchorMs: realNow,
-      scale: 1,
-    };
-    const clock = window.setInterval(() => {
+    if (!simulationClockRef.current.initialized) {
+      simulationClockRef.current = {
+        initialized: true,
+        realAnchorMs: realNow,
+        simulationAnchorMs: realNow,
+        scale: 1,
+      };
+    }
+
+    const tick = () => {
       const state = simulationClockRef.current;
       const realTimestamp = Date.now();
       const simulationTimestamp = state.simulationAnchorMs
         + (realTimestamp - state.realAnchorMs) * state.scale;
       setNow(new Date(simulationTimestamp));
-    }, 250);
+    };
+
+    tick();
+    const interval = timeScale > 1
+      ? ACCELERATED_SIMULATION_TICK_MS
+      : NORMAL_SIMULATION_TICK_MS;
+    const clock = window.setInterval(tick, interval);
     return () => window.clearInterval(clock);
-  }, []);
+  }, [timeScale]);
 
   const solarState = useMemo(() => getSolarState(now), [now]);
 
@@ -108,7 +120,7 @@ export function WorldSatMonitor() {
   }, []);
   const handleShadowDebugChange = useCallback((next: ShadowDebugState) => {
     setShadowDebug((current) => (
-      current.ready === next.ready && current.radiusPx === next.radiusPx
+      current.ready === next.ready && current.sampleCount === next.sampleCount
         ? current
         : next
     ));
@@ -165,9 +177,9 @@ export function WorldSatMonitor() {
       ? "CAMERA LOCKED TO EARTH ROTATION"
       : `${timeScale}× EARTH ROTATION ACTIVE`;
 
-  const inertialSunLongitude = inertialSolarLongitude(solarState, orientation.earthRotationDegrees);
   const cameraSunDelta = normalizeLongitude(orientation.longitude - solarState.longitude);
   const altitudeRatio = MOCK_SATELLITE.altitude / EARTH_RADIUS_KM;
+  const mapProjection = mapSession?.map.getProjection().type ?? "--";
 
   return (
     <main className="monitor-shell" data-layer="page">
@@ -198,7 +210,6 @@ export function WorldSatMonitor() {
             mapSession={mapSession}
             onDebugState={handleShadowDebugChange}
             opacity={scene.shadowOpacity}
-            orientation={orientation}
             solarState={solarState}
           />
         </GlobeMap>
@@ -220,12 +231,14 @@ export function WorldSatMonitor() {
               <div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div>
               <div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div>
               <div><dt>CAMERA FRAME</dt><dd>{orientation.cameraLockedToEarth ? "EARTH-LOCKED" : "INERTIAL"}</dd></div>
+              <div><dt>MAP PROJECTION</dt><dd>{mapProjection.toUpperCase()}</dd></div>
               <div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div>
-              <div><dt>SUN INERTIAL</dt><dd>{inertialSunLongitude.toFixed(3)}°</dd></div>
+              <div><dt>SUN RA (ECI)</dt><dd>{solarState.rightAscension.toFixed(3)}°</dd></div>
               <div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div>
-              <div><dt>SHADOW MODE</dt><dd>CANVAS HEMISPHERE</dd></div>
+              <div><dt>SHADOW FRAME</dt><dd>MAP PROJECTION / ECEF</dd></div>
+              <div><dt>SHADOW MODE</dt><dd>GEOGRAPHIC SAMPLES</dd></div>
               <div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div>
-              <div><dt>SHADOW RADIUS</dt><dd>{shadowDebug.radiusPx === null ? "--" : `${shadowDebug.radiusPx} px`}</dd></div>
+              <div><dt>SHADOW SAMPLES</dt><dd>{shadowDebug.sampleCount}</dd></div>
               <div><dt>SAT ALTITUDE</dt><dd>{MOCK_SATELLITE.altitude} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div>
             </dl>
           </aside>
