@@ -23,7 +23,8 @@ Orbit paths are a MapLibre 3D custom layer rather than an SVG screen-space appro
 
 ```mermaid
 flowchart TD
-    P[track point<br/>lat / lon / altitude] --> N[normalize longitude]
+    P[track samples<br/>lat / lon / altitude] --> D[densify great-circle segments<br/>max 1 degree]
+    D --> N[normalize longitude]
     N --> X{dateline crossing?}
     X -->|yes| S[split line strip]
     X -->|no| M[keep same strip]
@@ -44,6 +45,8 @@ The previous renderer projected each point onto the 2D screen first and then sim
 2. ORBIT mode distorted trajectories around the current camera/focus point because the artificial radial offset was defined in screen space rather than Earth-centred 3D space.
 
 The custom layer removes both assumptions. Geographic points remain geographic until MapLibre performs the final projection. Dateline crossings are still split before drawing because world-Mercator coordinates wrap from 1 back to 0 there.
+
+Backend samples are also subdivided for rendering along great-circle arcs so consecutive custom-layer vertices are never more than roughly one angular degree apart. This is a display-only interpolation step. It does not alter the stored propagation cadence or create new authoritative orbit states.
 
 Prediction and direction-vector dash patterns are generated from cumulative physical path distance rather than screen pixels. This keeps their semantics stable while zooming.
 
