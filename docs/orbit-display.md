@@ -8,7 +8,7 @@ This document describes the frontend orbit-rendering modes and the persistent se
 flowchart LR
     S[(propagated samples<br/>lat / lon / altitude)] --> R[MapLibre custom orbit overlay]
     C[/global orbit settings/] --> R
-    R -->|GROUND| G[nadir-projected history/prediction<br/>elevation = 0 m]
+    R -->|GROUND| G[nadir-projected history/prediction<br/>elevation = 0]
     R -->|ORBIT| O[elevated history/prediction<br/>elevation = sample altitude]
     C -->|direction_vector_enabled| D[current direction vector]
 ```
@@ -42,7 +42,7 @@ flowchart TD
     MC --> F
 ```
 
-MapLibre's projection contract differs between globe and pure Mercator shader variants. Under globe projection, elevation is expressed in metres above the sphere. Under Mercator projection, z is conformal Mercator space. Each rendered vertex therefore carries both representations and the shader selects the correct one for the active projection variant.
+MapLibre's shader projection variants use different elevation coordinate systems. Under the globe variant, elevation is physical metres above the sphere. Under the Mercator variant, elevation is conformal Mercator z in the same world-coordinate domain as x/y. Each rendered vertex therefore carries both representations and the shader selects the appropriate one at compile time for the active projection variant.
 
 The previous screen-space renderer projected each point to 2D and then simulated altitude by moving that pixel radially away from the apparent globe centre. That approximation caused close-zoom spurious lines and ORBIT paths that bent around the camera focus point. That code path is no longer used.
 
