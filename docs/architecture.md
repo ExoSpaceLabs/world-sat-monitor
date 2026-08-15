@@ -1,6 +1,6 @@
 # WorldSat Monitor service architecture
 
-This document describes the runtime services, data ownership, frontend query flow, persistent configuration, render-layer ownership, and the planned TLE/propagation pipeline.
+This document describes the runtime services, data ownership, frontend query flow, persistent settings, and the planned TLE/propagation pipeline.
 
 ## Runtime topology
 
@@ -19,10 +19,10 @@ flowchart LR
 
 ### Current services
 
-- `frontend`: 3D mission UI. It renders satellite state, history/prediction ground tracks, environment layers, and controls. It does not own authoritative orbital propagation.
-- `backend`: FastAPI query/interpolation service. It reads dense state from PostgreSQL and owns the persistent JSON configuration file.
+- `frontend`: 3D mission UI. It renders satellite state, history/prediction paths, environment layers, and controls. It does not own authoritative orbital propagation.
+- `backend`: FastAPI query/interpolation service. It reads dense state from PostgreSQL and owns the persistent JSON settings file.
 - `db`: PostgreSQL catalogue, TLE, propagation, state-sample, and prediction-quality store.
-- `gateway`: nginx front door. `/` is routed to the frontend and `/api/` to the backend, keeping browser requests same-origin.
+- `gateway`: nginx front door. `/` is routed to the frontend and `/api/` to the backend, keeping all browser requests same-origin.
 - `settings_data`: Docker volume mounted at `/data` in the backend. The backend reads and atomically rewrites `/data/settings.json`.
 
 ## Current mock-data flow
@@ -44,7 +44,7 @@ sequenceDiagram
     end
 ```
 
-The mock dataset provides 48 hours of historical samples, 360 hours (15 days) of future samples, and a 10-second raw cadence. The extra day around the frontend limit gives the running application room to advance in UTC without rebuilding the mock run on every restart.
+The mock dataset provides 48 hours of historical samples, 360 hours (15 days) of future samples, and a 10-second raw cadence. The extra day around the frontend limits gives the running application room to advance in UTC without rebuilding the mock run on every restart.
 
 ## Browser position and track flow
 
@@ -53,7 +53,7 @@ sequenceDiagram
     participant UI as Frontend
     participant API as Backend
     participant DB as PostgreSQL
-    UI->>API: GET /satellites/{id}/position?at=UTC
+    UI->>API: GET /satellites/99001/position?at=UTC
     API->>DB: Find propagation run covering UTC
     API->>DB: Fetch samples before and after UTC
     API->>API: Linear interpolation in ECEF
@@ -63,86 +63,62 @@ sequenceDiagram
     UI->>API: GET /track?start=...&end=...&resolution_seconds=...
     API->>DB: Query/decimate full requested window
     API-->>UI: History + prediction points
-    UI->>UI: Split dateline crossings
-    UI->>UI: Draw solid history + dashed prediction ground track
+    UI->>UI: Build globe-space vertex strips
+    UI->>UI: MapLibre projects GROUND or ORBIT trajectory
 ```
 
 The position request cadence and path refresh cadence are independent. Raw propagated samples are stored in ECEF Cartesian coordinates plus cached geodetic coordinates. Direct longitude interpolation is deliberately avoided because it fails at the ±180° meridian.
 
-A 14-day prediction at 10-second cadence contains 120,960 samples per satellite. The track endpoint can increase the effective response step to remain under the point limit while preserving the complete requested time window. The frontend separately splits line strings at longitude wrap crossings.
+A 14-day prediction at 10-second cadence contains 120,960 samples per satellite. The track endpoint can increase the effective response step to remain under the point limit while preserving the complete requested time window.
 
-## Orbit overlay rendering
+## Orbit rendering pipeline
 
-Satellite markers and orbit lines use two different MapLibre mechanisms. The marker is a DOM marker; history, prediction, and heading are MapLibre GeoJSON line layers.
+History, prediction and direction vectors are rendered by a MapLibre custom WebGL layer. Geographic state is not converted into an SVG screen-space approximation.
 
 ```mermaid
 flowchart TD
-    MS[Map style.load / style revision] --> I[Install orbit sources and line layers]
-    I --> E{Track data ready?}
-    E -->|No| FC[Install valid empty FeatureCollection]
-    E -->|Yes| D[Install history/prediction geometry]
-    FC --> U[Later track response updates existing sources]
-    D --> U
-    U --> P[Promote orbit layers to top of style stack]
-    P --> R[Visible history / prediction / heading]
-    IDLE[Map idle after projection/style transition] --> I
+    API[track API<br/>lat lon altitude] --> SEG[history / prediction strips]
+    SEG --> WRAP[split dateline crossings]
+    WRAP --> BUF[Mercator x/y + elevation metres<br/>WebGL vertex buffers]
+    CFG[/global Orbit Settings/] --> MODE{track placement}
+    MODE -->|GROUND| ZERO[elevation = 0]
+    MODE -->|ORBIT| ALT[elevation = propagated altitude]
+    ZERO --> BUF
+    ALT --> BUF
+    BUF --> ML[MapLibre projectTileFor3D]
+    ML --> GLOBE[globe projection + horizon clipping]
+    ML --> CLOSE[globe-to-Mercator close-zoom transition]
+    GLOBE --> FRAME[render frame]
+    CLOSE --> FRAME
 ```
 
-The installer must not assume the first track request has completed. Empty `MultiLineString` data is avoided because MapLibre does not accept that form consistently. A valid empty `FeatureCollection` keeps the source and layer alive until the first track response arrives.
+This ownership is intentional. The earlier screen-space renderer first projected a surface point into two dimensions and then simulated altitude by shifting that pixel radially away from the apparent globe centre. That made orbit geometry depend on the camera focus and produced spurious line connections at close zoom. The custom layer instead passes the physical elevation to MapLibre so camera, globe, clipping and zoom-transition math come from one projection pipeline.
 
-The installer also retries after `style.load` and `idle`. Basemap changes replace MapLibre style state, so orbit layers are recreated after every style revision. Orbit layers are explicitly promoted above the day/night illumination layer so the overlay remains legible on the night side.
+`GROUND` mode forces elevation to zero and therefore represents the nadir projection. `ORBIT` mode passes each propagated sample's altitude in metres. Prediction and direction-vector dash patterns use cumulative physical path distance, so changing zoom does not change their logical cadence.
 
 ## Persistent settings
 
-All durable display configuration is stored in one versioned JSON document. Transient interaction state such as camera position, follow mode, or which satellite is currently selected is intentionally not persisted.
+All durable display configuration is stored in one versioned JSON document. Transient interaction state such as a camera drag or the current follow-button state is intentionally not persisted.
 
 ```mermaid
 flowchart TD
     A[Backend starts] --> B{settings.json exists?}
-    B -->|No| C[Write default AppSettings v2]
-    B -->|Yes| D[Load JSON]
-    D --> M{Schema version}
-    M -->|v1 satellite section| V2[Migrate satellite display fields to global orbit section]
-    M -->|v2| V[Validate]
-    V2 --> V
+    B -->|No| C[Write default AppSettings]
+    B -->|Yes| D[Load + validate JSON]
+    D --> E[Migrate + normalize fields]
     C --> F[GET /api/v1/settings]
-    V --> F
+    E --> F
     F --> UI[Frontend applies map + orbit settings]
     UI -->|user changes setting| PUT[PUT /api/v1/settings]
-    PUT --> PV[Validate with Pydantic]
-    PV --> T[Write temporary file + fsync]
+    PUT --> V[Validate with Pydantic]
+    V --> T[Write temporary file + fsync]
     T --> R[Atomic os.replace]
     R --> J[(settings_data/settings.json)]
 ```
 
-### Settings ownership
+The current settings document contains `map` and global `orbit` configuration. Orbit policy is shared by every tracked satellite and contains no object identity. The committed `config/settings.example.json` documents the schema. At runtime the file lives in the `settings_data` Docker volume at `/data/settings.json`.
 
-Version 2 contains two persistent sections:
-
-- `map`: basemap, space environment, shadow opacity, debug state, and simulation time scale.
-- `orbit`: **global** orbit rendering/query policy shared by every tracked satellite. It contains history length, future prediction length, requested path step, path refresh cadence, and position interpolation request cadence.
-
-There is deliberately no `selected_norad_id` in persistent configuration. Satellite selection belongs to runtime UI state and will eventually come from the catalogue/selection workflow. A user changing orbit history from 90 minutes to 6 hours changes it for every satellite, not one specific object.
-
-Existing version-1 files are migrated automatically. The legacy `satellite.position_update_ms` and `satellite.path` values are retained under `orbit`; the old selected NORAD field is discarded. The normalized version-2 document is then atomically written back to `/data/settings.json`.
-
-Panel reset operations replace their relevant section with defaults and persist the normalized full document. `POST /api/v1/settings/reset` resets the whole file. The committed `config/settings.example.json` documents the current schema.
-
-## Planned multi-satellite rendering
-
-The shared orbit configuration is designed to apply to multiple tracked objects without introducing per-object duplicates:
-
-```mermaid
-flowchart LR
-    O[Global orbit settings] --> A[Satellite A query/render loop]
-    O --> B[Satellite B query/render loop]
-    O --> C[Satellite C query/render loop]
-    SEL[Runtime selection state] --> A
-    SEL --> B
-    SEL --> C
-```
-
-Object identity, selection, visibility, and constellation membership are catalogue/session concerns. Orbit display cadence and path lengths are application-wide policy.
+Version 1 per-satellite display settings migrate into the global orbit section. Version 2 files gain the version-3 direction-vector and track-placement defaults. Panel reset operations replace their relevant section with defaults and persist the normalized full document. `POST /api/v1/settings/reset` resets the whole file.
 
 ## Planned TLE and propagation pipeline
 
@@ -195,8 +171,7 @@ When a newer reference TLE arrives, the evaluator compares states produced by ol
 | `propagation_runs` | propagator | immutable propagation products |
 | `position_samples` | propagator/mock seed | dense orbital state |
 | `prediction_error_daily` | quality evaluator | horizon quality statistics |
-| `/data/settings.json` | backend settings API | persistent map + global orbit configuration |
-| selected satellite | frontend/catalogue workflow | transient runtime state, not global configuration |
+| `/data/settings.json` | backend settings API | persistent map/global orbit configuration |
 | camera/follow interaction | frontend | transient session state |
 
 The frontend never writes orbital tables directly.
