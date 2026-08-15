@@ -2,8 +2,9 @@
 
 import {useEffect, useRef} from "react";
 import type {Map as MapLibreMap, Marker as MapLibreMarker} from "maplibre-gl";
-import type {OrbitDisplaySettings} from "../../domain/settings";
+import {DEFAULT_APP_SETTINGS, type OrbitDisplaySettings} from "../../domain/settings";
 import type {MapSession} from "../../domain/types";
+import {getAppSettings} from "../../services/worldsat-api";
 import {estimateRenderedGlobeRadius} from "../globe/projection";
 import {
   EARTH_RADIUS_KM,
@@ -12,6 +13,7 @@ import {
   type Satellite,
   type SatelliteTrackPoint,
 } from "../../domain/satellite";
+import {ORBIT_DISPLAY_CHANGE_EVENT} from "./OrbitSettingsPanel";
 import {OrbitTrackLayer, ORBIT_TRACK_LAYER_ID} from "./OrbitTrackLayer";
 
 type MarkerElements = {
@@ -77,7 +79,6 @@ function updateMarkerPresentation(
 
 type SatelliteLayerProps = {
   mapSession: MapSession | null;
-  orbitSettings: OrbitDisplaySettings;
   satellite: Satellite;
   track: SatelliteTrackPoint[];
   selected: boolean;
@@ -86,7 +87,6 @@ type SatelliteLayerProps = {
 
 export function SatelliteLayer({
   mapSession,
-  orbitSettings,
   satellite,
   track,
   selected,
@@ -98,11 +98,56 @@ export function SatelliteLayer({
   const markerRef = useRef<MapLibreMarker | null>(null);
   const trackLayerRef = useRef<OrbitTrackLayer | null>(null);
   const latestSatelliteRef = useRef(satellite);
+  const latestTrackRef = useRef(track);
+  const orbitSettingsRef = useRef<OrbitDisplaySettings>(DEFAULT_APP_SETTINGS.orbit);
 
   useEffect(() => {
     latestSatelliteRef.current = satellite;
+    trackLayerRef.current?.update({
+      satellite,
+      settings: orbitSettingsRef.current,
+      track: latestTrackRef.current,
+    });
     map?.triggerRepaint();
   }, [map, satellite]);
+
+  useEffect(() => {
+    latestTrackRef.current = track;
+    trackLayerRef.current?.update({
+      satellite: latestSatelliteRef.current,
+      settings: orbitSettingsRef.current,
+      track,
+    });
+    map?.triggerRepaint();
+  }, [map, track]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAppSettings().then((settings) => {
+      if (cancelled) return;
+      orbitSettingsRef.current = settings.orbit;
+      trackLayerRef.current?.update({
+        satellite: latestSatelliteRef.current,
+        settings: settings.orbit,
+        track: latestTrackRef.current,
+      });
+    }).catch(() => undefined);
+
+    const handleDisplayChange = (event: Event) => {
+      const custom = event as CustomEvent<OrbitDisplaySettings>;
+      orbitSettingsRef.current = custom.detail;
+      trackLayerRef.current?.update({
+        satellite: latestSatelliteRef.current,
+        settings: custom.detail,
+        track: latestTrackRef.current,
+      });
+    };
+    window.addEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (!map || !Marker) return;
@@ -147,7 +192,11 @@ export function SatelliteLayer({
     if (!mapSession) return;
     const map = mapSession.map;
     const layer = new OrbitTrackLayer(
-      {satellite, settings: orbitSettings, track},
+      {
+        satellite: latestSatelliteRef.current,
+        settings: orbitSettingsRef.current,
+        track: latestTrackRef.current,
+      },
       mapSession.maplibre,
     );
     trackLayerRef.current = layer;
@@ -169,13 +218,10 @@ export function SatelliteLayer({
       if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
       if (trackLayerRef.current === layer) trackLayerRef.current = null;
     };
-    // styleRevision intentionally recreates the custom layer after a basemap
-    // replacement because MapLibre removes custom layers with the old style.
+    // styleRevision in MapSession intentionally recreates the custom layer
+    // after a basemap replacement because MapLibre removes custom layers with
+    // the old style.
   }, [mapSession]);
-
-  useEffect(() => {
-    trackLayerRef.current?.update({satellite, settings: orbitSettings, track});
-  }, [orbitSettings, satellite, track]);
 
   return null;
 }
