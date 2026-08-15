@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from typing import Any
 
 
@@ -87,8 +88,12 @@ def get_track_points(
     raw_step_seconds: int,
     resolution_seconds: int,
     max_points: int,
-) -> list[dict[str, Any]]:
-    stride = max(1, round(resolution_seconds / raw_step_seconds))
+) -> tuple[list[dict[str, Any]], int]:
+    requested_stride = max(1, math.ceil(resolution_seconds / raw_step_seconds))
+    raw_intervals = max(1, math.ceil((end - start).total_seconds() / raw_step_seconds))
+    limit_stride = max(1, math.ceil(raw_intervals / max(1, max_points - 1)))
+    stride = max(requested_stride, limit_stride)
+    effective_resolution_seconds = stride * raw_step_seconds
     rows = connection.execute(
         """
         WITH ranked AS (
@@ -106,7 +111,7 @@ def get_track_points(
         """,
         (run_id, start, end, stride, max_points),
     ).fetchall()
-    return list(rows)
+    return list(rows), effective_resolution_seconds
 
 
 def get_prediction_errors(connection, run_id: str) -> list[dict[str, Any]]:

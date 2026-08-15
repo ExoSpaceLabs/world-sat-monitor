@@ -151,7 +151,7 @@ def satellite_track(
         if run is None:
             raise HTTPException(status_code=404, detail="no propagation run covers requested window")
 
-        points = get_track_points(
+        points, effective_resolution_seconds = get_track_points(
             connection,
             str(run["id"]),
             start_utc,
@@ -165,7 +165,8 @@ def satellite_track(
         "satellite": {"norad_id": satellite["norad_id"], "name": satellite["name"]},
         "start": start_utc.isoformat(),
         "end": end_utc.isoformat(),
-        "resolution_seconds": resolution_seconds,
+        "requested_resolution_seconds": resolution_seconds,
+        "resolution_seconds": effective_resolution_seconds,
         "source": {
             "run_id": str(run["id"]),
             "generated_at": run["generated_at"].isoformat(),
