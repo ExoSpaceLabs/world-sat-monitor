@@ -5,9 +5,7 @@ import type {Map as MapLibreMap, Marker as MapLibreMarker} from "maplibre-gl";
 import {DEFAULT_APP_SETTINGS, type OrbitDisplaySettings} from "../../domain/settings";
 import type {MapSession} from "../../domain/types";
 import {getAppSettings} from "../../services/worldsat-api";
-import {estimateRenderedGlobeRadius} from "../globe/projection";
 import {
-  EARTH_RADIUS_KM,
   isSatelliteOccluded,
   type GlobeVector,
   type Satellite,
@@ -19,6 +17,7 @@ import {
   ORBIT_TRACK_LAYER_ID,
   type OrbitDebugState,
 } from "./OrbitTrackLayer";
+import {projectSatelliteScreenPosition} from "./satelliteProjection";
 
 type MarkerElements = {
   heading: HTMLElement;
@@ -58,20 +57,17 @@ function getGlobeCameraPosition(map: MapLibreMap): GlobeVector | null {
 
 function updateMarkerPresentation(
   map: MapLibreMap,
+  maplibre: MapSession["maplibre"],
   elements: MarkerElements,
   satellite: Satellite,
 ) {
-  const earthCenter = map.project(map.getCenter());
   const surfacePoint = map.project([satellite.lon, satellite.lat]);
-  const radialX = surfacePoint.x - earthCenter.x;
-  const radialY = surfacePoint.y - earthCenter.y;
-  const radialDistance = Math.hypot(radialX, radialY);
-  const globeRadius = estimateRenderedGlobeRadius(map);
-  const altitudeRatio = Math.max(0, satellite.altitude) / EARTH_RADIUS_KM;
-  const surfaceRadius = Math.min(radialDistance, globeRadius);
-  const altitudePixels = surfaceRadius * altitudeRatio;
-  const inverseDistance = radialDistance > 1e-6 ? 1 / radialDistance : 0;
-  elements.visual.style.transform = `translate3d(${(radialX * inverseDistance * altitudePixels).toFixed(2)}px,${(radialY * inverseDistance * altitudePixels).toFixed(2)}px,0)`;
+  const satellitePoint = projectSatelliteScreenPosition(map, maplibre, satellite);
+  if (satellitePoint) {
+    elements.visual.style.transform = `translate3d(${(satellitePoint.x - surfacePoint.x).toFixed(2)}px,${(satellitePoint.y - surfacePoint.y).toFixed(2)}px,0)`;
+  } else {
+    elements.visual.style.transform = "translate3d(0,0,0)";
+  }
 
   const cameraPosition = getGlobeCameraPosition(map);
   const occluded = cameraPosition
@@ -110,7 +106,8 @@ export function SatelliteLayer({
   onDebugState,
 }: SatelliteLayerProps) {
   const map = mapSession?.map;
-  const Marker = mapSession?.maplibre.Marker;
+  const maplibre = mapSession?.maplibre;
+  const Marker = maplibre?.Marker;
   const elementsRef = useRef<MarkerElements | null>(null);
   const markerRef = useRef<MapLibreMarker | null>(null);
   const trackLayerRef = useRef<OrbitTrackLayer | null>(null);
@@ -167,7 +164,7 @@ export function SatelliteLayer({
   }, []);
 
   useEffect(() => {
-    if (!map || !Marker) return;
+    if (!map || !maplibre || !Marker) return;
     const elements = createMarkerNode(onSelect);
     const marker = new Marker({
       element: elements.node,
@@ -181,7 +178,12 @@ export function SatelliteLayer({
     elementsRef.current = elements;
     markerRef.current = marker;
 
-    const update = () => updateMarkerPresentation(map, elements, latestSatelliteRef.current);
+    const update = () => updateMarkerPresentation(
+      map,
+      maplibre,
+      elements,
+      latestSatelliteRef.current,
+    );
     map.on("render", update);
     update();
 
@@ -191,19 +193,19 @@ export function SatelliteLayer({
       if (elementsRef.current === elements) elementsRef.current = null;
       if (markerRef.current === marker) markerRef.current = null;
     };
-  }, [Marker, map, onSelect]);
+  }, [Marker, map, maplibre, onSelect]);
 
   useEffect(() => {
     const elements = elementsRef.current;
     const marker = markerRef.current;
-    if (!map || !elements || !marker) return;
+    if (!map || !maplibre || !elements || !marker) return;
     elements.name.textContent = satellite.name;
     elements.heading.textContent = `${satellite.heading.toFixed(1)}° HEADING · ${satellite.altitude.toFixed(1)} KM`;
     elements.node.classList.toggle("selected", selected);
     elements.node.setAttribute("aria-label", `Select and follow ${satellite.name}`);
     marker.setLngLat([satellite.lon, satellite.lat]);
-    updateMarkerPresentation(map, elements, satellite);
-  }, [map, satellite, selected]);
+    updateMarkerPresentation(map, maplibre, elements, satellite);
+  }, [map, maplibre, satellite, selected]);
 
   useEffect(() => {
     if (!mapSession) return;
