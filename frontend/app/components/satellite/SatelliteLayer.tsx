@@ -219,21 +219,19 @@ export function SatelliteLayer({
     );
     trackLayerRef.current = layer;
 
-    const install = () => {
-      try {
-        if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
-        map.addLayer(layer);
-      } catch (error) {
-        onDebugState?.(installationFailure(error));
-        console.error("Unable to install orbit-track layer", error);
-      }
-    };
-
-    if (map.isStyleLoaded()) install();
-    else map.once("style.load", install);
+    try {
+      // mapSession is only published from GlobeMap's style.load callback, so
+      // the style is already ready for custom-layer installation here. Waiting
+      // on isStyleLoaded()/another style.load creates a race where the only
+      // style.load event has already happened and this layer is never added.
+      if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
+      map.addLayer(layer);
+    } catch (error) {
+      onDebugState?.(installationFailure(error));
+      console.error("Unable to install orbit-track layer", error);
+    }
 
     return () => {
-      map.off("style.load", install);
       if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
       if (trackLayerRef.current === layer) trackLayerRef.current = null;
     };
