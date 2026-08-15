@@ -215,7 +215,6 @@ export function WorldSatMonitor() {
         </GlobeMap>
         <SatelliteLayer
           mapSession={mapSession}
-          orientation={orientation}
           satellite={MOCK_SATELLITE}
           selected
           onSelect={handleSatelliteSelect}

@@ -2,13 +2,13 @@
 
 import {useEffect, useRef} from "react";
 import type {GeoJSONSource, Map as MapLibreMap, Marker as MapLibreMarker} from "maplibre-gl";
-import type {SceneOrientation} from "../../domain/scene";
 import type {MapSession} from "../../domain/types";
 import {estimateRenderedGlobeRadius} from "../globe/projection";
 import {
   EARTH_RADIUS_KM,
   headingEndpoint,
   isSatelliteOccluded,
+  type GlobeVector,
   type Satellite,
 } from "../../domain/satellite";
 
@@ -78,10 +78,20 @@ function addHeading(map: MapLibreMap, satellite: Satellite) {
   });
 }
 
+function getGlobeCameraPosition(map: MapLibreMap): GlobeVector | null {
+  // MapLibre's globe transform exposes the camera in the same unit-sphere
+  // coordinate space used by its horizon clipping. When globe rendering has
+  // transitioned fully to Mercator there is no spherical horizon to occlude
+  // against, so leave the marker visible.
+  const transform = map._camera.transform;
+  if (!transform.getClippingPlane()) return null;
+  const camera = transform.cameraPosition;
+  return [camera[0], camera[1], camera[2]];
+}
+
 function updateMarkerPresentation(
   map: MapLibreMap,
   elements: MarkerElements,
-  orientation: SceneOrientation,
   satellite: Satellite,
 ) {
   const earthCenter = map.project(map.getCenter());
@@ -99,14 +109,19 @@ function updateMarkerPresentation(
   elements.visual.style.transform = `translate3d(${offsetX.toFixed(2)}px,${offsetY.toFixed(2)}px,0)`;
   elements.node.dataset.altitudeOffset = altitudePixels.toFixed(2);
 
-  const occluded = isSatelliteOccluded(satellite, orientation);
+  const cameraPosition = getGlobeCameraPosition(map);
+  const occluded = cameraPosition
+    ? isSatelliteOccluded(satellite, cameraPosition)
+    : false;
   elements.node.classList.toggle("occluded", occluded);
   elements.node.dataset.visibility = occluded ? "occluded" : "visible";
+  elements.node.dataset.cameraRadius = cameraPosition
+    ? Math.hypot(...cameraPosition).toFixed(4)
+    : "flat";
 }
 
 type SatelliteLayerProps = {
   mapSession: MapSession | null;
-  orientation: SceneOrientation;
   satellite: Satellite;
   selected: boolean;
   onSelect: () => void;
@@ -114,7 +129,6 @@ type SatelliteLayerProps = {
 
 export function SatelliteLayer({
   mapSession,
-  orientation,
   satellite,
   selected,
   onSelect,
@@ -123,11 +137,11 @@ export function SatelliteLayer({
   const Marker = mapSession?.maplibre.Marker;
   const elementsRef = useRef<MarkerElements | null>(null);
   const markerRef = useRef<MapLibreMarker | null>(null);
-  const latestRef = useRef({orientation, satellite});
+  const latestSatelliteRef = useRef(satellite);
 
   useEffect(() => {
-    latestRef.current = {orientation, satellite};
-  }, [orientation, satellite]);
+    latestSatelliteRef.current = satellite;
+  }, [satellite]);
 
   useEffect(() => {
     if (!map || !Marker) return;
@@ -137,8 +151,9 @@ export function SatelliteLayer({
       anchor: "center",
       opacity: 1,
       opacityWhenCovered: 1,
+      subpixelPositioning: true,
     })
-      .setLngLat([latestRef.current.satellite.lon, latestRef.current.satellite.lat])
+      .setLngLat([latestSatelliteRef.current.lon, latestSatelliteRef.current.lat])
       .addTo(map);
     elementsRef.current = elements;
     markerRef.current = marker;
@@ -146,8 +161,7 @@ export function SatelliteLayer({
     const update = () => updateMarkerPresentation(
       map,
       elements,
-      latestRef.current.orientation,
-      latestRef.current.satellite,
+      latestSatelliteRef.current,
     );
     map.on("render", update);
     update();
@@ -168,8 +182,8 @@ export function SatelliteLayer({
     elements.node.classList.toggle("selected", selected);
     elements.node.setAttribute("aria-label", `Select and follow ${satellite.name}`);
     marker.setLngLat([satellite.lon, satellite.lat]);
-    updateMarkerPresentation(map, elements, orientation, satellite);
-  }, [map, orientation, satellite, selected]);
+    updateMarkerPresentation(map, elements, satellite);
+  }, [map, satellite, selected]);
 
   useEffect(() => {
     if (!map || !map.isStyleLoaded()) return;
