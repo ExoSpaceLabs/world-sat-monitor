@@ -78,6 +78,7 @@ type ProgramState = {
     color: WebGLUniformLocation | null;
     dashOn: WebGLUniformLocation | null;
     dashPeriod: WebGLUniformLocation | null;
+    depthAware: WebGLUniformLocation | null;
     fallbackMatrix: WebGLUniformLocation | null;
     mainMatrix: WebGLUniformLocation | null;
     tileMercatorCoords: WebGLUniformLocation | null;
@@ -206,10 +207,8 @@ function buildGeometry(
   const values: number[] = [];
   const ranges: LineRange[] = [];
 
-  // The working day/night custom layer uses tile 0/0/0 coordinates together
-  // with args.getProjectionData(). Keep orbit geometry on the same contract.
-  // This avoids mixing the alternative world-coordinate custom-layer matrices
-  // with tile-local projection helpers and keeps altitude in physical metres.
+  // Keep geometry in base-tile coordinates so both surface projection and the
+  // depth-preserving 3D projection consume the same physical elevation metres.
   for (const strip of splitAtDateline(densifyForGlobe(points))) {
     const first = values.length / VERTEX_STRIDE_FLOATS;
     let distance = 0;
@@ -351,11 +350,14 @@ ${shaderData.define}
 in vec2 a_pos;
 in float a_elevation;
 in float a_distance;
+uniform highp float u_depth_aware;
 out highp float v_distance;
 
 void main() {
   v_distance = a_distance;
-  gl_Position = projectTileWithElevation(a_pos, a_elevation);
+  gl_Position = u_depth_aware > 0.5
+    ? projectTileFor3D(a_pos, a_elevation)
+    : projectTileWithElevation(a_pos, a_elevation);
 }`;
 
   const fragmentSource = `#version 300 es
@@ -385,6 +387,7 @@ void main() {
       color: gl.getUniformLocation(program, "u_color"),
       dashOn: gl.getUniformLocation(program, "u_dash_on"),
       dashPeriod: gl.getUniformLocation(program, "u_dash_period"),
+      depthAware: gl.getUniformLocation(program, "u_depth_aware"),
       fallbackMatrix: gl.getUniformLocation(program, "u_projection_fallback_matrix"),
       mainMatrix: gl.getUniformLocation(program, "u_projection_matrix"),
       tileMercatorCoords: gl.getUniformLocation(program, "u_projection_tile_mercator_coords"),
@@ -454,7 +457,7 @@ function errorMessage(error: unknown) {
 export class OrbitTrackLayer implements CustomLayerInterface {
   readonly id = ORBIT_TRACK_LAYER_ID;
   readonly type = "custom" as const;
-  readonly renderingMode = "2d" as const;
+  readonly renderingMode = "3d" as const;
 
   private buffers: BufferState | null = null;
   private geometry: LayerGeometry;
@@ -547,9 +550,18 @@ export class OrbitTrackLayer implements CustomLayerInterface {
         tileID: {wrap: 0, canonical: {x: 0, y: 0, z: 0}},
         applyGlobeMatrix: true,
       });
+      const depthAware = this.state.settings.path.mode === "orbit";
 
-      // Match the known-good day/night custom-layer state and projection path.
-      gl.disable(gl.DEPTH_TEST);
+      // MapLibre configures a shared 3D depth buffer before rendering a custom
+      // layer declared as `3d`. ORBIT mode leaves that depth test intact and
+      // uses projectTileFor3D, so the Earth itself performs occlusion. We only
+      // disable depth for GROUND mode, which deliberately remains a readable
+      // surface overlay and uses MapLibre's surface-horizon clipping helper.
+      if (depthAware) {
+        gl.depthMask(false);
+      } else {
+        gl.disable(gl.DEPTH_TEST);
+      }
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
       gl.enable(gl.BLEND);
@@ -562,6 +574,7 @@ export class OrbitTrackLayer implements CustomLayerInterface {
       gl.uniform4f(program.uniforms.tileMercatorCoords, ...projection.tileMercatorCoords);
       gl.uniform4f(program.uniforms.clippingPlane, ...projection.clippingPlane);
       gl.uniform1f(program.uniforms.transition, projection.projectionTransition);
+      gl.uniform1f(program.uniforms.depthAware, depthAware ? 1 : 0);
 
       if (this.state.settings.path.enabled) {
         drawGeometry(

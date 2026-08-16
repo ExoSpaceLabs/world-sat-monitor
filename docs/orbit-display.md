@@ -6,18 +6,23 @@ This document describes the frontend orbit-rendering modes and the persistent se
 
 ```mermaid
 flowchart LR
-    S[(propagated samples<br/>lat / lon / altitude)] --> R[MapLibre custom orbit overlay]
+    S[(propagated samples<br/>lat / lon / altitude)] --> R[MapLibre custom orbit layer]
     C[/global orbit settings/] --> R
     R -->|GROUND| G[nadir-projected history/prediction<br/>elevation = 0]
     R -->|ORBIT| O[elevated history/prediction<br/>elevation = sample altitude]
     C -->|direction_vector_enabled| D[current direction vector]
 ```
 
-`GROUND` shows where the satellite path projects onto the Earth surface. `ORBIT` keeps the propagated altitude and sends it through MapLibre's globe-aware `projectTileWithElevation` projection path.
+`GROUND` shows where the satellite path projects onto the Earth surface. `ORBIT` keeps the propagated altitude and renders the actual elevated trajectory.
 
-The orbit renderer is intentionally a **2D custom overlay layer with elevated vertices**, not a depth-sharing 3D custom layer. The direction vector is independent of path visibility.
+The custom layer is declared as `renderingMode = "3d"` so MapLibre makes its shared globe depth buffer available. The two track modes then deliberately use different visibility models:
 
-## Projection pipeline
+- `GROUND` is rendered as a surface overlay with `projectTileWithElevation(...)` and depth testing disabled. Surface-horizon clipping is appropriate because every point lies on the Earth.
+- `ORBIT` is rendered with `projectTileFor3D(...)` while retaining MapLibre's depth test. The Earth depth buffer therefore hides only the portion actually behind the planet. Elevated trajectory segments may remain visible beyond the surface tangent until the Earth physically occludes them.
+
+The direction vector is independent of path visibility and follows the selected track placement mode.
+
+## Projection and occlusion pipeline
 
 ```mermaid
 flowchart TD
@@ -32,21 +37,47 @@ flowchart TD
     T --> E[attach elevation in physical metres]
     E --> V[WebGL vertex buffer]
     V --> PDATA[args.getProjectionData<br/>tile 0/0/0]
-    PDATA --> Q[projectTileWithElevation]
-    Q --> G{active MapLibre projection}
-    G -->|Globe| GL[sphere projection + horizon clipping]
-    G -->|Mercator| MC[Mercator camera projection]
-    GL --> F[history / prediction / heading]
-    MC --> F
+    PDATA --> MODE{track placement}
+    MODE -->|GROUND| SURFACE[projectTileWithElevation<br/>depth disabled]
+    MODE -->|ORBIT| SPACE[projectTileFor3D<br/>shared depth test]
+    SURFACE --> HC[surface tangent / globe horizon clipping]
+    SPACE --> DEPTH[Earth depth buffer]
+    HC --> F[history / prediction / heading]
+    DEPTH --> F
 ```
 
-The orbit renderer uses the same projection contract as the existing day/night shadow layer: tile-local geometry for the base `0/0/0` tile plus projection data obtained through `args.getProjectionData(...)`.
+The orbit renderer uses tile-local geometry for the base `0/0/0` tile plus projection data obtained through `args.getProjectionData(...)`.
 
-For this contract, elevation is supplied in **physical metres**. MapLibre 6.1.0's Mercator custom-layer matrix rescales its Z axis by `worldSize / pixelsPerMeter`, while the globe shader converts elevation metres into radius above the unit sphere. Application code therefore does not maintain a second conformal-Z representation.
+For this contract, elevation is supplied in **physical metres**. The same geometry therefore works with both MapLibre's globe and Mercator shader variants without application-side screen-space altitude scaling.
+
+`projectTileWithElevation(...)` intentionally replaces clip-space Z with MapLibre's globe-horizon value. This is useful for surface features but is not physically correct for an orbit because a spacecraft can be visible above and beyond the surface horizon. `projectTileFor3D(...)` preserves the real projected Z, allowing the already-rendered Earth to provide the correct occlusion through the shared depth buffer.
+
+The orbit layer disables depth writes in ORBIT mode while retaining depth testing. This lets the Earth occlude the trajectory without allowing the trajectory itself to pollute the shared scene depth buffer.
 
 Backend samples are subdivided for rendering along great-circle arcs so consecutive custom-layer vertices are never more than roughly one angular degree apart. This is display-only interpolation and does not change authoritative backend orbit states.
 
 Dateline crossings are split before drawing. Prediction and direction-vector dash patterns use cumulative physical path distance rather than screen pixels.
+
+## Satellite marker altitude
+
+The HTML marker remains anchored by MapLibre at the satellite's nadir longitude/latitude, but the visible marker is offset to the **true projected satellite position** instead of using the old radial pixel approximation.
+
+```mermaid
+flowchart TD
+    SAT[current satellite<br/>lat / lon / altitude] --> FRAME{active camera transform}
+    FRAME -->|globe| SPHERE[unit-sphere position<br/>radius = 1 + altitude / Earth radius]
+    FRAME -->|Mercator| MERC[world x/y + altitude metres]
+    SPHERE --> MVP[MapLibre model-view-projection matrix]
+    MERC --> MVP
+    MVP --> SCREEN[elevated screen position]
+    NADIR[MapLibre DOM marker<br/>nadir screen position] --> DELTA[screen-space delta]
+    SCREEN --> DELTA
+    DELTA --> VISUAL[translate marker visual]
+```
+
+The globe branch uses the same sphere-axis convention as MapLibre and the same active globe model-view-projection matrix used by the 3D orbit path. The Mercator branch uses MapLibre world coordinates plus physical altitude metres. As a result, the current marker, heading-vector origin, history endpoint, and prediction origin all share the same physical altitude model.
+
+Marker far-side dimming remains based on finite camera-to-satellite ray/sphere intersection, so the marker only becomes occluded when the Earth is actually between the camera and spacecraft.
 
 ## Custom-layer lifecycle
 
@@ -87,13 +118,14 @@ If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer h
 flowchart LR
     API[backend track API] --> UI[WorldSatMonitor state]
     UI --> SAT[SatelliteLayer]
-    SAT --> MARKER[HTML satellite marker]
-    SAT --> TRACK[OrbitTrackLayer<br/>MapLibre custom WebGL overlay]
+    SAT --> MARKER[HTML satellite marker<br/>3D projected offset]
+    SAT --> TRACK[OrbitTrackLayer<br/>MapLibre custom WebGL layer]
     SETTINGS[Orbit Settings] --> SAT
-    TRACK --> MAP[MapLibre projection + render frame]
+    TRACK --> MAP[MapLibre projection + depth buffer]
+    MAP --> TRACK
 ```
 
-Orbital data remains owned by the backend. The frontend custom layer only decides how already-propagated state is visualized.
+Orbital data remains owned by the backend. The frontend only decides how already-propagated state is visualized.
 
 ## Persistent settings
 
