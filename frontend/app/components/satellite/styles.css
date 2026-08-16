@@ -7,6 +7,15 @@
 .satellite-pulse{position:absolute;inset:1px;border:1px solid rgba(125,255,191,.55);border-radius:50%;animation:sat-pulse 2.4s ease-out infinite}
 .satellite-label{position:absolute;right:36px;top:-3px;white-space:nowrap;text-align:right;text-shadow:0 1px 6px #02080d,0 1px 10px #02080d;pointer-events:none}
 .satellite-label b,.satellite-label small{display:block;font-family:ui-monospace,monospace}.satellite-label b{font-size:11px;letter-spacing:.05em;color:#e3fff1}.satellite-label small{font-size:9px;letter-spacing:.08em;color:#68d9a0;margin-top:3px}
+.satellite-marker.street-surface:not(.occluded) .satellite-core{background:#071013;border:1px solid rgba(255,255,255,.72);box-shadow:0 0 5px rgba(255,255,255,.8),0 0 12px rgba(0,0,0,.55)}
+.satellite-marker.street-surface.selected:not(.occluded) .satellite-core{background:#02080b;border-color:#16cfe3;box-shadow:0 0 5px #fff,0 0 11px rgba(22,207,227,.68)}
+.satellite-marker.street-surface:not(.occluded) .satellite-pulse{border-color:rgba(4,12,15,.72);box-shadow:0 0 0 1px rgba(255,255,255,.35)}
+.satellite-marker.street-surface:not(.occluded) .satellite-label{text-shadow:0 0 2px #fff,0 0 4px rgba(255,255,255,.96),0 1px 7px rgba(255,255,255,.82)}
+.satellite-marker.street-surface:not(.occluded) .satellite-label b,.satellite-marker.street-surface:not(.occluded) .satellite-label small{color:#071013}
+.satellite-marker.street-space:not(.occluded) .satellite-core{background:#58dbe6;border:1px solid #d8fbff;box-shadow:0 0 10px #16cfe3,0 0 22px rgba(22,207,227,.5)}
+.satellite-marker.street-space.selected:not(.occluded) .satellite-core{background:#fff;box-shadow:0 0 10px #58dbe6,0 0 28px #16cfe3}
+.satellite-marker.street-space:not(.occluded) .satellite-pulse{border-color:rgba(88,219,230,.68)}
+.satellite-marker.street-space:not(.occluded) .satellite-label small{color:#58dbe6}
 @keyframes sat-pulse{0%{transform:scale(.45);opacity:.95}75%,100%{transform:scale(1.2);opacity:0}}
 .sat-card{position:absolute;z-index:4;top:76px;right:25px;width:280px;border:1px solid var(--line);background:rgba(5,18,26,.84);backdrop-filter:blur(16px);box-shadow:0 18px 50px rgba(0,0,0,.24)}
 .card-head{display:flex;align-items:center;gap:11px;padding:17px;border-bottom:1px solid var(--line)}.card-head small{font:8px ui-monospace,monospace;letter-spacing:.16em;color:var(--green)}.card-head h1{font-size:15px;letter-spacing:.08em;margin:3px 0 0}.card-head>b{margin-left:auto;border:1px solid #69572e;color:#e0b760;font:8px ui-monospace,monospace;letter-spacing:.1em;padding:4px 6px}.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green)}

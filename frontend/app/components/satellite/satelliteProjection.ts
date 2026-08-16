@@ -6,6 +6,7 @@ import {
 import type {MapLibreModule} from "../../domain/types";
 
 type ClipPoint = readonly [number, number, number, number];
+type GlobePoint = readonly [number, number, number];
 
 export type SatelliteScreenPoint = {
   x: number;
@@ -24,6 +25,55 @@ function transformPoint(
     matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
     matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15],
   ];
+}
+
+function projectedRayIntersectsEarth(camera: GlobePoint, point: GlobePoint) {
+  const direction: GlobePoint = [
+    point[0] - camera[0],
+    point[1] - camera[1],
+    point[2] - camera[2],
+  ];
+  const a = direction[0] * direction[0]
+    + direction[1] * direction[1]
+    + direction[2] * direction[2];
+  if (a <= 1e-12) return false;
+
+  const b = 2 * (
+    camera[0] * direction[0]
+    + camera[1] * direction[1]
+    + camera[2] * direction[2]
+  );
+  const c = camera[0] * camera[0]
+    + camera[1] * camera[1]
+    + camera[2] * camera[2]
+    - 1;
+  const discriminant = b * b - 4 * a * c;
+  if (discriminant < 0) return false;
+
+  // The satellite can sit in front of the Earth while sharing the same screen
+  // pixels with it. We therefore care whether the camera ray intersects the
+  // unit Earth sphere anywhere in front of the camera, not whether the nadir
+  // itself belongs to the visible hemisphere.
+  const farRoot = (-b + Math.sqrt(discriminant)) / (2 * a);
+  return farRoot > 0;
+}
+
+/**
+ * Returns whether the satellite's actual projected position overlaps the
+ * visible Earth disk. Flat Mercator views are entirely map surface.
+ */
+export function isSatelliteOverEarthDisk(
+  map: MapLibreMap,
+  satellite: Pick<Satellite, "altitude" | "lat" | "lon">,
+) {
+  const transform = map._camera.transform;
+  if (!transform.getClippingPlane()) return true;
+
+  const camera = transform.cameraPosition;
+  return projectedRayIntersectsEarth(
+    [camera[0], camera[1], camera[2]],
+    satelliteGlobePosition(satellite),
+  );
 }
 
 /**
