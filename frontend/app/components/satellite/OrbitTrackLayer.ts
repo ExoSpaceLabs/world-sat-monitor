@@ -11,10 +11,19 @@ import {
   type Satellite,
   type SatelliteTrackPoint,
 } from "../../domain/satellite";
+import {
+  STREET_SURFACE,
+  THEME_CYAN,
+  THEME_GREEN,
+  THEME_HEADING,
+  usesStreetContrast,
+  type RgbaColor,
+} from "../../maps/theme";
 
 export const ORBIT_TRACK_LAYER_ID = "satellite-orbit-track";
 
 const DEG = Math.PI / 180;
+const EARTH_RADIUS_METERS = EARTH_RADIUS_KM * 1000;
 const MAX_RENDER_SEGMENT_ANGLE = 1 * DEG;
 const HEADING_VECTOR_LENGTH_KM = 1750;
 const HEADING_VECTOR_SAMPLES = 32;
@@ -22,10 +31,6 @@ const HEADING_VECTOR_SAMPLES = 32;
 // tile x, tile y, elevation metres, cumulative physical distance km
 const VERTEX_STRIDE_FLOATS = 4;
 const VERTEX_STRIDE_BYTES = VERTEX_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
-
-const HISTORY_COLOR = [0.341, 0.894, 0.627, 0.98] as const;
-const PREDICTION_COLOR = [0.345, 0.804, 0.867, 0.98] as const;
-const HEADING_COLOR = [0.541, 1.0, 0.776, 1.0] as const;
 
 const PREDICTION_DASH_PERIOD_KM = 320;
 const PREDICTION_DASH_ON_KM = 185;
@@ -74,13 +79,16 @@ type ProgramState = {
   };
   program: WebGLProgram;
   uniforms: {
+    cameraPosition: WebGLUniformLocation | null;
     clippingPlane: WebGLUniformLocation | null;
-    color: WebGLUniformLocation | null;
     dashOn: WebGLUniformLocation | null;
     dashPeriod: WebGLUniformLocation | null;
     depthAware: WebGLUniformLocation | null;
     fallbackMatrix: WebGLUniformLocation | null;
     mainMatrix: WebGLUniformLocation | null;
+    spaceColor: WebGLUniformLocation | null;
+    streetContrast: WebGLUniformLocation | null;
+    surfaceColor: WebGLUniformLocation | null;
     tileMercatorCoords: WebGLUniformLocation | null;
     transition: WebGLUniformLocation | null;
   };
@@ -351,10 +359,26 @@ in vec2 a_pos;
 in float a_elevation;
 in float a_distance;
 uniform highp float u_depth_aware;
+uniform highp vec3 u_camera_position;
 out highp float v_distance;
+out highp float v_earth_overlap;
 
 void main() {
   v_distance = a_distance;
+#ifdef GLOBE
+  vec3 surface_position = projectToSphere(a_pos);
+  float orbit_radius = 1.0 + max(a_elevation, 0.0) / ${EARTH_RADIUS_METERS.toFixed(1)};
+  vec3 point_position = surface_position * orbit_radius;
+  vec3 camera_ray = point_position - u_camera_position;
+  float ray_a = dot(camera_ray, camera_ray);
+  float ray_b = 2.0 * dot(u_camera_position, camera_ray);
+  float ray_c = dot(u_camera_position, u_camera_position) - 1.0;
+  v_earth_overlap = ray_a > 0.0
+    ? ray_b * ray_b - 4.0 * ray_a * ray_c
+    : -1.0;
+#else
+  v_earth_overlap = 1.0;
+#endif
   gl_Position = u_depth_aware > 0.5
     ? projectTileFor3D(a_pos, a_elevation)
     : projectTileWithElevation(a_pos, a_elevation);
@@ -364,14 +388,21 @@ void main() {
 precision highp float;
 
 in highp float v_distance;
-uniform highp vec4 u_color;
+in highp float v_earth_overlap;
+uniform highp vec4 u_space_color;
+uniform highp vec4 u_surface_color;
+uniform highp float u_street_contrast;
 uniform highp float u_dash_period;
 uniform highp float u_dash_on;
 out highp vec4 fragColor;
 
 void main() {
   if (u_dash_period > 0.0 && mod(v_distance, u_dash_period) > u_dash_on) discard;
-  fragColor = u_color;
+  if (u_street_contrast > 0.5) {
+    fragColor = v_earth_overlap >= 0.0 ? u_surface_color : u_space_color;
+  } else {
+    fragColor = u_space_color;
+  }
 }`;
 
   const program = linkProgram(gl, vertexSource, fragmentSource);
@@ -383,13 +414,16 @@ void main() {
       distance: gl.getAttribLocation(program, "a_distance"),
     },
     uniforms: {
+      cameraPosition: gl.getUniformLocation(program, "u_camera_position"),
       clippingPlane: gl.getUniformLocation(program, "u_projection_clipping_plane"),
-      color: gl.getUniformLocation(program, "u_color"),
       dashOn: gl.getUniformLocation(program, "u_dash_on"),
       dashPeriod: gl.getUniformLocation(program, "u_dash_period"),
       depthAware: gl.getUniformLocation(program, "u_depth_aware"),
       fallbackMatrix: gl.getUniformLocation(program, "u_projection_fallback_matrix"),
       mainMatrix: gl.getUniformLocation(program, "u_projection_matrix"),
+      spaceColor: gl.getUniformLocation(program, "u_space_color"),
+      streetContrast: gl.getUniformLocation(program, "u_street_contrast"),
+      surfaceColor: gl.getUniformLocation(program, "u_surface_color"),
       tileMercatorCoords: gl.getUniformLocation(program, "u_projection_tile_mercator_coords"),
       transition: gl.getUniformLocation(program, "u_projection_transition"),
     },
@@ -419,7 +453,9 @@ function drawGeometry(
   program: ProgramState,
   buffer: WebGLBuffer,
   geometry: PathGeometry,
-  color: readonly [number, number, number, number],
+  spaceColor: RgbaColor,
+  surfaceColor: RgbaColor,
+  streetContrast: boolean,
   width: number,
   dashPeriod: number,
   dashOn: number,
@@ -431,7 +467,9 @@ function drawGeometry(
   enableAttribute(gl, program.attributes.elevation, 1, 2);
   enableAttribute(gl, program.attributes.distance, 1, 3);
 
-  gl.uniform4f(program.uniforms.color, ...color);
+  gl.uniform4f(program.uniforms.spaceColor, ...spaceColor);
+  gl.uniform4f(program.uniforms.surfaceColor, ...surfaceColor);
+  gl.uniform1f(program.uniforms.streetContrast, streetContrast ? 1 : 0);
   gl.uniform1f(program.uniforms.dashPeriod, dashPeriod);
   gl.uniform1f(program.uniforms.dashOn, dashOn);
 
@@ -551,12 +589,17 @@ export class OrbitTrackLayer implements CustomLayerInterface {
         applyGlobeMatrix: true,
       });
       const depthAware = this.state.settings.path.mode === "orbit";
+      const streetContrast = this.map ? usesStreetContrast(this.map) : false;
+      const historySpaceColor = streetContrast ? THEME_CYAN : THEME_GREEN;
+      const predictionSpaceColor = THEME_CYAN;
+      const headingSpaceColor = streetContrast ? THEME_CYAN : THEME_HEADING;
+      const cameraPosition = this.map?._camera.transform.cameraPosition;
 
       // MapLibre configures a shared 3D depth buffer before rendering a custom
       // layer declared as `3d`. ORBIT mode leaves that depth test intact and
-      // uses projectTileFor3D, so the Earth itself performs occlusion. We only
-      // disable depth for GROUND mode, which deliberately remains a readable
-      // surface overlay and uses MapLibre's surface-horizon clipping helper.
+      // uses projectTileFor3D, so the Earth itself performs occlusion. Street
+      // contrast is independent: a camera-ray/sphere test decides whether the
+      // projected elevated point sits over the Earth disk or the background.
       if (depthAware) {
         gl.depthMask(false);
       } else {
@@ -575,6 +618,12 @@ export class OrbitTrackLayer implements CustomLayerInterface {
       gl.uniform4f(program.uniforms.clippingPlane, ...projection.clippingPlane);
       gl.uniform1f(program.uniforms.transition, projection.projectionTransition);
       gl.uniform1f(program.uniforms.depthAware, depthAware ? 1 : 0);
+      gl.uniform3f(
+        program.uniforms.cameraPosition,
+        cameraPosition?.[0] ?? 0,
+        cameraPosition?.[1] ?? 0,
+        cameraPosition?.[2] ?? 0,
+      );
 
       if (this.state.settings.path.enabled) {
         drawGeometry(
@@ -582,7 +631,9 @@ export class OrbitTrackLayer implements CustomLayerInterface {
           program,
           this.buffers.history,
           this.geometry.history,
-          HISTORY_COLOR,
+          historySpaceColor,
+          streetContrast ? STREET_SURFACE : historySpaceColor,
+          streetContrast,
           3,
           0,
           0,
@@ -592,7 +643,9 @@ export class OrbitTrackLayer implements CustomLayerInterface {
           program,
           this.buffers.prediction,
           this.geometry.prediction,
-          PREDICTION_COLOR,
+          predictionSpaceColor,
+          streetContrast ? STREET_SURFACE : predictionSpaceColor,
+          streetContrast,
           3,
           PREDICTION_DASH_PERIOD_KM,
           PREDICTION_DASH_ON_KM,
@@ -605,7 +658,9 @@ export class OrbitTrackLayer implements CustomLayerInterface {
           program,
           this.buffers.heading,
           this.geometry.heading,
-          HEADING_COLOR,
+          headingSpaceColor,
+          streetContrast ? STREET_SURFACE : headingSpaceColor,
+          streetContrast,
           2.5,
           HEADING_DASH_PERIOD_KM,
           HEADING_DASH_ON_KM,

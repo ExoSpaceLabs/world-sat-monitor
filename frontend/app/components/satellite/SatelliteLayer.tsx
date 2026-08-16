@@ -4,6 +4,7 @@ import {useEffect, useRef} from "react";
 import type {Map as MapLibreMap, Marker as MapLibreMarker} from "maplibre-gl";
 import {DEFAULT_APP_SETTINGS, type OrbitDisplaySettings} from "../../domain/settings";
 import type {MapSession} from "../../domain/types";
+import {usesStreetContrast} from "../../maps/theme";
 import {getAppSettings} from "../../services/worldsat-api";
 import {
   isSatelliteOccluded,
@@ -17,7 +18,10 @@ import {
   ORBIT_TRACK_LAYER_ID,
   type OrbitDebugState,
 } from "./OrbitTrackLayer";
-import {projectSatelliteScreenPosition} from "./satelliteProjection";
+import {
+  isSatelliteOverEarthDisk,
+  projectSatelliteScreenPosition,
+} from "./satelliteProjection";
 
 type MarkerElements = {
   heading: HTMLElement;
@@ -73,6 +77,10 @@ function updateMarkerPresentation(
   const occluded = cameraPosition
     ? isSatelliteOccluded(satellite, cameraPosition)
     : false;
+  const street = usesStreetContrast(map);
+  const overEarth = isSatelliteOverEarthDisk(map, satellite);
+  elements.node.classList.toggle("street-surface", street && overEarth);
+  elements.node.classList.toggle("street-space", street && !overEarth);
   elements.node.classList.toggle("occluded", occluded);
   elements.node.dataset.visibility = occluded ? "occluded" : "visible";
 }
@@ -222,10 +230,6 @@ export function SatelliteLayer({
     trackLayerRef.current = layer;
 
     try {
-      // mapSession is only published from GlobeMap's style.load callback, so
-      // the style is already ready for custom-layer installation here. Waiting
-      // on isStyleLoaded()/another style.load creates a race where the only
-      // style.load event has already happened and this layer is never added.
       if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
       map.addLayer(layer);
     } catch (error) {
@@ -237,9 +241,6 @@ export function SatelliteLayer({
       if (map.getLayer(ORBIT_TRACK_LAYER_ID)) map.removeLayer(ORBIT_TRACK_LAYER_ID);
       if (trackLayerRef.current === layer) trackLayerRef.current = null;
     };
-    // styleRevision in MapSession intentionally recreates the custom layer
-    // after a basemap replacement because MapLibre removes custom layers with
-    // the old style.
   }, [mapSession, onDebugState]);
 
   return null;
