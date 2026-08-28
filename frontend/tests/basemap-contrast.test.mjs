@@ -3,6 +3,7 @@ import {readFile} from "node:fs/promises";
 import test from "node:test";
 
 const mapStyleUrl = new URL("../app/maps/styles.ts", import.meta.url);
+const landMaskUrl = new URL("../app/maps/land-mask.ts", import.meta.url);
 const globeMapUrl = new URL("../app/components/globe/GlobeMap.tsx", import.meta.url);
 const mapSettingsUrl = new URL("../app/components/settings/MapSettingsPanel.tsx", import.meta.url);
 const appSettingsUrl = new URL("../app/domain/settings.ts", import.meta.url);
@@ -16,23 +17,24 @@ async function source(url) {
   return readFile(url, "utf8");
 }
 
-test("themed basemap uses the proven Esri dark raster stack", async () => {
+test("themed basemap renders exact independent water and land colors", async () => {
   const text = await source(mapStyleUrl);
+  const mask = await source(landMaskUrl);
 
-  assert.match(text, /World_Dark_Gray_Base\/MapServer\/tile/);
   assert.match(text, /World_Dark_Gray_Reference\/MapServer\/tile/);
-  assert.match(text, /mode === "dark"\) return themedRasterStyle\(themedColors\)/);
-  assert.match(text, /"esri-dark-base"/);
-  assert.match(text, /"esri-dark-reference"/);
-  assert.match(text, /id: "worldsat-themed-surface"/);
-  assert.match(text, /mixHex\(colors\.water, colors\.land, 0\.22\)/);
-  assert.match(text, /brightness\(colors\.water\)/);
-  assert.match(text, /brightness\(colors\.land\)/);
-  assert.match(text, /"raster-opacity": baseOpacity/);
-  assert.match(text, /"raster-brightness-max": brightnessMax/);
-  assert.doesNotMatch(text, /natural-earth/i);
+  assert.match(text, /mode === "dark"\) return themedMapStyle\(themedColors\)/);
+  assert.match(text, /LAND_MASK_GEOJSON/);
+  assert.match(text, /type: "geojson"/);
+  assert.match(text, /id: THEMED_WATER_LAYER_ID/);
+  assert.match(text, /"background-color": colors\.water/);
+  assert.match(text, /id: THEMED_LAND_LAYER_ID/);
+  assert.match(text, /"fill-color": colors\.land/);
+  assert.match(text, /"fill-opacity": 1/);
+  assert.match(mask, /LAND_RINGS/);
+  assert.match(mask, /FeatureCollection/);
+  assert.doesNotMatch(text, /World_Dark_Gray_Base/);
+  assert.doesNotMatch(text, /mixHex/);
   assert.doesNotMatch(text, /demotiles\.maplibre/i);
-  assert.doesNotMatch(text, /source-layer/);
   assert.doesNotMatch(text, /cartocdn/i);
   assert.doesNotMatch(text, /API_KEY/);
 });
@@ -48,7 +50,7 @@ test("themed defaults match the supplied object-panel palette", async () => {
   assert.match(satelliteStyles, /\.follow-button\.active[^\n]*background:#0a2c39/);
 });
 
-test("map settings re-renders the raster theme from persistent water and land colors", async () => {
+test("map settings repaints themed colors without reloading the style", async () => {
   const panel = await source(mapSettingsUrl);
   const globe = await source(globeMapUrl);
 
@@ -59,11 +61,11 @@ test("map settings re-renders the raster theme from persistent water and land co
   assert.match(panel, /type="color" value=\{themeLandColor\}/);
   assert.match(panel, /onThemeWaterColorChange/);
   assert.match(panel, /onThemeLandColorChange/);
-  assert.match(globe, /themeLandColorRef/);
-  assert.match(globe, /themeWaterColorRef/);
-  assert.match(globe, /themeChanged/);
-  assert.match(globe, /loadBasemapStyle\(basemap, \{land: themeLandColor, water: themeWaterColor\}\)/);
-  assert.match(globe, /mapRef\.current\.setStyle\(style\)/);
+  assert.match(globe, /THEMED_WATER_LAYER_ID/);
+  assert.match(globe, /THEMED_LAND_LAYER_ID/);
+  assert.match(globe, /map\.setPaintProperty\(THEMED_WATER_LAYER_ID, "background-color", themeWaterColor\)/);
+  assert.match(globe, /map\.setPaintProperty\(THEMED_LAND_LAYER_ID, "fill-color", themeLandColor\)/);
+  assert.match(globe, /map\.triggerRepaint\(\)/);
 });
 
 test("themed basemap source errors install the real fallback style", async () => {
