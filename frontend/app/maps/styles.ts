@@ -2,6 +2,8 @@ import type {StyleSpecification} from "maplibre-gl";
 import type {Basemap} from "../domain/types";
 
 const OPENFREEMAP_DARK_STYLE_URL = "/map/openfreemap/styles/dark";
+const ESRI_DARK_BASE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
@@ -20,7 +22,7 @@ async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
 }
 
 export async function loadBasemapStyle(mode: Basemap): Promise<StyleSpecification> {
-  if (mode === "dark") return loadOpenFreeMapDarkStyle();
+  if (mode === "dark") return darkRasterStyle();
 
   if (mode === "street") {
     return rasterStyle("osm-standard", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
@@ -50,6 +52,33 @@ export async function loadBasemapStyle(mode: Basemap): Promise<StyleSpecificatio
 
 export function fallbackStyle(): StyleSpecification {
   return rasterStyle("osm-fallback", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
+}
+
+function darkRasterStyle(): StyleSpecification {
+  return {
+    version: 8,
+    projection: {type: "globe"},
+    sources: {
+      "esri-dark-base": {
+        type: "raster",
+        tiles: [ESRI_DARK_BASE_TILES],
+        tileSize: 256,
+        maxzoom: 16,
+        attribution: "Tiles © Esri and data providers",
+      },
+      "esri-dark-reference": {
+        type: "raster",
+        tiles: [ESRI_DARK_REFERENCE_TILES],
+        tileSize: 256,
+        maxzoom: 16,
+        attribution: "Tiles © Esri and data providers",
+      },
+    },
+    layers: [
+      {id: "esri-dark-base", type: "raster", source: "esri-dark-base"},
+      {id: "esri-dark-reference", type: "raster", source: "esri-dark-reference"},
+    ],
+  };
 }
 
 function rasterStyle(id: string, tiles: string[], maxzoom: number, attribution: string): StyleSpecification {
