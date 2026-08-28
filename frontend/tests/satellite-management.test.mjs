@@ -84,7 +84,7 @@ test("group CRUD, display lease and batched simulated positions use group endpoi
     return response(201, {id: 4, name: "ION", group_type: "constellation", source: "user", member_count: 0, active_member_count: 0});
   };
   const at = new Date("2026-08-28T00:00:00Z");
-  const groupSettings = {position_update_ms: 2000, prediction_hours: 3, step_seconds: 120, refresh_seconds: 60};
+  const groupSettings = {marker_placement: "orbit", show_satellite_names: false, direction_vector_enabled: false, position_update_ms: 2000, prediction_hours: 3, step_seconds: 120, refresh_seconds: 60};
   try {
     await listSatelliteGroups();
     await createSatelliteGroup({name: "ION", group_type: "constellation"});
@@ -122,14 +122,24 @@ test("single and group display are mutually exclusive in the monitor", async () 
   assert.match(panel, /onDisplayGroup/);
 });
 
-test("single and group orbit policies are separate", async () => {
+test("object and group display policies are separate and coherent", async () => {
   const settings = await readFile(new URL("../app/domain/settings.ts", import.meta.url), "utf8");
   const panel = await readFile(new URL("../app/components/satellite/OrbitSettingsPanel.tsx", import.meta.url), "utf8");
+  const satelliteLayer = await readFile(new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url), "utf8");
+  const groupLayer = await readFile(new URL("../app/components/groups/GroupSatelliteLayer.tsx", import.meta.url), "utf8");
   assert.match(settings, /group_orbit: GroupOrbitDisplaySettings/);
+  assert.match(settings, /marker_placement: "orbit"/);
+  assert.match(settings, /show_satellite_names: false/);
+  assert.match(settings, /direction_vector_enabled: false/);
   assert.match(settings, /prediction_hours: 3/);
   assert.match(settings, /step_seconds: 120/);
-  assert.match(panel, /CURRENT \/ SIMULATED MARKERS ONLY/);
-  assert.match(panel, /Group mode never draws every member/);
+  assert.match(panel, /OBJECT \+ TRACK PLACEMENT/);
+  assert.match(panel, /MARKER PLACEMENT/);
+  assert.match(panel, /SHOW SATELLITE NAMES/);
+  assert.match(panel, /DRAW DIRECTION VECTORS/);
+  assert.match(satelliteLayer, /settings\.path\.mode === "ground"/);
+  assert.match(satelliteLayer, /\.\.\.satellite, altitude: 0/);
+  assert.match(groupLayer, /placement === "orbit" \? point\.altitude : 0/);
 });
 
 test("displayed objects are selectable and satellite manager lives in top controls", async () => {
@@ -139,5 +149,7 @@ test("displayed objects are selectable and satellite manager lives in top contro
   assert.match(panel, /onSelect\(noradId\)/);
   assert.match(monitor, />OBJECTS</);
   assert.match(monitor, />SATELLITES</);
+  assert.match(monitor, /GROUP SETTINGS/);
+  assert.match(monitor, /OBJECT SETTINGS/);
   assert.match(monitor, /<SatelliteManager/);
 });
