@@ -55,10 +55,7 @@ export function GroupPanel({
   };
 
   useEffect(() => {
-    if (expandedId === null) {
-      setMembers([]);
-      return;
-    }
+    if (expandedId === null) return;
     let cancelled = false;
     void listSatelliteGroupMembers(expandedId)
       .then((loaded) => { if (!cancelled) { setMembers(loaded); setError(null); } })
@@ -75,8 +72,8 @@ export function GroupPanel({
     try {
       const created = await createSatelliteGroup({name: cleanName, group_type: groupType});
       setName("");
-      setExpandedId(created.id);
       setMembers([]);
+      setExpandedId(created.id);
       await notifyChanged();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create group");
@@ -109,7 +106,10 @@ export function GroupPanel({
     try {
       await deleteSatelliteGroup(group.id);
       if (visibleGroupIds.has(group.id)) onToggleVisibility(group.id);
-      if (expandedId === group.id) setExpandedId(null);
+      if (expandedId === group.id) {
+        setExpandedId(null);
+        setMembers([]);
+      }
       await notifyChanged();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not delete group");
@@ -149,6 +149,12 @@ export function GroupPanel({
     }
   };
 
+  const toggleExpanded = (groupId: number, isExpanded: boolean) => {
+    setMembers([]);
+    setCandidateId("");
+    setExpandedId(isExpanded ? null : groupId);
+  };
+
   return (
     <aside className="group-panel" aria-label="Satellite groups">
       <div className="group-panel-head">
@@ -176,7 +182,7 @@ export function GroupPanel({
           return (
             <div className={`group-entry ${expandedRow ? "expanded" : ""}`} key={group.id}>
               <div className="group-row">
-                <button className="group-expand" type="button" onClick={() => setExpandedId(expandedRow ? null : group.id)} aria-expanded={expandedRow}>
+                <button className="group-expand" type="button" onClick={() => toggleExpanded(group.id, expandedRow)} aria-expanded={expandedRow}>
                   <strong>{group.name}</strong>
                   <small>{group.group_type.toUpperCase()} · {group.active_member_count}/{group.member_count} ACTIVE · {group.source.toUpperCase()}</small>
                 </button>
