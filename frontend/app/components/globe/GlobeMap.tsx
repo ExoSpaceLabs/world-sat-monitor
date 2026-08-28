@@ -14,7 +14,12 @@ import {
 } from "../../domain/scene";
 import type {Basemap, MapSession, MapState} from "../../domain/types";
 import type {Satellite} from "../../domain/satellite";
-import {fallbackStyle, loadBasemapStyle} from "../../maps/styles";
+import {
+  THEMED_LAND_LAYER_ID,
+  THEMED_WATER_LAYER_ID,
+  fallbackStyle,
+  loadBasemapStyle,
+} from "../../maps/styles";
 
 type RotationReason = "active" | "follow" | "zoom";
 
@@ -262,11 +267,28 @@ export function GlobeMap({
   useEffect(() => {
     const map = mapRef.current;
     const basemapChanged = basemapRef.current !== basemap;
-    const themeChanged = basemap === "dark" && (
-      themeLandColorRef.current !== themeLandColor
-      || themeWaterColorRef.current !== themeWaterColor
-    );
+    const landChanged = themeLandColorRef.current !== themeLandColor;
+    const waterChanged = themeWaterColorRef.current !== themeWaterColor;
+    const themeChanged = basemap === "dark" && (landChanged || waterChanged);
     if (!map || (!basemapChanged && !themeChanged)) return;
+
+    if (!basemapChanged && themeChanged) {
+      const landLayerReady = Boolean(map.getLayer(THEMED_LAND_LAYER_ID));
+      const waterLayerReady = Boolean(map.getLayer(THEMED_WATER_LAYER_ID));
+      if (landLayerReady && waterLayerReady) {
+        if (waterChanged) {
+          map.setPaintProperty(THEMED_WATER_LAYER_ID, "background-color", themeWaterColor);
+        }
+        if (landChanged) {
+          map.setPaintProperty(THEMED_LAND_LAYER_ID, "fill-color", themeLandColor);
+          map.setPaintProperty(THEMED_LAND_LAYER_ID, "fill-outline-color", themeLandColor);
+        }
+        themeLandColorRef.current = themeLandColor;
+        themeWaterColorRef.current = themeWaterColor;
+        map.triggerRepaint();
+        return;
+      }
+    }
 
     basemapRef.current = basemap;
     themeLandColorRef.current = themeLandColor;
