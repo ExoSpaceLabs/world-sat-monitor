@@ -6,6 +6,7 @@ const mapStyleUrl = new URL("../app/maps/styles.ts", import.meta.url);
 const globeMapUrl = new URL("../app/components/globe/GlobeMap.tsx", import.meta.url);
 const mapSettingsUrl = new URL("../app/components/settings/MapSettingsPanel.tsx", import.meta.url);
 const appSettingsUrl = new URL("../app/domain/settings.ts", import.meta.url);
+const worldsatApiUrl = new URL("../app/services/worldsat-api.ts", import.meta.url);
 const themeUrl = new URL("../app/maps/theme.ts", import.meta.url);
 const orbitRendererUrl = new URL("../app/components/satellite/OrbitTrackLayer.ts", import.meta.url);
 const satelliteLayerUrl = new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url);
@@ -16,18 +17,18 @@ async function source(url) {
   return readFile(url, "utf8");
 }
 
-test("themed basemap uses detailed Esri grayscale with base color and contrast", async () => {
+test("themed basemap blends detailed Esri grayscale over one tint color", async () => {
   const text = await source(mapStyleUrl);
 
   assert.match(text, /World_Dark_Gray_Base\/MapServer\/tile/);
   assert.match(text, /World_Dark_Gray_Reference\/MapServer\/tile/);
   assert.match(text, /mode === "dark"\) return themedRasterStyle\(themedStyle\)/);
-  assert.match(text, /id: THEMED_SURFACE_LAYER_ID/);
+  assert.match(text, /THEMED_DETAIL_OPACITY = 0\.42/);
   assert.match(text, /"background-color": theme\.baseColor/);
-  assert.match(text, /id: THEMED_BASE_LAYER_ID/);
+  assert.match(text, /"raster-opacity": THEMED_DETAIL_OPACITY/);
   assert.match(text, /"raster-saturation": -1/);
-  assert.match(text, /"raster-contrast": clampRasterContrast\(theme\.contrast\)/);
-  assert.match(text, /"raster-opacity": 0\.55/);
+  assert.match(text, /"raster-contrast": contrast/);
+  assert.match(text, /"raster-brightness-max": 0\.58/);
   assert.doesNotMatch(text, /LAND_MASK_GEOJSON/);
   assert.doesNotMatch(text, /type: "geojson"/);
   assert.doesNotMatch(text, /cartocdn/i);
@@ -47,23 +48,26 @@ test("themed defaults retain the dark mission palette and moderate detail contra
   assert.match(satelliteStyles, /\.follow-button\.active[^\n]*background:#0a2c39/);
 });
 
-test("map settings repaints themed base and contrast without reloading the style", async () => {
+test("map settings use one tint, contrast, and survive legacy theme payloads", async () => {
   const panel = await source(mapSettingsUrl);
   const globe = await source(globeMapUrl);
+  const api = await source(worldsatApiUrl);
 
   assert.match(panel, /mode === "dark" \? "THEMED"/);
-  assert.match(panel, />BASE COLOR</);
+  assert.match(panel, />TINT COLOR</);
   assert.match(panel, />CONTRAST</);
-  assert.match(panel, /type="color" value=\{themeBaseColor\}/);
-  assert.match(panel, /type="range"/);
-  assert.match(panel, /onThemeBaseColorChange/);
-  assert.match(panel, /onThemeContrastChange/);
-  assert.match(panel, /HARD MID-TONE THRESHOLD/);
+  assert.match(panel, /safeBaseColor/);
+  assert.match(panel, /DEFAULT_THEMED_MAP_STYLE\.baseColor/);
+  assert.match(panel, /TINT IS BLENDED UNDER THE RASTER/);
   assert.match(globe, /THEMED_SURFACE_LAYER_ID/);
   assert.match(globe, /THEMED_BASE_LAYER_ID/);
   assert.match(globe, /map\.setPaintProperty\(THEMED_SURFACE_LAYER_ID, "background-color", themeBaseColor\)/);
   assert.match(globe, /map\.setPaintProperty\(THEMED_BASE_LAYER_ID, "raster-contrast", themeContrast\)/);
   assert.match(globe, /map\.triggerRepaint\(\)/);
+  assert.match(api, /normalizeAppSettings/);
+  assert.match(api, /themed_water_color\?: string/);
+  assert.match(api, /map\.themed_base_color \?\? map\.themed_water_color/);
+  assert.match(api, /version: DEFAULT_APP_SETTINGS\.version/);
 });
 
 test("MapLibre worker is configured before map construction", async () => {

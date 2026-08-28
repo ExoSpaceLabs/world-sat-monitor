@@ -1,5 +1,6 @@
 import type {CSSProperties} from "react";
 import {AUTO_ROTATION_MAX_ZOOM, ROTATION_DEGREES_PER_SECOND} from "../../domain/scene";
+import {DEFAULT_THEMED_MAP_STYLE} from "../../domain/settings";
 import type {Basemap, SceneOptions} from "../../domain/types";
 
 const TIME_SCALES = [1, 10, 60, 360] as const;
@@ -39,7 +40,15 @@ export function MapSettingsPanel({
   onReset,
   onClose,
 }: MapSettingsPanelProps) {
-  const contrastPercent = Math.round(themeContrast * 100);
+  // Settings can briefly come from an older persisted/API schema during an
+  // upgrade. Never let a missing theme field take down the entire React tree.
+  const safeBaseColor = /^#[0-9a-f]{6}$/i.test(themeBaseColor ?? "")
+    ? themeBaseColor
+    : DEFAULT_THEMED_MAP_STYLE.baseColor;
+  const safeContrast = Number.isFinite(themeContrast)
+    ? Math.max(-0.95, Math.min(0.95, themeContrast))
+    : DEFAULT_THEMED_MAP_STYLE.contrast;
+  const contrastPercent = Math.round(safeContrast * 100);
   const contrastSliderPercent = ((contrastPercent + 95) / 190) * 100;
 
   return (
@@ -65,8 +74,8 @@ export function MapSettingsPanel({
         {basemap === "dark" && (
           <div className="theme-map-controls" aria-label="Themed basemap appearance">
             <label className="theme-base-color">
-              <span><b>BASE COLOR</b><output>{themeBaseColor.toUpperCase()}</output></span>
-              <div><input type="color" value={themeBaseColor} onChange={(event) => onThemeBaseColorChange(event.target.value)} aria-label="Themed base color"/><i style={{background: themeBaseColor}}/></div>
+              <span><b>TINT COLOR</b><output>{safeBaseColor.toUpperCase()}</output></span>
+              <div><input type="color" value={safeBaseColor} onChange={(event) => onThemeBaseColorChange(event.target.value)} aria-label="Themed tint color"/><i style={{background: safeBaseColor}}/></div>
             </label>
             <label className="theme-contrast">
               <span><b>CONTRAST</b><output>{contrastPercent > 0 ? "+" : ""}{contrastPercent}%</output></span>
@@ -80,7 +89,7 @@ export function MapSettingsPanel({
                 aria-label="Themed raster contrast"
                 style={{"--theme-contrast": `${contrastSliderPercent}%`} as CSSProperties}
               />
-              <small>ESRI GRAYSCALE · HIGH CONTRAST APPROACHES A HARD MID-TONE THRESHOLD</small>
+              <small>ESRI GRAYSCALE DETAIL · TINT IS BLENDED UNDER THE RASTER</small>
             </label>
           </div>
         )}

@@ -5,7 +5,7 @@ import type {
   SatelliteCreateRequest,
   SatelliteTrackPoint,
 } from "../domain/satellite";
-import type {AppSettings} from "../domain/settings";
+import {DEFAULT_APP_SETTINGS, type AppSettings} from "../domain/settings";
 
 type PositionResponse = {
   satellite: {id: number; norad_id: string | null; name: string; active: boolean};
@@ -42,6 +42,17 @@ type CatalogSearchResponse = {
   results: CatalogSearchResult[];
 };
 
+type AppSettingsWire = {
+  version?: number;
+  map?: Partial<AppSettings["map"]> & {
+    themed_water_color?: string;
+    themed_land_color?: string;
+  };
+  orbit?: Partial<Omit<AppSettings["orbit"], "path">> & {
+    path?: Partial<AppSettings["orbit"]["path"]>;
+  };
+};
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
@@ -56,15 +67,57 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getAppSettings(): Promise<AppSettings> {
-  return requestJson<AppSettings>("/api/v1/settings");
+function normalizeAppSettings(payload: AppSettingsWire): AppSettings {
+  const map = payload.map ?? {};
+  const orbit = payload.orbit ?? {};
+  const path = orbit.path ?? {};
+  const baseColorCandidate = map.themed_base_color ?? map.themed_water_color;
+  const baseColor = typeof baseColorCandidate === "string" && /^#[0-9a-f]{6}$/i.test(baseColorCandidate)
+    ? baseColorCandidate
+    : DEFAULT_APP_SETTINGS.map.themed_base_color;
+  const contrast = typeof map.themed_contrast === "number" && Number.isFinite(map.themed_contrast)
+    ? Math.max(-0.95, Math.min(0.95, map.themed_contrast))
+    : DEFAULT_APP_SETTINGS.map.themed_contrast;
+  const basemap = map.basemap === "dark" || map.basemap === "street" || map.basemap === "satellite"
+    ? map.basemap
+    : DEFAULT_APP_SETTINGS.map.basemap;
+
+  return {
+    version: DEFAULT_APP_SETTINGS.version,
+    map: {
+      basemap,
+      themed_base_color: baseColor,
+      themed_contrast: contrast,
+      space_environment: typeof map.space_environment === "boolean" ? map.space_environment : DEFAULT_APP_SETTINGS.map.space_environment,
+      shadow_opacity: typeof map.shadow_opacity === "number" && Number.isFinite(map.shadow_opacity) ? map.shadow_opacity : DEFAULT_APP_SETTINGS.map.shadow_opacity,
+      debug: typeof map.debug === "boolean" ? map.debug : DEFAULT_APP_SETTINGS.map.debug,
+      time_scale: typeof map.time_scale === "number" && Number.isFinite(map.time_scale) ? map.time_scale : DEFAULT_APP_SETTINGS.map.time_scale,
+    },
+    orbit: {
+      direction_vector_enabled: typeof orbit.direction_vector_enabled === "boolean" ? orbit.direction_vector_enabled : DEFAULT_APP_SETTINGS.orbit.direction_vector_enabled,
+      position_update_ms: typeof orbit.position_update_ms === "number" && Number.isFinite(orbit.position_update_ms) ? orbit.position_update_ms : DEFAULT_APP_SETTINGS.orbit.position_update_ms,
+      path: {
+        enabled: typeof path.enabled === "boolean" ? path.enabled : DEFAULT_APP_SETTINGS.orbit.path.enabled,
+        mode: path.mode === "ground" || path.mode === "orbit" ? path.mode : DEFAULT_APP_SETTINGS.orbit.path.mode,
+        history_minutes: typeof path.history_minutes === "number" && Number.isFinite(path.history_minutes) ? path.history_minutes : DEFAULT_APP_SETTINGS.orbit.path.history_minutes,
+        prediction_hours: typeof path.prediction_hours === "number" && Number.isFinite(path.prediction_hours) ? path.prediction_hours : DEFAULT_APP_SETTINGS.orbit.path.prediction_hours,
+        resolution_seconds: typeof path.resolution_seconds === "number" && Number.isFinite(path.resolution_seconds) ? path.resolution_seconds : DEFAULT_APP_SETTINGS.orbit.path.resolution_seconds,
+        refresh_seconds: typeof path.refresh_seconds === "number" && Number.isFinite(path.refresh_seconds) ? path.refresh_seconds : DEFAULT_APP_SETTINGS.orbit.path.refresh_seconds,
+      },
+    },
+  };
 }
 
-export function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
-  return requestJson<AppSettings>("/api/v1/settings", {
+export async function getAppSettings(): Promise<AppSettings> {
+  return normalizeAppSettings(await requestJson<AppSettingsWire>("/api/v1/settings"));
+}
+
+export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
+  const payload = await requestJson<AppSettingsWire>("/api/v1/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
   });
+  return normalizeAppSettings(payload);
 }
 
 export async function listManagedSatellites(active?: boolean): Promise<ManagedSatellite[]> {

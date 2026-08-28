@@ -7,6 +7,7 @@ const ESRI_DARK_BASE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/serv
 const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+const THEMED_DETAIL_OPACITY = 0.42;
 
 export const THEMED_SURFACE_LAYER_ID = "worldsat-themed-surface";
 export const THEMED_BASE_LAYER_ID = "esri-dark-base";
@@ -71,12 +72,14 @@ export function fallbackStyle(): StyleSpecification {
 }
 
 function themedRasterStyle(theme: ThemedMapStyle): StyleSpecification {
+  const contrast = clampRasterContrast(theme.contrast);
   return {
     version: 8,
     projection: {type: "globe"},
     metadata: {
       "worldsat:theme-base": theme.baseColor,
-      "worldsat:theme-contrast": clampRasterContrast(theme.contrast),
+      "worldsat:theme-contrast": contrast,
+      "worldsat:theme-detail-opacity": THEMED_DETAIL_OPACITY,
     },
     sources: {
       "esri-dark-base": {
@@ -105,11 +108,13 @@ function themedRasterStyle(theme: ThemedMapStyle): StyleSpecification {
         type: "raster",
         source: "esri-dark-base",
         paint: {
-          "raster-opacity": 0.55,
+          // One-color tinting: the detailed grayscale cartography is deliberately
+          // translucent so the selected mission color remains visible underneath.
+          "raster-opacity": THEMED_DETAIL_OPACITY,
           "raster-saturation": -1,
-          "raster-contrast": clampRasterContrast(theme.contrast),
+          "raster-contrast": contrast,
           "raster-brightness-min": 0,
-          "raster-brightness-max": 0.62,
+          "raster-brightness-max": 0.58,
         },
       },
       {
@@ -117,7 +122,7 @@ function themedRasterStyle(theme: ThemedMapStyle): StyleSpecification {
         type: "raster",
         source: "esri-dark-reference",
         paint: {
-          "raster-opacity": 0.78,
+          "raster-opacity": 0.74,
           "raster-saturation": -0.45,
           "raster-contrast": 0.06,
           "raster-brightness-max": 0.82,
