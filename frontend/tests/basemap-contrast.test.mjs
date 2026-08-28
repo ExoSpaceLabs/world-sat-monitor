@@ -39,6 +39,17 @@ test("themed basemap renders exact independent water and land colors", async () 
   assert.doesNotMatch(text, /API_KEY/);
 });
 
+test("MapLibre v6 worker is bundled before map creation", async () => {
+  const globe = await source(globeMapUrl);
+
+  assert.match(globe, /maplibre-gl-worker\.mjs\?worker&url/);
+  assert.match(globe, /maplibre\.setWorkerUrl\(maplibreWorkerUrl\)/);
+  assert.ok(
+    globe.indexOf("maplibre.setWorkerUrl(maplibreWorkerUrl)") < globe.indexOf("new maplibre.Map"),
+    "worker URL must be configured before MapLibre creates the map",
+  );
+});
+
 test("themed defaults match the supplied object-panel palette", async () => {
   const settings = await source(appSettingsUrl);
   const satelliteStyles = await source(satelliteStylesUrl);
