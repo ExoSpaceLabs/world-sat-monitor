@@ -16,8 +16,8 @@ import {
 import type {Basemap, MapSession, MapState} from "../../domain/types";
 import type {Satellite} from "../../domain/satellite";
 import {
-  THEMED_LAND_LAYER_ID,
-  THEMED_WATER_LAYER_ID,
+  THEMED_BASE_LAYER_ID,
+  THEMED_SURFACE_LAYER_ID,
   fallbackStyle,
   loadBasemapStyle,
 } from "../../maps/styles";
@@ -30,8 +30,8 @@ type GlobeMapProps = {
   followSatellite: boolean;
   resetKey: number;
   satellite: Satellite;
-  themeLandColor: string;
-  themeWaterColor: string;
+  themeBaseColor: string;
+  themeContrast: number;
   timeResetKey: number;
   timeScale: number;
   onMapSession: (session: MapSession | null) => void;
@@ -80,8 +80,8 @@ export function GlobeMap({
   followSatellite,
   resetKey,
   satellite,
-  themeLandColor,
-  themeWaterColor,
+  themeBaseColor,
+  themeContrast,
   timeResetKey,
   timeScale,
   onMapSession,
@@ -95,8 +95,8 @@ export function GlobeMap({
   const styleRequestRef = useRef(0);
   const styleRevisionRef = useRef(0);
   const basemapRef = useRef(basemap);
-  const themeLandColorRef = useRef(themeLandColor);
-  const themeWaterColorRef = useRef(themeWaterColor);
+  const themeBaseColorRef = useRef(themeBaseColor);
+  const themeContrastRef = useRef(themeContrast);
   const fallbackActiveRef = useRef(false);
   const followRef = useRef(followSatellite);
   const timeScaleRef = useRef(timeScale);
@@ -136,17 +136,16 @@ export function GlobeMap({
     void Promise.all([
       import("maplibre-gl"),
       loadBasemapStyle(basemapRef.current, {
-        land: themeLandColorRef.current,
-        water: themeWaterColorRef.current,
+        baseColor: themeBaseColorRef.current,
+        contrast: themeContrastRef.current,
       }).catch(() => {
         fallbackActiveRef.current = true;
         return fallbackStyle();
       }),
     ]).then(([maplibre, style]) => {
       if (disposed || !containerRef.current) return;
-      // MapLibre v6 requires bundler consumers to provide a worker URL. Raster
-      // sources can appear to work without it while GeoJSON/vector sources fail
-      // silently, which made the themed land layer disappear entirely.
+      // MapLibre v6 requires bundler consumers to provide a worker URL. Keep it
+      // configured because the satellite basemap still uses vector sources.
       maplibre.setWorkerUrl(maplibreWorkerUrl);
       maplibreRef.current = maplibre;
       map = new maplibre.Map({
@@ -272,36 +271,35 @@ export function GlobeMap({
   useEffect(() => {
     const map = mapRef.current;
     const basemapChanged = basemapRef.current !== basemap;
-    const landChanged = themeLandColorRef.current !== themeLandColor;
-    const waterChanged = themeWaterColorRef.current !== themeWaterColor;
-    const themeChanged = basemap === "dark" && (landChanged || waterChanged);
+    const baseColorChanged = themeBaseColorRef.current !== themeBaseColor;
+    const contrastChanged = themeContrastRef.current !== themeContrast;
+    const themeChanged = basemap === "dark" && (baseColorChanged || contrastChanged);
     if (!map || (!basemapChanged && !themeChanged)) return;
 
     if (!basemapChanged && themeChanged) {
-      const landLayerReady = Boolean(map.getLayer(THEMED_LAND_LAYER_ID));
-      const waterLayerReady = Boolean(map.getLayer(THEMED_WATER_LAYER_ID));
-      if (landLayerReady && waterLayerReady) {
-        if (waterChanged) {
-          map.setPaintProperty(THEMED_WATER_LAYER_ID, "background-color", themeWaterColor);
+      const surfaceLayerReady = Boolean(map.getLayer(THEMED_SURFACE_LAYER_ID));
+      const baseLayerReady = Boolean(map.getLayer(THEMED_BASE_LAYER_ID));
+      if (surfaceLayerReady && baseLayerReady) {
+        if (baseColorChanged) {
+          map.setPaintProperty(THEMED_SURFACE_LAYER_ID, "background-color", themeBaseColor);
         }
-        if (landChanged) {
-          map.setPaintProperty(THEMED_LAND_LAYER_ID, "fill-color", themeLandColor);
-          map.setPaintProperty(THEMED_LAND_LAYER_ID, "fill-outline-color", themeLandColor);
+        if (contrastChanged) {
+          map.setPaintProperty(THEMED_BASE_LAYER_ID, "raster-contrast", themeContrast);
         }
-        themeLandColorRef.current = themeLandColor;
-        themeWaterColorRef.current = themeWaterColor;
+        themeBaseColorRef.current = themeBaseColor;
+        themeContrastRef.current = themeContrast;
         map.triggerRepaint();
         return;
       }
     }
 
     basemapRef.current = basemap;
-    themeLandColorRef.current = themeLandColor;
-    themeWaterColorRef.current = themeWaterColor;
+    themeBaseColorRef.current = themeBaseColor;
+    themeContrastRef.current = themeContrast;
     fallbackActiveRef.current = false;
     const requestId = ++styleRequestRef.current;
     onMapState("loading");
-    void loadBasemapStyle(basemap, {land: themeLandColor, water: themeWaterColor})
+    void loadBasemapStyle(basemap, {baseColor: themeBaseColor, contrast: themeContrast})
       .then((style) => {
         if (requestId === styleRequestRef.current && mapRef.current) mapRef.current.setStyle(style);
       })
@@ -312,7 +310,7 @@ export function GlobeMap({
           onMapState("fallback");
         }
       });
-  }, [basemap, onMapState, themeLandColor, themeWaterColor]);
+  }, [basemap, onMapState, themeBaseColor, themeContrast]);
 
   useEffect(() => {
     if (!followSatellite) return;
