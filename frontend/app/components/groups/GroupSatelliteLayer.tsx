@@ -30,13 +30,13 @@ function getGlobeCameraPosition(map: MapSession["map"]): GlobeVector | null {
   return [camera[0], camera[1], camera[2]];
 }
 
-function asSatellite(point: GroupRenderPoint): Satellite {
+function asSatellite(point: GroupRenderPoint, placement: GroupOrbitDisplaySettings["marker_placement"]): Satellite {
   return {
     name: point.name,
     norad: point.norad_id,
     lat: point.lat,
     lon: point.lon,
-    altitude: point.altitude,
+    altitude: placement === "orbit" ? point.altitude : 0,
     heading: point.heading ?? 0,
   };
 }
@@ -115,7 +115,7 @@ export function GroupSatelliteLayer({
       const markerRadius = Math.max(1.8, Math.min(4.8, 1.8 + Math.max(0, map.getZoom()) * 0.55));
 
       for (const point of renderPointsRef.current) {
-        const satellite = asSatellite(point);
+        const satellite = asSatellite(point, currentSettings.marker_placement);
         if (camera && isSatelliteOccluded(satellite, camera)) continue;
         const screen = projectSatelliteScreenPosition(map, maplibre, satellite);
         if (!screen || screen.x < -20 || screen.x > width + 20 || screen.y < -20 || screen.y > height + 20) continue;
