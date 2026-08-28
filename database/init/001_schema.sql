@@ -25,6 +25,35 @@ CREATE TABLE IF NOT EXISTS satellite_identifiers (
 CREATE INDEX IF NOT EXISTS ix_satellite_identifiers_satellite
     ON satellite_identifiers (satellite_id);
 
+CREATE TABLE IF NOT EXISTS satellite_groups (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    group_type TEXT NOT NULL DEFAULT 'custom'
+        CHECK (group_type IN ('constellation', 'custom', 'mission')),
+    source TEXT NOT NULL DEFAULT 'user',
+    source_key TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_groups_type_name
+    ON satellite_groups (group_type, name);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_satellite_groups_source_key
+    ON satellite_groups (source, source_key)
+    WHERE source_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS satellite_group_members (
+    group_id BIGINT NOT NULL REFERENCES satellite_groups(id) ON DELETE CASCADE,
+    satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (group_id, satellite_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_group_members_satellite
+    ON satellite_group_members (satellite_id, group_id);
+
 CREATE TABLE IF NOT EXISTS orbital_element_sets (
     id BIGSERIAL PRIMARY KEY,
     satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
