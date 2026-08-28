@@ -33,6 +33,8 @@ export type OrbitDisplaySettings = {
 };
 
 export type GroupOrbitDisplaySettings = {
+  show_satellite_names: boolean;
+  direction_vector_enabled: boolean;
   position_update_ms: number;
   prediction_hours: number;
   step_seconds: number;
@@ -47,7 +49,7 @@ export type AppSettings = {
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 6,
+  version: 7,
   map: {
     basemap: "dark",
     themed_base_color: DEFAULT_THEMED_MAP_STYLE.baseColor,
@@ -70,6 +72,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     },
   },
   group_orbit: {
+    show_satellite_names: false,
+    direction_vector_enabled: false,
     position_update_ms: 2000,
     prediction_hours: 3,
     step_seconds: 120,
