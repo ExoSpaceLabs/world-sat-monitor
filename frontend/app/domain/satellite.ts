@@ -83,6 +83,7 @@ export type GroupPosition = {
     lat_deg: number;
     lon_deg: number;
     altitude_km: number;
+    heading_deg: number | null;
   } | null;
   source: {
     run_id: string;
