@@ -59,14 +59,22 @@ function getGlobeCameraPosition(map: MapLibreMap): GlobeVector | null {
   return [camera[0], camera[1], camera[2]];
 }
 
+function placedSatellite(satellite: Satellite, settings: OrbitDisplaySettings): Satellite {
+  return settings.path.mode === "ground"
+    ? {...satellite, altitude: 0}
+    : satellite;
+}
+
 function updateMarkerPresentation(
   map: MapLibreMap,
   maplibre: MapSession["maplibre"],
   elements: MarkerElements,
   satellite: Satellite,
+  settings: OrbitDisplaySettings,
 ) {
-  const surfacePoint = map.project([satellite.lon, satellite.lat]);
-  const satellitePoint = projectSatelliteScreenPosition(map, maplibre, satellite);
+  const displaySatellite = placedSatellite(satellite, settings);
+  const surfacePoint = map.project([displaySatellite.lon, displaySatellite.lat]);
+  const satellitePoint = projectSatelliteScreenPosition(map, maplibre, displaySatellite);
   if (satellitePoint) {
     elements.visual.style.transform = `translate3d(${(satellitePoint.x - surfacePoint.x).toFixed(2)}px,${(satellitePoint.y - surfacePoint.y).toFixed(2)}px,0)`;
   } else {
@@ -75,10 +83,10 @@ function updateMarkerPresentation(
 
   const cameraPosition = getGlobeCameraPosition(map);
   const occluded = cameraPosition
-    ? isSatelliteOccluded(satellite, cameraPosition)
+    ? isSatelliteOccluded(displaySatellite, cameraPosition)
     : false;
   const street = usesStreetContrast(map);
-  const overEarth = isSatelliteOverEarthDisk(map, satellite);
+  const overEarth = isSatelliteOverEarthDisk(map, displaySatellite);
   elements.node.classList.toggle("street-surface", street && overEarth);
   elements.node.classList.toggle("street-space", street && !overEarth);
   elements.node.classList.toggle("occluded", occluded);
@@ -153,6 +161,7 @@ export function SatelliteLayer({
         settings: settings.orbit,
         track: latestTrackRef.current,
       });
+      map?.triggerRepaint();
     }).catch(() => undefined);
 
     const handleDisplayChange = (event: Event) => {
@@ -163,13 +172,14 @@ export function SatelliteLayer({
         settings: custom.detail,
         track: latestTrackRef.current,
       });
+      map?.triggerRepaint();
     };
     window.addEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
     return () => {
       cancelled = true;
       window.removeEventListener(ORBIT_DISPLAY_CHANGE_EVENT, handleDisplayChange);
     };
-  }, []);
+  }, [map]);
 
   useEffect(() => {
     if (!map || !maplibre || !Marker) return;
@@ -191,6 +201,7 @@ export function SatelliteLayer({
       maplibre,
       elements,
       latestSatelliteRef.current,
+      orbitSettingsRef.current,
     );
     map.on("render", update);
     update();
@@ -212,7 +223,7 @@ export function SatelliteLayer({
     elements.node.classList.toggle("selected", selected);
     elements.node.setAttribute("aria-label", `Select and follow ${satellite.name}`);
     marker.setLngLat([satellite.lon, satellite.lat]);
-    updateMarkerPresentation(map, maplibre, elements, satellite);
+    updateMarkerPresentation(map, maplibre, elements, satellite, orbitSettingsRef.current);
   }, [map, maplibre, satellite, selected]);
 
   useEffect(() => {
