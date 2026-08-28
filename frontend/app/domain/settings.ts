@@ -1,7 +1,14 @@
 import type {Basemap} from "./types";
 
+export const DEFAULT_THEMED_MAP_COLORS = {
+  water: "#041018",
+  land: "#0a2c39",
+} as const;
+
 export type PersistentMapSettings = {
   basemap: Basemap;
+  themed_water_color: string;
+  themed_land_color: string;
   space_environment: boolean;
   shadow_opacity: number;
   debug: boolean;
@@ -32,9 +39,11 @@ export type AppSettings = {
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 3,
+  version: 4,
   map: {
     basemap: "dark",
+    themed_water_color: DEFAULT_THEMED_MAP_COLORS.water,
+    themed_land_color: DEFAULT_THEMED_MAP_COLORS.land,
     space_environment: true,
     shadow_opacity: 0.7,
     debug: false,
