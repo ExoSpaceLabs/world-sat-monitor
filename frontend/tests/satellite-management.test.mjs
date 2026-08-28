@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {readFile} from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -133,4 +134,27 @@ test("create and lifecycle calls use explicit API operations", async () => {
     ["DELETE", "/api/v1/satellites/9"],
   ]);
   assert.match(calls[0].body, /NORAD_CAT_ID/);
+});
+
+test("selected monitored satellite drives position and track queries", async () => {
+  const monitor = await readFile(new URL("../app/components/world-sat-monitor/WorldSatMonitor.tsx", import.meta.url), "utf8");
+
+  assert.match(monitor, /selectedNoradId/);
+  assert.match(monitor, /getSatellitePosition\(selectedNoradId/);
+  assert.match(monitor, /getSatelliteTrack\(\s*selectedNoradId/);
+  assert.match(monitor, /listManagedSatellites\(\)/);
+  assert.doesNotMatch(monitor, /ACTIVE_NORAD_ID/);
+});
+
+test("displayed objects are selectable and satellite manager lives in top controls", async () => {
+  const panel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  const monitor = await readFile(new URL("../app/components/world-sat-monitor/WorldSatMonitor.tsx", import.meta.url), "utf8");
+
+  assert.match(panel, /DISPLAYED OBJECTS/);
+  assert.match(panel, /managedSatellites\.filter\(\(item\) => item\.active && item\.norad_id\)/);
+  assert.match(panel, /onSelect\(noradId\)/);
+  assert.match(panel, /aria-expanded=\{selected\}/);
+  assert.match(monitor, />OBJECTS</);
+  assert.match(monitor, />SATELLITES</);
+  assert.match(monitor, /<SatelliteManager/);
 });

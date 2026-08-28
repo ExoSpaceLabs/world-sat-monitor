@@ -2,12 +2,6 @@ import type {StyleSpecification} from "maplibre-gl";
 import type {Basemap} from "../domain/types";
 
 const OPENFREEMAP_DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
-const CARTO_DARK_TILES = [
-  "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-  "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-  "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-  "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-];
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
@@ -17,19 +11,22 @@ type MutableStyleLayer = {
   layout?: Record<string, unknown>;
 };
 
+async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
+  const response = await fetch(OPENFREEMAP_DARK_STYLE_URL);
+  if (!response.ok) throw new Error(`OpenFreeMap dark style unavailable (${response.status})`);
+  const style = await response.json() as StyleSpecification;
+  style.projection = {type: "globe"};
+  return style;
+}
+
 export async function loadBasemapStyle(mode: Basemap): Promise<StyleSpecification> {
-  if (mode === "dark") {
-    return rasterStyle("carto-dark", CARTO_DARK_TILES, 20, "© OpenStreetMap contributors © CARTO");
-  }
+  if (mode === "dark") return loadOpenFreeMapDarkStyle();
 
   if (mode === "street") {
     return rasterStyle("osm-standard", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
   }
 
-  const response = await fetch(OPENFREEMAP_DARK_STYLE_URL);
-  if (!response.ok) throw new Error(`OpenFreeMap dark style unavailable (${response.status})`);
-  const style = await response.json() as StyleSpecification;
-  style.projection = {type: "globe"};
+  const style = await loadOpenFreeMapDarkStyle();
   style.sources = {
     "satellite-imagery": {
       type: "raster",

@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect, useState, type FormEvent} from "react";
+import {useEffect, useMemo, useState, type FormEvent} from "react";
 import type {Basemap} from "../../domain/types";
 import type {CatalogSearchResult, ManagedSatellite, Satellite} from "../../domain/satellite";
 import type {SolarState} from "../../domain/solar";
@@ -18,17 +18,26 @@ type SatellitePanelProps = {
   basemap: Basemap;
   followSatellite: boolean;
   satellite: Satellite;
+  managedSatellites: ManagedSatellite[];
+  selectedNoradId: string;
+  positionReady: boolean;
   solarState: SolarState;
   isMock: boolean;
   interpolated: boolean;
+  onSelect: (noradId: string) => void;
   onToggleFollow: () => void;
+};
+
+type SatelliteManagerProps = {
+  onClose: () => void;
+  onChanged?: () => void | Promise<void>;
 };
 
 function signedDegrees(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(3)}°`;
 }
 
-function SatelliteManager({onClose}: {onClose: () => void}) {
+export function SatelliteManager({onClose, onChanged}: SatelliteManagerProps) {
   const [satellites, setSatellites] = useState<ManagedSatellite[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -40,6 +49,11 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogResults, setCatalogResults] = useState<CatalogSearchResult[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
+
+  const notifyChanged = () => {
+    if (!onChanged) return;
+    void Promise.resolve(onChanged()).catch(() => undefined);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -94,6 +108,7 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
         : await activateManagedSatellite(item.id);
       replaceOrAppend(updated);
       refreshCatalogLocal(updated);
+      notifyChanged();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not change monitoring state");
     } finally {
@@ -114,6 +129,7 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
           ? {...result, local: {present: false, satellite_id: null, active: false, name: null}}
           : result
       )));
+      notifyChanged();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not delete satellite");
     } finally {
@@ -142,6 +158,7 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
       setNorad("");
       setCospar("");
       setMonitorNow(false);
+      notifyChanged();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add satellite");
     } finally {
@@ -189,6 +206,7 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
       });
       replaceOrAppend(created);
       refreshCatalogLocal(created);
+      notifyChanged();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add catalog satellite");
     } finally {
@@ -231,11 +249,7 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
                 result.local.active ? (
                   <span className="active">MONITORING</span>
                 ) : (
-                  <button
-                    type="button"
-                    disabled={busyId !== null}
-                    onClick={() => void addCatalogResult(result, true)}
-                  >
+                  <button type="button" disabled={busyId !== null} onClick={() => void addCatalogResult(result, true)}>
                     MONITOR
                   </button>
                 )
@@ -297,39 +311,75 @@ export function SatellitePanel({
   basemap,
   followSatellite,
   satellite,
+  managedSatellites,
+  selectedNoradId,
+  positionReady,
   solarState,
   isMock,
   interpolated,
+  onSelect,
   onToggleFollow,
 }: SatellitePanelProps) {
-  const [managerOpen, setManagerOpen] = useState(false);
-  const sunElevation = solarElevation(satellite.lat, satellite.lon, solarState);
+  const activeSatellites = useMemo(
+    () => managedSatellites.filter((item) => item.active && item.norad_id),
+    [managedSatellites],
+  );
+  const selectedReady = positionReady && satellite.norad === selectedNoradId;
+  const sunElevation = selectedReady ? solarElevation(satellite.lat, satellite.lon, solarState) : null;
+
   return (
-    <>
-      <aside className="sat-card" data-layer="satellite-controls">
-        <div className="card-head">
-          <span className="status-dot"/>
-          <div><small>DISPLAYED OBJECT</small><h1>{satellite.name}</h1></div>
-          <b>{isMock ? "MOCK" : "LIVE"}</b>
-        </div>
-        <dl>
-          <div><dt>ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} <small>km</small></dd></div>
-          <div><dt>HEADING</dt><dd>{satellite.heading.toFixed(1)}°</dd></div>
-          <div><dt>LATITUDE</dt><dd>{signedDegrees(satellite.lat)}</dd></div>
-          <div><dt>LONGITUDE</dt><dd>{signedDegrees(satellite.lon)}</dd></div>
-        </dl>
-        <div className="data-row"><span>NORAD ID</span><b>{satellite.norad || "--"}</b></div>
-        <div className="data-row"><span>BASEMAP</span><b>{basemap.toUpperCase()}</b></div>
-        <div className="data-row"><span>POSITION</span><b>{interpolated ? "INTERPOLATED" : "RAW SAMPLE"}</b></div>
-        <div className="data-row"><span>ILLUMINATION</span><b className={sunElevation >= 0 ? "daylight" : "nighttime"}>{sunElevation >= 0 ? "DAYLIGHT" : "NIGHT"}</b></div>
-        <button className={`follow-button ${followSatellite ? "active" : ""}`} onClick={onToggleFollow} aria-pressed={followSatellite}>
-          {followSatellite ? "FOLLOWING SATELLITE" : "FOLLOW SATELLITE"}
-        </button>
-        <button className={`manage-button ${managerOpen ? "active" : ""}`} onClick={() => setManagerOpen((open) => !open)} aria-expanded={managerOpen}>
-          {managerOpen ? "CLOSE SATELLITE MANAGER" : "MANAGE SATELLITES"}
-        </button>
-      </aside>
-      {managerOpen && <SatelliteManager onClose={() => setManagerOpen(false)}/>} 
-    </>
+    <aside className="sat-card" data-layer="satellite-controls" aria-label="Displayed objects">
+      <div className="card-head">
+        <span className="status-dot"/>
+        <div><small>DISPLAYED OBJECTS</small><h1>{activeSatellites.length || 1} ACTIVE</h1></div>
+        <b>SINGLE VIEW</b>
+      </div>
+
+      <div className="sat-object-list">
+        {activeSatellites.length === 0 && (
+          <div className="sat-object-row selected pending">
+            <span className="sat-object-dot"/>
+            <span><strong>{satellite.name}</strong><small>NORAD {satellite.norad || "—"}</small></span>
+            <em>LOADING</em>
+          </div>
+        )}
+        {activeSatellites.map((item) => {
+          const noradId = item.norad_id as string;
+          const selected = noradId === selectedNoradId;
+          return (
+            <div className={`sat-object-entry ${selected ? "selected" : ""}`} key={item.id}>
+              <button className="sat-object-row" type="button" onClick={() => onSelect(noradId)} aria-expanded={selected}>
+                <span className="sat-object-dot"/>
+                <span><strong>{item.name}</strong><small>NORAD {noradId}</small></span>
+                <em>{selected ? "DISPLAYED" : "SELECT"}</em>
+              </button>
+              {selected && (
+                <div className="sat-object-details">
+                  {!selectedReady ? (
+                    <div className="sat-position-wait">WAITING FOR PROPAGATED POSITION…</div>
+                  ) : (
+                    <>
+                      <dl>
+                        <div><dt>ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} <small>km</small></dd></div>
+                        <div><dt>HEADING</dt><dd>{satellite.heading.toFixed(1)}°</dd></div>
+                        <div><dt>LATITUDE</dt><dd>{signedDegrees(satellite.lat)}</dd></div>
+                        <div><dt>LONGITUDE</dt><dd>{signedDegrees(satellite.lon)}</dd></div>
+                      </dl>
+                      <div className="data-row"><span>BASEMAP</span><b>{basemap.toUpperCase()}</b></div>
+                      <div className="data-row"><span>POSITION</span><b>{interpolated ? "INTERPOLATED" : "RAW SAMPLE"}</b></div>
+                      <div className="data-row"><span>SOURCE</span><b>{isMock ? "MOCK OMM" : "PROPAGATED"}</b></div>
+                      <div className="data-row"><span>ILLUMINATION</span><b className={(sunElevation ?? -1) >= 0 ? "daylight" : "nighttime"}>{(sunElevation ?? -1) >= 0 ? "DAYLIGHT" : "NIGHT"}</b></div>
+                      <button className={`follow-button ${followSatellite ? "active" : ""}`} onClick={onToggleFollow} aria-pressed={followSatellite}>
+                        {followSatellite ? "FOLLOWING SATELLITE" : "FOLLOW SATELLITE"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
