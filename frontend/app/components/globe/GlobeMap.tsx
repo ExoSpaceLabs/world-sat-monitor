@@ -85,6 +85,7 @@ export function GlobeMap({
   const styleRequestRef = useRef(0);
   const styleRevisionRef = useRef(0);
   const basemapRef = useRef(basemap);
+  const fallbackActiveRef = useRef(false);
   const followRef = useRef(followSatellite);
   const timeScaleRef = useRef(timeScale);
   const earthRotationRef = useRef(0);
@@ -122,7 +123,10 @@ export function GlobeMap({
 
     void Promise.all([
       import("maplibre-gl"),
-      loadBasemapStyle(basemapRef.current).catch(() => fallbackStyle()),
+      loadBasemapStyle(basemapRef.current).catch(() => {
+        fallbackActiveRef.current = true;
+        return fallbackStyle();
+      }),
     ]).then(([maplibre, style]) => {
       if (disposed || !containerRef.current) return;
       maplibreRef.current = maplibre;
@@ -150,9 +154,14 @@ export function GlobeMap({
           maplibre: maplibreRef.current,
           styleRevision: styleRevisionRef.current,
         });
-        callbacksRef.current.onMapState("ready");
+        callbacksRef.current.onMapState(fallbackActiveRef.current ? "fallback" : "ready");
       });
-      map.on("error", () => callbacksRef.current.onMapState("fallback"));
+      map.on("error", () => {
+        callbacksRef.current.onMapState("fallback");
+        if (!map || fallbackActiveRef.current || basemapRef.current !== "dark") return;
+        fallbackActiveRef.current = true;
+        map.setStyle(fallbackStyle());
+      });
       map.on("move", () => reportOrientation());
       map.once("load", () => reportOrientation(true));
 
@@ -205,8 +214,6 @@ export function GlobeMap({
           callbacksRef.current.onRotationChange(true, reason);
         }
 
-        // Simulation time and physical Earth rotation never pause. Camera input
-        // is handled independently below so dragging cannot stall the scene.
         const rotationDelta = ROTATION_DEGREES_PER_SECOND
           * elapsedSeconds
           * Math.max(0, timeScaleRef.current);
@@ -214,8 +221,6 @@ export function GlobeMap({
 
         if (earthMovesUnderCamera && rotationDelta !== 0) {
           if (userInteracting || map.isMoving()) {
-            // Preserve the rotation that occurs while MapLibre owns the camera.
-            // Applying jumpTo during a drag is what made the far view unusable.
             pendingMapRotationRef.current += rotationDelta;
           } else {
             const visualRotation = rotationDelta + pendingMapRotationRef.current;
@@ -225,8 +230,6 @@ export function GlobeMap({
             appliedMapRotationRef.current += visualRotation;
           }
         } else {
-          // Close/follow views co-rotate with Earth, so there is no inertial
-          // camera compensation to catch up after an interaction.
           pendingMapRotationRef.current = 0;
         }
 
@@ -251,6 +254,7 @@ export function GlobeMap({
     const map = mapRef.current;
     if (!map || basemapRef.current === basemap) return;
     basemapRef.current = basemap;
+    fallbackActiveRef.current = false;
     const requestId = ++styleRequestRef.current;
     onMapState("loading");
     void loadBasemapStyle(basemap)
@@ -259,6 +263,7 @@ export function GlobeMap({
       })
       .catch(() => {
         if (requestId === styleRequestRef.current && mapRef.current) {
+          fallbackActiveRef.current = true;
           mapRef.current.setStyle(fallbackStyle());
           onMapState("fallback");
         }
