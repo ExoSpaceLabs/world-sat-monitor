@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import re
 import time
 from typing import Any
+from urllib.parse import unquote
 
-from .catalog import CatalogError, CelesTrakCatalog
+from .catalog import (
+    CatalogError,
+    CelesTrakCatalog,
+    celestrak_constellation_group,
+    celestrak_constellation_groups,
+)
 from .config import settings
 from .db import connect, wait_for_database
 from .migrations import migrate_schema
@@ -23,6 +30,7 @@ from .orbital_store import (
     insert_element_set,
     record_provider_fetch,
 )
+from .provider_group_store import get_provider_group, sync_provider_group
 from .repository import list_satellites
 from .seed import ensure_mock_data
 from .worker_health import WorkerHealth, start_health_server
@@ -140,9 +148,29 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
     return metrics
 
 
+def _catalog_groups_payload() -> dict[str, Any]:
+    groups = []
+    with connect() as connection:
+        for definition in celestrak_constellation_groups():
+            local = get_provider_group(connection, definition.provider, definition.key)
+            payload = definition.payload()
+            payload["available"] = settings.celestrak_enabled
+            payload["local"] = {
+                "present": local is not None,
+                "group_id": int(local["id"]) if local is not None else None,
+                "member_count": int(local["member_count"]) if local is not None else 0,
+                "active_member_count": int(local["active_member_count"]) if local is not None else 0,
+            }
+            groups.append(payload)
+    return {"provider": "celestrak", "groups": groups}
+
+
 def _catalog_route(path: str, query: dict[str, list[str]]):
+    if path == "/catalog/groups":
+        return 200, _catalog_groups_payload()
     if path != "/catalog/search":
         return None
+
     text = (query.get("q") or [""])[0].strip()
     provider = (query.get("provider") or ["celestrak"])[0].strip().lower()
     try:
@@ -205,6 +233,56 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
     }
 
 
+def _catalog_post_route(path: str, query: dict[str, list[str]]):
+    del query
+    match = re.fullmatch(r"/catalog/groups/([^/]+)/import", path)
+    if match is None:
+        return None
+
+    requested_key = unquote(match.group(1))
+    definition = celestrak_constellation_group(requested_key)
+    if definition is None:
+        return 404, {"detail": f"unsupported CelesTrak constellation: {requested_key}"}
+    if not settings.celestrak_enabled:
+        return 503, {"detail": "CelesTrak provider is disabled"}
+
+    try:
+        catalog = CelesTrakCatalog(
+            settings.celestrak_catalog_url,
+            timeout_seconds=settings.celestrak_timeout_seconds,
+        )
+        members = catalog.group(definition.key)
+        if not members:
+            return 502, {
+                "detail": f"CelesTrak constellation {definition.name} returned no members"
+            }
+    except CatalogError as error:
+        return 502, {"detail": str(error)}
+
+    try:
+        with connect() as connection:
+            result = sync_provider_group(connection, definition, members)
+            connection.commit()
+    except Exception as error:
+        LOGGER.exception("failed to import provider constellation %s", definition.key)
+        return 500, {"detail": f"constellation import failed: {error}"}
+
+    group = result["group"]
+    return 200, {
+        "provider": definition.provider,
+        "key": definition.key,
+        "group": {
+            "id": int(group["id"]),
+            "name": group["name"],
+            "member_count": int(group["member_count"]),
+            "active_member_count": int(group["active_member_count"]),
+        },
+        "catalog_members": int(result["catalog_members"]),
+        "created_satellites": int(result["created_satellites"]),
+        "removed_memberships": int(result["removed_memberships"]),
+    }
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -214,7 +292,12 @@ def main() -> None:
     migrate_schema()
     ensure_mock_data()
     health = WorkerHealth("orbital-provider")
-    start_health_server(settings.provider_health_port, health, extra_get=_catalog_route)
+    start_health_server(
+        settings.provider_health_port,
+        health,
+        extra_get=_catalog_route,
+        extra_post=_catalog_post_route,
+    )
     LOGGER.info(
         "orbital provider started: poll=%ss refresh=%ss celestrak=%s",
         settings.provider_poll_seconds,

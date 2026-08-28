@@ -1,7 +1,9 @@
 "use client";
 
 import {useEffect, useMemo, useState, type FormEvent} from "react";
+import type {CatalogGroupDefinition} from "../../domain/catalog-group";
 import type {ManagedSatellite, SatelliteGroup, SatelliteGroupMember, SatelliteGroupType} from "../../domain/satellite";
+import {importProviderCatalogGroup, listProviderCatalogGroups} from "../../services/catalog-groups-api";
 import {
   addSatelliteGroupMember,
   createSatelliteGroup,
@@ -33,10 +35,13 @@ export function GroupPanel({
 }: GroupPanelProps) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [members, setMembers] = useState<SatelliteGroupMember[]>([]);
+  const [providerGroups, setProviderGroups] = useState<CatalogGroupDefinition[]>([]);
+  const [providerNotice, setProviderNotice] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [groupType, setGroupType] = useState<SatelliteGroupType>("custom");
   const [candidateId, setCandidateId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyProviderKey, setBusyProviderKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const expanded = groups.find((group) => group.id === expandedId) ?? null;
@@ -53,6 +58,23 @@ export function GroupPanel({
   const loadMembers = async (groupId: number) => {
     setMembers(await listSatelliteGroupMembers(groupId));
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    void listProviderCatalogGroups()
+      .then((loaded) => {
+        if (!cancelled) {
+          setProviderGroups(loaded);
+          setError(null);
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : "Could not load provider constellations");
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (expandedId === null) return;
@@ -78,6 +100,28 @@ export function GroupPanel({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create group");
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncProviderGroup = async (group: CatalogGroupDefinition) => {
+    if (busy || busyProviderKey !== null || !group.available) return;
+    setBusy(true);
+    setBusyProviderKey(group.key);
+    setError(null);
+    setProviderNotice(null);
+    try {
+      const result = await importProviderCatalogGroup(group.key);
+      const refreshed = await listProviderCatalogGroups();
+      setProviderGroups(refreshed);
+      setProviderNotice(
+        `${result.group.name}: ${result.group.member_count} members · ${result.created_satellites} new inactive objects`,
+      );
+      await notifyChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not import provider constellation");
+    } finally {
+      setBusyProviderKey(null);
       setBusy(false);
     }
   };
@@ -161,6 +205,34 @@ export function GroupPanel({
         <div><small>SETS + CONSTELLATIONS</small><strong>GROUPS</strong></div>
         <button type="button" onClick={onClose} aria-label="Close group panel">×</button>
       </div>
+
+      <section className="provider-group-catalog" aria-label="Provider constellations">
+        <div className="provider-group-title">
+          <span><small>PROVIDER CATALOG</small><strong>CELESTRAK CONSTELLATIONS</strong></span>
+          <small>IMPORTS CREATE MISSING MEMBERS INACTIVE</small>
+        </div>
+        {providerGroups.length === 0 && <div className="group-empty">NO PROVIDER CONSTELLATIONS AVAILABLE</div>}
+        {providerGroups.map((group) => (
+          <div className="provider-group-row" key={`${group.provider}:${group.key}`}>
+            <span>
+              <strong>{group.name}</strong>
+              <small>
+                {group.local.present
+                  ? `${group.local.active_member_count}/${group.local.member_count} ACTIVE · IMPORTED`
+                  : "NOT IMPORTED"}
+              </small>
+            </span>
+            <button
+              type="button"
+              disabled={busy || !group.available}
+              onClick={() => void syncProviderGroup(group)}
+            >
+              {busyProviderKey === group.key ? "SYNCING…" : group.local.present ? "SYNC" : "IMPORT"}
+            </button>
+          </div>
+        ))}
+        {providerNotice && <div className="provider-group-notice">{providerNotice}</div>}
+      </section>
 
       <form className="group-create" onSubmit={create}>
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="New group name" aria-label="New group name"/>

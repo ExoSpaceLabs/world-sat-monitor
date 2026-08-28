@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 
 ExtraGetHandler = Callable[[str, dict[str, list[str]]], tuple[int, Any] | None]
+ExtraPostHandler = Callable[[str, dict[str, list[str]]], tuple[int, Any] | None]
 
 
 class WorkerHealth:
@@ -45,6 +46,7 @@ def start_health_server(
     port: int,
     health: WorkerHealth,
     extra_get: ExtraGetHandler | None = None,
+    extra_post: ExtraPostHandler | None = None,
 ) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def _json(self, status_code: int, payload: Any) -> None:
@@ -62,6 +64,15 @@ def start_health_server(
                 return
             if extra_get is not None:
                 result = extra_get(parsed.path, parse_qs(parsed.query))
+                if result is not None:
+                    self._json(*result)
+                    return
+            self._json(404, {"detail": "not found"})
+
+        def do_POST(self):
+            parsed = urlsplit(self.path)
+            if extra_post is not None:
+                result = extra_post(parsed.path, parse_qs(parsed.query))
                 if result is not None:
                     self._json(*result)
                     return

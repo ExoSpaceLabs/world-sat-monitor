@@ -25,6 +25,37 @@ class CatalogObject:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class CatalogGroup:
+    provider: str
+    key: str
+    name: str
+    group_type: str = "constellation"
+
+    def payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+CELESTRAK_CONSTELLATION_GROUPS = (
+    CatalogGroup(provider="celestrak", key="starlink", name="Starlink"),
+    CatalogGroup(provider="celestrak", key="oneweb", name="OneWeb"),
+    CatalogGroup(provider="celestrak", key="kuiper", name="Kuiper"),
+    CatalogGroup(provider="celestrak", key="iridium-NEXT", name="Iridium NEXT"),
+)
+
+
+def celestrak_constellation_groups() -> tuple[CatalogGroup, ...]:
+    return CELESTRAK_CONSTELLATION_GROUPS
+
+
+def celestrak_constellation_group(key: str) -> CatalogGroup | None:
+    clean = key.strip().lower()
+    return next(
+        (group for group in CELESTRAK_CONSTELLATION_GROUPS if group.key.lower() == clean),
+        None,
+    )
+
+
 def _search_mode(query: str) -> tuple[str, str, str | None]:
     query = query.strip()
     if query.isdigit():
@@ -73,12 +104,7 @@ class CelesTrakCatalog:
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
 
-    def search(self, query: str, limit: int = 25) -> list[CatalogObject]:
-        clean = query.strip()
-        if not clean:
-            raise CatalogError("catalog query cannot be empty")
-        key, value, exact_cospar = _search_mode(clean)
-        params = {key: value, "FORMAT": "JSON", "ONORBIT": "1", "MAX": str(limit)}
+    def _load(self, params: dict[str, str]) -> list[Mapping[str, Any]]:
         request = Request(
             f"{self.base_url}?{urlencode(params)}",
             headers={
@@ -93,11 +119,19 @@ class CelesTrakCatalog:
             raise CatalogError(f"CelesTrak SATCAT request failed: {error}") from error
         if not isinstance(payload, list):
             raise CatalogError("CelesTrak SATCAT returned an invalid JSON payload")
+        return [record for record in payload if isinstance(record, Mapping)]
+
+    def search(self, query: str, limit: int = 25) -> list[CatalogObject]:
+        clean = query.strip()
+        if not clean:
+            raise CatalogError("catalog query cannot be empty")
+        key, value, exact_cospar = _search_mode(clean)
+        payload = self._load(
+            {key: value, "FORMAT": "JSON", "ONORBIT": "1", "MAX": str(limit)}
+        )
 
         results: list[CatalogObject] = []
         for record in payload:
-            if not isinstance(record, dict):
-                continue
             if exact_cospar and str(record.get("OBJECT_ID") or "").upper() != exact_cospar:
                 continue
             try:
@@ -106,4 +140,24 @@ class CelesTrakCatalog:
                 continue
             if len(results) >= limit:
                 break
+        return results
+
+    def group(self, group_key: str) -> list[CatalogObject]:
+        clean = group_key.strip()
+        if not clean:
+            raise CatalogError("catalog group key cannot be empty")
+        payload = self._load(
+            {
+                "GROUP": clean,
+                "FORMAT": "JSON",
+                "ONORBIT": "1",
+                "PAYLOADS": "1",
+            }
+        )
+        results: list[CatalogObject] = []
+        for record in payload:
+            try:
+                results.append(normalize_satcat_record(record, self.name))
+            except CatalogError:
+                continue
         return results
