@@ -19,6 +19,15 @@ class SchemaContractTests(unittest.TestCase):
         satellites_block = SCHEMA.split("CREATE TABLE IF NOT EXISTS satellites", 1)[1].split(");", 1)[0]
         self.assertNotIn("norad_id", satellites_block)
 
+    def test_groups_are_reusable_many_to_many_entities(self):
+        self.assertIn("CREATE TABLE IF NOT EXISTS satellite_groups", SCHEMA)
+        self.assertIn("CREATE TABLE IF NOT EXISTS satellite_group_members", SCHEMA)
+        self.assertIn("CHECK (group_type IN ('constellation', 'custom', 'mission'))", SCHEMA)
+        self.assertIn("PRIMARY KEY (group_id, satellite_id)", SCHEMA)
+        self.assertIn("REFERENCES satellite_groups(id) ON DELETE CASCADE", SCHEMA)
+        self.assertIn("REFERENCES satellites(id) ON DELETE CASCADE", SCHEMA)
+        self.assertIn("ux_satellite_groups_source_key", SCHEMA)
+
     def test_propagation_references_generalized_element_sets(self):
         self.assertIn("source_element_set_id", SCHEMA)
         self.assertIn("element_set_id BIGINT", SCHEMA)
