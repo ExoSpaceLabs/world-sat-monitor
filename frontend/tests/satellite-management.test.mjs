@@ -4,10 +4,17 @@ import test from "node:test";
 
 import {
   activateManagedSatellite,
+  addSatelliteGroupMember,
   createManagedSatellite,
+  createSatelliteGroup,
   deactivateManagedSatellite,
   deleteManagedSatellite,
+  deleteSatelliteGroup,
+  getSatelliteGroupPositions,
   listManagedSatellites,
+  listSatelliteGroupMembers,
+  listSatelliteGroups,
+  removeSatelliteGroupMember,
   searchSatelliteCatalog,
 } from "../app/services/worldsat-api.ts";
 
@@ -136,6 +143,41 @@ test("create and lifecycle calls use explicit API operations", async () => {
   assert.match(calls[0].body, /NORAD_CAT_ID/);
 });
 
+test("group CRUD, membership and positions use batch group endpoints", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({url, method: init?.method ?? "GET", body: init?.body});
+    if (url === "/api/v1/groups" && !init?.method) return response(200, {groups: []});
+    if (String(url).endsWith("/members") && !init?.method) return response(200, {members: []});
+    if (String(url).endsWith("/positions")) return response(200, {group: {}, generated_at: "2026-08-28T00:00:00Z", positions: []});
+    if (init?.method === "DELETE") return response(204);
+    return response(201, {id: 4, name: "ION", group_type: "constellation", source: "user", member_count: 0, active_member_count: 0});
+  };
+  try {
+    await listSatelliteGroups();
+    await createSatelliteGroup({name: "ION", group_type: "constellation"});
+    await listSatelliteGroupMembers(4);
+    await addSatelliteGroupMember(4, 7);
+    await getSatelliteGroupPositions(4);
+    await removeSatelliteGroupMember(4, 7);
+    await deleteSatelliteGroup(4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls.map((call) => [call.method, call.url]), [
+    ["GET", "/api/v1/groups"],
+    ["POST", "/api/v1/groups"],
+    ["GET", "/api/v1/groups/4/members"],
+    ["POST", "/api/v1/groups/4/members"],
+    ["GET", "/api/v1/groups/4/positions"],
+    ["DELETE", "/api/v1/groups/4/members/7"],
+    ["DELETE", "/api/v1/groups/4"],
+  ]);
+  assert.equal(JSON.parse(calls[3].body).satellite_id, 7);
+});
+
 test("selected monitored satellite drives position and track queries", async () => {
   const monitor = await readFile(new URL("../app/components/world-sat-monitor/WorldSatMonitor.tsx", import.meta.url), "utf8");
 
@@ -144,6 +186,19 @@ test("selected monitored satellite drives position and track queries", async () 
   assert.match(monitor, /getSatelliteTrack\(\s*selectedNoradId/);
   assert.match(monitor, /listManagedSatellites\(\)/);
   assert.doesNotMatch(monitor, /ACTIVE_NORAD_ID/);
+});
+
+test("groups render batch current markers while detailed orbit remains selected-only", async () => {
+  const monitor = await readFile(new URL("../app/components/world-sat-monitor/WorldSatMonitor.tsx", import.meta.url), "utf8");
+  const layer = await readFile(new URL("../app/components/groups/GroupSatelliteLayer.tsx", import.meta.url), "utf8");
+
+  assert.match(monitor, />GROUPS</);
+  assert.match(monitor, /getSatelliteGroupPositions\(groupId\)/);
+  assert.match(monitor, /<GroupSatelliteLayer/);
+  assert.match(monitor, /selectedPositionReady && <SatelliteLayer/);
+  assert.match(layer, /type: "geojson"/);
+  assert.match(layer, /type: "circle"/);
+  assert.match(layer, /selectedNoradId/);
 });
 
 test("displayed objects are selectable and satellite manager lives in top controls", async () => {
