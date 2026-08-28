@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect} from "react";
+import {useEffect, useRef} from "react";
 import type {GeoJSONSource, MapMouseEvent} from "maplibre-gl";
 import type {FeatureCollection, Point} from "geojson";
 import type {GroupPosition} from "../../domain/satellite";
@@ -8,6 +8,7 @@ import type {MapSession} from "../../domain/types";
 
 const SOURCE_ID = "worldsat-group-satellites";
 const LAYER_ID = "worldsat-group-satellite-markers";
+const EMPTY_COLLECTION: FeatureCollection<Point> = {type: "FeatureCollection", features: []};
 
 type GroupSatelliteLayerProps = {
   mapSession: MapSession | null;
@@ -39,14 +40,21 @@ function collection(positions: GroupPosition[], selectedNoradId: string): Featur
 }
 
 export function GroupSatelliteLayer({mapSession, positions, selectedNoradId, onSelect}: GroupSatelliteLayerProps) {
+  const dataRef = useRef<FeatureCollection<Point>>(EMPTY_COLLECTION);
+
+  useEffect(() => {
+    dataRef.current = collection(positions, selectedNoradId);
+    if (!mapSession) return;
+    (mapSession.map.getSource(SOURCE_ID) as GeoJSONSource | undefined)?.setData(dataRef.current);
+  }, [mapSession, positions, selectedNoradId]);
+
   useEffect(() => {
     if (!mapSession) return;
     const {map} = mapSession;
-    const data = collection(positions, selectedNoradId);
 
     const install = () => {
       if (!map.getSource(SOURCE_ID)) {
-        map.addSource(SOURCE_ID, {type: "geojson", data});
+        map.addSource(SOURCE_ID, {type: "geojson", data: dataRef.current});
       }
       if (!map.getLayer(LAYER_ID)) {
         map.addLayer({
@@ -63,7 +71,7 @@ export function GroupSatelliteLayer({mapSession, positions, selectedNoradId, onS
           },
         });
       }
-      (map.getSource(SOURCE_ID) as GeoJSONSource | undefined)?.setData(data);
+      (map.getSource(SOURCE_ID) as GeoJSONSource | undefined)?.setData(dataRef.current);
     };
 
     install();
@@ -89,7 +97,7 @@ export function GroupSatelliteLayer({mapSession, positions, selectedNoradId, onS
       if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
       if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
     };
-  }, [mapSession, onSelect, positions, selectedNoradId]);
+  }, [mapSession, onSelect]);
 
   return null;
 }
