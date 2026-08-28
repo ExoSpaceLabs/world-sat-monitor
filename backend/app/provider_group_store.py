@@ -116,10 +116,10 @@ def sync_provider_group(
             incoming.name,
             FALSE,
             incoming.object_type,
-            %s,
+            %s::text,
             incoming.metadata
                 || jsonb_build_object(
-                    'catalog_source', %s,
+                    'catalog_source', %s::text,
                     'provider_object_id', incoming.norad_id
                 )
         FROM worldsat_provider_group_import incoming
