@@ -158,10 +158,10 @@ def seed_fixture(connection, max_size: int, sizes: tuple[int, ...]):
             %s,
             6800.0,
             sequence::double precision,
-            (sequence % 50)::double precision,
-            ((sequence % 160) - 80)::double precision,
-            (((sequence * 7) % 360) - 180)::double precision,
-            550.0 + (sequence % 30)::double precision,
+            (sequence %% 50)::double precision,
+            ((sequence %% 160) - 80)::double precision,
+            (((sequence * 7) %% 360) - 180)::double precision,
+            550.0 + (sequence %% 30)::double precision,
             %s,
             NULL
         FROM ranked
