@@ -7,15 +7,15 @@ const TIME_SCALES = [1, 10, 60, 360] as const;
 type MapSettingsPanelProps = {
   basemap: Basemap;
   scene: SceneOptions;
-  themeLandColor: string;
-  themeWaterColor: string;
+  themeBaseColor: string;
+  themeContrast: number;
   timeScale: number;
   onBasemapChange: (next: Basemap) => void;
   onDebugChange: (enabled: boolean) => void;
   onEnvironmentChange: (enabled: boolean) => void;
   onShadowOpacityChange: (opacity: number) => void;
-  onThemeLandColorChange: (color: string) => void;
-  onThemeWaterColorChange: (color: string) => void;
+  onThemeBaseColorChange: (color: string) => void;
+  onThemeContrastChange: (contrast: number) => void;
   onTimeReset: () => void;
   onTimeScaleChange: (scale: number) => void;
   onReset: () => void;
@@ -25,20 +25,23 @@ type MapSettingsPanelProps = {
 export function MapSettingsPanel({
   basemap,
   scene,
-  themeLandColor,
-  themeWaterColor,
+  themeBaseColor,
+  themeContrast,
   timeScale,
   onBasemapChange,
   onDebugChange,
   onEnvironmentChange,
   onShadowOpacityChange,
-  onThemeLandColorChange,
-  onThemeWaterColorChange,
+  onThemeBaseColorChange,
+  onThemeContrastChange,
   onTimeReset,
   onTimeScaleChange,
   onReset,
   onClose,
 }: MapSettingsPanelProps) {
+  const contrastPercent = Math.round(themeContrast * 100);
+  const contrastSliderPercent = ((contrastPercent + 95) / 190) * 100;
+
   return (
     <aside className="settings-panel" aria-label="Map settings">
       <div className="settings-head">
@@ -60,14 +63,24 @@ export function MapSettingsPanel({
           ))}
         </div>
         {basemap === "dark" && (
-          <div className="theme-color-controls" aria-label="Themed basemap colors">
-            <label>
-              <span><b>WATER</b><output>{themeWaterColor.toUpperCase()}</output></span>
-              <div><input type="color" value={themeWaterColor} onChange={(event) => onThemeWaterColorChange(event.target.value)} aria-label="Themed water color"/><i style={{background: themeWaterColor}}/></div>
+          <div className="theme-map-controls" aria-label="Themed basemap appearance">
+            <label className="theme-base-color">
+              <span><b>BASE COLOR</b><output>{themeBaseColor.toUpperCase()}</output></span>
+              <div><input type="color" value={themeBaseColor} onChange={(event) => onThemeBaseColorChange(event.target.value)} aria-label="Themed base color"/><i style={{background: themeBaseColor}}/></div>
             </label>
-            <label>
-              <span><b>LAND</b><output>{themeLandColor.toUpperCase()}</output></span>
-              <div><input type="color" value={themeLandColor} onChange={(event) => onThemeLandColorChange(event.target.value)} aria-label="Themed land color"/><i style={{background: themeLandColor}}/></div>
+            <label className="theme-contrast">
+              <span><b>CONTRAST</b><output>{contrastPercent > 0 ? "+" : ""}{contrastPercent}%</output></span>
+              <input
+                type="range"
+                min="-95"
+                max="95"
+                step="1"
+                value={contrastPercent}
+                onChange={(event) => onThemeContrastChange(Number(event.target.value) / 100)}
+                aria-label="Themed raster contrast"
+                style={{"--theme-contrast": `${contrastSliderPercent}%`} as CSSProperties}
+              />
+              <small>ESRI GRAYSCALE · HIGH CONTRAST APPROACHES A HARD MID-TONE THRESHOLD</small>
             </label>
           </div>
         )}
