@@ -16,6 +16,7 @@ export type PersistentMapSettings = {
 };
 
 export type OrbitTrackMode = "ground" | "orbit";
+export type GroupMarkerPlacement = "orbit" | "nadir";
 
 export type OrbitPathSettings = {
   enabled: boolean;
@@ -33,6 +34,7 @@ export type OrbitDisplaySettings = {
 };
 
 export type GroupOrbitDisplaySettings = {
+  marker_placement: GroupMarkerPlacement;
   show_satellite_names: boolean;
   direction_vector_enabled: boolean;
   position_update_ms: number;
@@ -72,6 +74,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
     },
   },
   group_orbit: {
+    marker_placement: "orbit",
     show_satellite_names: false,
     direction_vector_enabled: false,
     position_update_ms: 2000,
