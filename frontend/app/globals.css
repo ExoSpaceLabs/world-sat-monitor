@@ -4,5 +4,6 @@
 @import "./components/globe/styles.css";
 @import "./components/satellite/styles.css";
 @import "./components/satellite/manager.css";
+@import "./components/groups/styles.css";
 @import "./components/settings/styles.css";
 @import "./components/satellite/settings.css";
