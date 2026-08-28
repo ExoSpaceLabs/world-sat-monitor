@@ -1,8 +1,12 @@
 import type {
   CatalogSearchResult,
+  GroupPosition,
   ManagedSatellite,
   Satellite,
   SatelliteCreateRequest,
+  SatelliteGroup,
+  SatelliteGroupCreateRequest,
+  SatelliteGroupMember,
   SatelliteTrackPoint,
 } from "../domain/satellite";
 import type {AppSettings} from "../domain/settings";
@@ -70,6 +74,10 @@ type CatalogSearchResponse = {
   provider: string;
   results: CatalogSearchResult[];
 };
+
+type GroupListResponse = {groups: SatelliteGroup[]};
+type GroupMembersResponse = {members: SatelliteGroupMember[]};
+type GroupPositionsResponse = {group: SatelliteGroup; generated_at: string; positions: GroupPosition[]};
 
 type AppSettingsWire = {
   version?: number;
@@ -195,6 +203,53 @@ export function deactivateManagedSatellite(satelliteId: number): Promise<Managed
 
 export function deleteManagedSatellite(satelliteId: number): Promise<void> {
   return requestJson<void>(`/api/v1/satellites/${satelliteId}`, {method: "DELETE"});
+}
+
+export async function listSatelliteGroups(): Promise<SatelliteGroup[]> {
+  return (await requestJson<GroupListResponse>("/api/v1/groups")).groups;
+}
+
+export function createSatelliteGroup(value: SatelliteGroupCreateRequest): Promise<SatelliteGroup> {
+  return requestJson<SatelliteGroup>("/api/v1/groups", {
+    method: "POST",
+    body: JSON.stringify(value),
+  });
+}
+
+export function updateSatelliteGroup(
+  groupId: number,
+  value: Partial<SatelliteGroupCreateRequest>,
+): Promise<SatelliteGroup> {
+  return requestJson<SatelliteGroup>(`/api/v1/groups/${groupId}`, {
+    method: "PATCH",
+    body: JSON.stringify(value),
+  });
+}
+
+export function deleteSatelliteGroup(groupId: number): Promise<void> {
+  return requestJson<void>(`/api/v1/groups/${groupId}`, {method: "DELETE"});
+}
+
+export async function listSatelliteGroupMembers(groupId: number): Promise<SatelliteGroupMember[]> {
+  return (await requestJson<GroupMembersResponse>(`/api/v1/groups/${groupId}/members`)).members;
+}
+
+export function addSatelliteGroupMember(
+  groupId: number,
+  satelliteId: number,
+): Promise<SatelliteGroupMember> {
+  return requestJson<SatelliteGroupMember>(`/api/v1/groups/${groupId}/members`, {
+    method: "POST",
+    body: JSON.stringify({satellite_id: satelliteId}),
+  });
+}
+
+export function removeSatelliteGroupMember(groupId: number, satelliteId: number): Promise<void> {
+  return requestJson<void>(`/api/v1/groups/${groupId}/members/${satelliteId}`, {method: "DELETE"});
+}
+
+export async function getSatelliteGroupPositions(groupId: number): Promise<GroupPosition[]> {
+  return (await requestJson<GroupPositionsResponse>(`/api/v1/groups/${groupId}/positions`)).positions;
 }
 
 export async function getSatellitePosition(
