@@ -12,7 +12,7 @@ import type {
 import type {AppSettings, GroupOrbitDisplaySettings} from "../domain/settings";
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 6,
+  version: 7,
   map: {
     basemap: "dark",
     themed_base_color: "#041018",
@@ -35,6 +35,8 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
     },
   },
   group_orbit: {
+    show_satellite_names: false,
+    direction_vector_enabled: false,
     position_update_ms: 2000,
     prediction_hours: 3,
     step_seconds: 120,
@@ -125,6 +127,8 @@ function normalizeAppSettings(payload: AppSettingsWire): AppSettings {
       },
     },
     group_orbit: {
+      show_satellite_names: typeof groupOrbit.show_satellite_names === "boolean" ? groupOrbit.show_satellite_names : DEFAULT_APP_SETTINGS.group_orbit.show_satellite_names,
+      direction_vector_enabled: typeof groupOrbit.direction_vector_enabled === "boolean" ? groupOrbit.direction_vector_enabled : DEFAULT_APP_SETTINGS.group_orbit.direction_vector_enabled,
       position_update_ms: typeof groupOrbit.position_update_ms === "number" && Number.isFinite(groupOrbit.position_update_ms) ? groupOrbit.position_update_ms : DEFAULT_APP_SETTINGS.group_orbit.position_update_ms,
       prediction_hours: typeof groupOrbit.prediction_hours === "number" && Number.isFinite(groupOrbit.prediction_hours) ? groupOrbit.prediction_hours : DEFAULT_APP_SETTINGS.group_orbit.prediction_hours,
       step_seconds: typeof groupOrbit.step_seconds === "number" && Number.isFinite(groupOrbit.step_seconds) ? groupOrbit.step_seconds : DEFAULT_APP_SETTINGS.group_orbit.step_seconds,
