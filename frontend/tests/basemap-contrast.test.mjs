@@ -16,17 +16,21 @@ async function source(url) {
   return readFile(url, "utf8");
 }
 
-test("themed basemap uses exact land and water fills with reference labels", async () => {
+test("themed basemap uses vector country land and exact water fill with reference labels", async () => {
   const text = await source(mapStyleUrl);
 
-  assert.match(text, /ne_110m_land\.geojson/);
+  assert.match(text, /demotiles\.maplibre\.org\/tiles\/tiles\.json/);
   assert.match(text, /World_Dark_Gray_Reference\/MapServer\/tile/);
   assert.match(text, /mode === "dark"\) return themedMapStyle\(themedColors\)/);
-  assert.match(text, /"natural-earth-land"/);
+  assert.match(text, /"maplibre-land"/);
+  assert.match(text, /type: "vector"/);
+  assert.match(text, /"source-layer": "countries"/);
   assert.match(text, /id: "worldsat-themed-water"/);
   assert.match(text, /"background-color": colors\.water/);
   assert.match(text, /id: "worldsat-themed-land"/);
   assert.match(text, /"fill-color": colors\.land/);
+  assert.doesNotMatch(text, /natural-earth-land/);
+  assert.doesNotMatch(text, /ne_110m_land\.geojson/);
   assert.doesNotMatch(text, /World_Dark_Gray_Base/);
   assert.doesNotMatch(text, /cartocdn/i);
   assert.doesNotMatch(text, /API_KEY/);
