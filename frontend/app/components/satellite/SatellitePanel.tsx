@@ -1,6 +1,6 @@
 "use client";
 
-import {useCallback, useEffect, useState, type FormEvent} from "react";
+import {useEffect, useState, type FormEvent} from "react";
 import type {Basemap} from "../../domain/types";
 import type {ManagedSatellite, Satellite} from "../../domain/satellite";
 import type {SolarState} from "../../domain/solar";
@@ -37,19 +37,25 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
   const [cospar, setCospar] = useState("");
   const [monitorNow, setMonitorNow] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setSatellites(await listManagedSatellites());
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not load satellites");
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const loaded = await listManagedSatellites();
+        if (cancelled) return;
+        setSatellites(loaded);
+        setError(null);
+      } catch (caught) {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : "Could not load satellites");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
   }, []);
-
-  useEffect(() => { void refresh(); }, [refresh]);
 
   const toggleActive = async (item: ManagedSatellite) => {
     setBusyId(item.id);
