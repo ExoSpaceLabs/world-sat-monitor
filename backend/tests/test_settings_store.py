@@ -16,16 +16,16 @@ class JsonSettingsStoreTests(unittest.TestCase):
 
             defaults = store.ensure()
             self.assertTrue(path.exists())
-            self.assertEqual(defaults.version, 4)
-            self.assertEqual(defaults.map.themed_water_color, "#041018")
-            self.assertEqual(defaults.map.themed_land_color, "#0a2c39")
+            self.assertEqual(defaults.version, 5)
+            self.assertEqual(defaults.map.themed_base_color, "#041018")
+            self.assertEqual(defaults.map.themed_contrast, 0.18)
             self.assertTrue(defaults.orbit.direction_vector_enabled)
             self.assertEqual(defaults.orbit.path.mode, "ground")
             self.assertEqual(defaults.orbit.path.prediction_hours, 6)
 
             changed = defaults.model_copy(deep=True)
-            changed.map.themed_water_color = "#01080d"
-            changed.map.themed_land_color = "#123f4a"
+            changed.map.themed_base_color = "#01080d"
+            changed.map.themed_contrast = 0.72
             changed.orbit.direction_vector_enabled = False
             changed.orbit.path.mode = "orbit"
             changed.orbit.path.prediction_hours = 48
@@ -33,15 +33,16 @@ class JsonSettingsStoreTests(unittest.TestCase):
             store.save(changed)
 
             reloaded = store.load()
-            self.assertEqual(reloaded.map.themed_water_color, "#01080d")
-            self.assertEqual(reloaded.map.themed_land_color, "#123f4a")
+            self.assertEqual(reloaded.map.themed_base_color, "#01080d")
+            self.assertEqual(reloaded.map.themed_contrast, 0.72)
             self.assertFalse(reloaded.orbit.direction_vector_enabled)
             self.assertEqual(reloaded.orbit.path.mode, "orbit")
             self.assertEqual(reloaded.orbit.path.prediction_hours, 48)
             self.assertEqual(reloaded.orbit.position_update_ms, 500)
 
             raw = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["map"]["themed_land_color"], "#123f4a")
+            self.assertEqual(raw["map"]["themed_base_color"], "#01080d")
+            self.assertEqual(raw["map"]["themed_contrast"], 0.72)
             self.assertEqual(raw["orbit"]["path"]["prediction_hours"], 48)
             self.assertNotIn("satellite", raw)
 
@@ -51,16 +52,16 @@ class JsonSettingsStoreTests(unittest.TestCase):
             store = JsonSettingsStore(path)
             changed = AppSettings()
             changed.map.basemap = "street"
-            changed.map.themed_water_color = "#000000"
-            changed.map.themed_land_color = "#ffffff"
+            changed.map.themed_base_color = "#000000"
+            changed.map.themed_contrast = 0.9
             changed.orbit.path.enabled = False
             changed.orbit.direction_vector_enabled = False
             store.save(changed)
 
             reset = store.reset()
             self.assertEqual(reset.map.basemap, "dark")
-            self.assertEqual(reset.map.themed_water_color, "#041018")
-            self.assertEqual(reset.map.themed_land_color, "#0a2c39")
+            self.assertEqual(reset.map.themed_base_color, "#041018")
+            self.assertEqual(reset.map.themed_contrast, 0.18)
             self.assertTrue(reset.orbit.path.enabled)
             self.assertTrue(reset.orbit.direction_vector_enabled)
             self.assertEqual(reset.orbit.path.mode, "ground")
@@ -94,10 +95,10 @@ class JsonSettingsStoreTests(unittest.TestCase):
             )
 
             migrated = JsonSettingsStore(path).load()
-            self.assertEqual(migrated.version, 4)
+            self.assertEqual(migrated.version, 5)
             self.assertEqual(migrated.map.basemap, "street")
-            self.assertEqual(migrated.map.themed_water_color, "#041018")
-            self.assertEqual(migrated.map.themed_land_color, "#0a2c39")
+            self.assertEqual(migrated.map.themed_base_color, "#041018")
+            self.assertEqual(migrated.map.themed_contrast, 0.18)
             self.assertEqual(migrated.orbit.position_update_ms, 700)
             self.assertEqual(migrated.orbit.path.history_minutes, 120)
             self.assertEqual(migrated.orbit.path.prediction_hours, 24)
@@ -105,9 +106,9 @@ class JsonSettingsStoreTests(unittest.TestCase):
             self.assertEqual(migrated.orbit.path.mode, "ground")
 
             raw = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["version"], 4)
-            self.assertEqual(raw["map"]["themed_water_color"], "#041018")
-            self.assertEqual(raw["map"]["themed_land_color"], "#0a2c39")
+            self.assertEqual(raw["version"], 5)
+            self.assertEqual(raw["map"]["themed_base_color"], "#041018")
+            self.assertEqual(raw["map"]["themed_contrast"], 0.18)
             self.assertIn("orbit", raw)
             self.assertNotIn("satellite", raw)
 
@@ -139,9 +140,9 @@ class JsonSettingsStoreTests(unittest.TestCase):
             )
 
             migrated = JsonSettingsStore(path).load()
-            self.assertEqual(migrated.version, 4)
-            self.assertEqual(migrated.map.themed_water_color, "#041018")
-            self.assertEqual(migrated.map.themed_land_color, "#0a2c39")
+            self.assertEqual(migrated.version, 5)
+            self.assertEqual(migrated.map.themed_base_color, "#041018")
+            self.assertEqual(migrated.map.themed_contrast, 0.18)
             self.assertTrue(migrated.orbit.direction_vector_enabled)
             self.assertEqual(migrated.orbit.path.mode, "ground")
             self.assertFalse(migrated.orbit.path.enabled)
@@ -176,13 +177,56 @@ class JsonSettingsStoreTests(unittest.TestCase):
             )
 
             migrated = JsonSettingsStore(path).load()
-            self.assertEqual(migrated.version, 4)
-            self.assertEqual(migrated.map.themed_water_color, "#041018")
-            self.assertEqual(migrated.map.themed_land_color, "#0a2c39")
+            self.assertEqual(migrated.version, 5)
+            self.assertEqual(migrated.map.themed_base_color, "#041018")
+            self.assertEqual(migrated.map.themed_contrast, 0.18)
             self.assertFalse(migrated.map.space_environment)
             self.assertTrue(migrated.map.debug)
             self.assertEqual(migrated.map.time_scale, 10)
             self.assertFalse(migrated.orbit.direction_vector_enabled)
+
+    def test_migrates_version_four_theme_colors_to_raster_base_and_contrast(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(
+                json.dumps({
+                    "version": 4,
+                    "map": {
+                        "basemap": "dark",
+                        "themed_water_color": "#01080d",
+                        "themed_land_color": "#123f4a",
+                        "space_environment": True,
+                        "shadow_opacity": 0.7,
+                        "debug": False,
+                        "time_scale": 1,
+                    },
+                    "orbit": {
+                        "direction_vector_enabled": True,
+                        "position_update_ms": 1000,
+                        "path": {
+                            "enabled": True,
+                            "mode": "ground",
+                            "history_minutes": 90,
+                            "prediction_hours": 6,
+                            "resolution_seconds": 60,
+                            "refresh_seconds": 30,
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            migrated = JsonSettingsStore(path).load()
+            self.assertEqual(migrated.version, 5)
+            self.assertEqual(migrated.map.themed_base_color, "#01080d")
+            self.assertEqual(migrated.map.themed_contrast, 0.18)
+
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(raw["version"], 5)
+            self.assertEqual(raw["map"]["themed_base_color"], "#01080d")
+            self.assertEqual(raw["map"]["themed_contrast"], 0.18)
+            self.assertNotIn("themed_water_color", raw["map"])
+            self.assertNotIn("themed_land_color", raw["map"])
 
 
 if __name__ == "__main__":
