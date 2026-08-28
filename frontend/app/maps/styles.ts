@@ -7,6 +7,12 @@ const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
+// Derived from the UI cyan accent, but intentionally much darker so map detail
+// stays subordinate to satellite/orbit overlays. The grayscale Esri base is
+// blended over this color: brighter land lifts toward cyan while dark water
+// remains close to this deep background tone.
+const DARK_MAP_SURFACE = "#06272d";
+
 type MutableStyleLayer = {
   id: string;
   type: string;
@@ -75,8 +81,34 @@ function darkRasterStyle(): StyleSpecification {
       },
     },
     layers: [
-      {id: "esri-dark-base", type: "raster", source: "esri-dark-base"},
-      {id: "esri-dark-reference", type: "raster", source: "esri-dark-reference"},
+      {
+        id: "worldsat-dark-surface",
+        type: "background",
+        paint: {"background-color": DARK_MAP_SURFACE},
+      },
+      {
+        id: "esri-dark-base",
+        type: "raster",
+        source: "esri-dark-base",
+        paint: {
+          "raster-opacity": 0.42,
+          "raster-saturation": -1,
+          "raster-contrast": 0.2,
+          "raster-brightness-min": 0,
+          "raster-brightness-max": 0.58,
+        },
+      },
+      {
+        id: "esri-dark-reference",
+        type: "raster",
+        source: "esri-dark-reference",
+        paint: {
+          "raster-opacity": 0.82,
+          "raster-saturation": -0.35,
+          "raster-contrast": 0.08,
+          "raster-brightness-max": 0.86,
+        },
+      },
     ],
   };
 }
