@@ -1,19 +1,19 @@
 import type {StyleSpecification} from "maplibre-gl";
-import {DEFAULT_THEMED_MAP_COLORS} from "../domain/settings";
+import {DEFAULT_THEMED_MAP_STYLE} from "../domain/settings";
 import type {Basemap} from "../domain/types";
-import {LAND_MASK_GEOJSON} from "./land-mask";
 
 const OPENFREEMAP_DARK_STYLE_URL = "/map/openfreemap/styles/dark";
+const ESRI_DARK_BASE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
 const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
-export const THEMED_WATER_LAYER_ID = "worldsat-themed-water";
-export const THEMED_LAND_LAYER_ID = "worldsat-themed-land";
+export const THEMED_SURFACE_LAYER_ID = "worldsat-themed-surface";
+export const THEMED_BASE_LAYER_ID = "esri-dark-base";
 
-export type ThemedMapColors = {
-  water: string;
-  land: string;
+export type ThemedMapStyle = {
+  baseColor: string;
+  contrast: number;
 };
 
 type MutableStyleLayer = {
@@ -21,6 +21,10 @@ type MutableStyleLayer = {
   type: string;
   layout?: Record<string, unknown>;
 };
+
+function clampRasterContrast(value: number) {
+  return Math.max(-0.95, Math.min(0.95, value));
+}
 
 async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
   const response = await fetch(OPENFREEMAP_DARK_STYLE_URL);
@@ -32,9 +36,9 @@ async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
 
 export async function loadBasemapStyle(
   mode: Basemap,
-  themedColors: ThemedMapColors = DEFAULT_THEMED_MAP_COLORS,
+  themedStyle: ThemedMapStyle = DEFAULT_THEMED_MAP_STYLE,
 ): Promise<StyleSpecification> {
-  if (mode === "dark") return themedMapStyle(themedColors);
+  if (mode === "dark") return themedRasterStyle(themedStyle);
 
   if (mode === "street") {
     return rasterStyle("osm-standard", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
@@ -66,41 +70,46 @@ export function fallbackStyle(): StyleSpecification {
   return rasterStyle("osm-fallback", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
 }
 
-function themedMapStyle(colors: ThemedMapColors): StyleSpecification {
+function themedRasterStyle(theme: ThemedMapStyle): StyleSpecification {
   return {
     version: 8,
     projection: {type: "globe"},
     metadata: {
-      "worldsat:theme-water": colors.water,
-      "worldsat:theme-land": colors.land,
+      "worldsat:theme-base": theme.baseColor,
+      "worldsat:theme-contrast": clampRasterContrast(theme.contrast),
     },
     sources: {
-      "worldsat-land-mask": {
-        type: "geojson",
-        data: LAND_MASK_GEOJSON,
+      "esri-dark-base": {
+        type: "raster",
+        tiles: [ESRI_DARK_BASE_TILES],
+        tileSize: 256,
+        maxzoom: 16,
+        attribution: "Tiles © Esri and data providers",
       },
       "esri-dark-reference": {
         type: "raster",
         tiles: [ESRI_DARK_REFERENCE_TILES],
         tileSize: 256,
         maxzoom: 16,
-        attribution: "Reference tiles © Esri and data providers",
+        attribution: "Tiles © Esri and data providers",
       },
     },
     layers: [
       {
-        id: THEMED_WATER_LAYER_ID,
+        id: THEMED_SURFACE_LAYER_ID,
         type: "background",
-        paint: {"background-color": colors.water},
+        paint: {"background-color": theme.baseColor},
       },
       {
-        id: THEMED_LAND_LAYER_ID,
-        type: "fill",
-        source: "worldsat-land-mask",
+        id: THEMED_BASE_LAYER_ID,
+        type: "raster",
+        source: "esri-dark-base",
         paint: {
-          "fill-color": colors.land,
-          "fill-opacity": 1,
-          "fill-outline-color": colors.land,
+          "raster-opacity": 0.55,
+          "raster-saturation": -1,
+          "raster-contrast": clampRasterContrast(theme.contrast),
+          "raster-brightness-min": 0,
+          "raster-brightness-max": 0.62,
         },
       },
       {
