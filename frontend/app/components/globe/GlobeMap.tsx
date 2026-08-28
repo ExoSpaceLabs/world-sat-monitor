@@ -24,6 +24,8 @@ type GlobeMapProps = {
   followSatellite: boolean;
   resetKey: number;
   satellite: Satellite;
+  themeLandColor: string;
+  themeWaterColor: string;
   timeResetKey: number;
   timeScale: number;
   onMapSession: (session: MapSession | null) => void;
@@ -72,6 +74,8 @@ export function GlobeMap({
   followSatellite,
   resetKey,
   satellite,
+  themeLandColor,
+  themeWaterColor,
   timeResetKey,
   timeScale,
   onMapSession,
@@ -85,6 +89,8 @@ export function GlobeMap({
   const styleRequestRef = useRef(0);
   const styleRevisionRef = useRef(0);
   const basemapRef = useRef(basemap);
+  const themeLandColorRef = useRef(themeLandColor);
+  const themeWaterColorRef = useRef(themeWaterColor);
   const fallbackActiveRef = useRef(false);
   const followRef = useRef(followSatellite);
   const timeScaleRef = useRef(timeScale);
@@ -123,7 +129,10 @@ export function GlobeMap({
 
     void Promise.all([
       import("maplibre-gl"),
-      loadBasemapStyle(basemapRef.current).catch(() => {
+      loadBasemapStyle(basemapRef.current, {
+        land: themeLandColorRef.current,
+        water: themeWaterColorRef.current,
+      }).catch(() => {
         fallbackActiveRef.current = true;
         return fallbackStyle();
       }),
@@ -252,12 +261,20 @@ export function GlobeMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || basemapRef.current === basemap) return;
+    const basemapChanged = basemapRef.current !== basemap;
+    const themeChanged = basemap === "dark" && (
+      themeLandColorRef.current !== themeLandColor
+      || themeWaterColorRef.current !== themeWaterColor
+    );
+    if (!map || (!basemapChanged && !themeChanged)) return;
+
     basemapRef.current = basemap;
+    themeLandColorRef.current = themeLandColor;
+    themeWaterColorRef.current = themeWaterColor;
     fallbackActiveRef.current = false;
     const requestId = ++styleRequestRef.current;
     onMapState("loading");
-    void loadBasemapStyle(basemap)
+    void loadBasemapStyle(basemap, {land: themeLandColor, water: themeWaterColor})
       .then((style) => {
         if (requestId === styleRequestRef.current && mapRef.current) mapRef.current.setStyle(style);
       })
@@ -268,7 +285,7 @@ export function GlobeMap({
           onMapState("fallback");
         }
       });
-  }, [basemap, onMapState]);
+  }, [basemap, onMapState, themeLandColor, themeWaterColor]);
 
   useEffect(() => {
     if (!followSatellite) return;
