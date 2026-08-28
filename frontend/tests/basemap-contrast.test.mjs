@@ -17,17 +17,18 @@ async function source(url) {
   return readFile(url, "utf8");
 }
 
-test("themed basemap blends detailed Esri grayscale over one tint color", async () => {
+test("themed basemap blends detailed Esri grayscale over one fixed tint treatment", async () => {
   const text = await source(mapStyleUrl);
 
   assert.match(text, /World_Dark_Gray_Base\/MapServer\/tile/);
   assert.match(text, /World_Dark_Gray_Reference\/MapServer\/tile/);
   assert.match(text, /mode === "dark"\) return themedRasterStyle\(themedStyle\)/);
   assert.match(text, /THEMED_DETAIL_OPACITY = 0\.42/);
+  assert.match(text, /THEMED_RASTER_CONTRAST = 0\.18/);
   assert.match(text, /"background-color": theme\.baseColor/);
   assert.match(text, /"raster-opacity": THEMED_DETAIL_OPACITY/);
   assert.match(text, /"raster-saturation": -1/);
-  assert.match(text, /"raster-contrast": contrast/);
+  assert.match(text, /"raster-contrast": THEMED_RASTER_CONTRAST/);
   assert.match(text, /"raster-brightness-max": 0\.58/);
   assert.doesNotMatch(text, /LAND_MASK_GEOJSON/);
   assert.doesNotMatch(text, /type: "geojson"/);
@@ -35,38 +36,41 @@ test("themed basemap blends detailed Esri grayscale over one tint color", async 
   assert.doesNotMatch(text, /API_KEY/);
 });
 
-test("themed defaults retain the dark mission palette and moderate detail contrast", async () => {
+test("satellite view hides OpenFreeMap line layers over Esri imagery", async () => {
+  const text = await source(mapStyleUrl);
+
+  assert.match(text, /layer\.type === "line"/);
+  assert.match(text, /visibility: "none" as const/);
+  assert.match(text, /World_Imagery\/MapServer\/tile/);
+});
+
+test("themed defaults retain the dark mission palette", async () => {
   const settings = await source(appSettingsUrl);
   const satelliteStyles = await source(satelliteStylesUrl);
 
   assert.match(settings, /baseColor: "#041018"/);
   assert.match(settings, /contrast: 0\.18/);
   assert.match(settings, /themed_base_color/);
-  assert.match(settings, /themed_contrast/);
   assert.match(settings, /version: 5/);
   assert.match(satelliteStyles, /\.sat-card[^\n]*background:rgba\(5,18,26,\.86\)/);
   assert.match(satelliteStyles, /\.follow-button\.active[^\n]*background:#0a2c39/);
 });
 
-test("map settings use one tint, contrast, and survive legacy theme payloads", async () => {
+test("map settings expose only the tint color and normalize legacy contrast", async () => {
   const panel = await source(mapSettingsUrl);
   const globe = await source(globeMapUrl);
   const api = await source(worldsatApiUrl);
 
   assert.match(panel, /mode === "dark" \? "THEMED"/);
   assert.match(panel, />TINT COLOR</);
-  assert.match(panel, />CONTRAST</);
+  assert.doesNotMatch(panel, /<span><b>CONTRAST<\/b>/);
   assert.match(panel, /safeBaseColor/);
   assert.match(panel, /DEFAULT_THEMED_MAP_STYLE\.baseColor/);
-  assert.match(panel, /TINT IS BLENDED UNDER THE RASTER/);
-  assert.match(globe, /THEMED_SURFACE_LAYER_ID/);
-  assert.match(globe, /THEMED_BASE_LAYER_ID/);
   assert.match(globe, /map\.setPaintProperty\(THEMED_SURFACE_LAYER_ID, "background-color", themeBaseColor\)/);
-  assert.match(globe, /map\.setPaintProperty\(THEMED_BASE_LAYER_ID, "raster-contrast", themeContrast\)/);
-  assert.match(globe, /map\.triggerRepaint\(\)/);
   assert.match(api, /normalizeAppSettings/);
   assert.match(api, /themed_water_color\?: string/);
   assert.match(api, /map\.themed_base_color \?\? map\.themed_water_color/);
+  assert.match(api, /const contrast = DEFAULT_APP_SETTINGS\.map\.themed_contrast/);
   assert.match(api, /version: DEFAULT_APP_SETTINGS\.version/);
 });
 
