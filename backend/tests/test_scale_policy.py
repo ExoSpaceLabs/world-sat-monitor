@@ -29,7 +29,7 @@ class ScalePolicyTests(unittest.TestCase):
         self.assertEqual(policy.step_seconds_at(generated_at + timedelta(days=7), generated_at), 900)
 
     def test_current_state_queries_never_scan_trajectory_samples(self):
-        group_section = REPOSITORY.split("def get_group_current_positions", 1)[1].split("def get_current_positions_for_selection", 1)[0]
+        group_section = REPOSITORY.split("def get_group_current_positions", 1)[1].split("def get_group_positions_at", 1)[0]
         selection_section = REPOSITORY.split("def get_current_positions_for_selection", 1)[1].split("def get_run_covering", 1)[0]
         for section in (group_section, selection_section):
             self.assertIn("satellite_current_state", section)
