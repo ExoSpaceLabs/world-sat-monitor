@@ -5,36 +5,7 @@ import type {
   SatelliteCreateRequest,
   SatelliteTrackPoint,
 } from "../domain/satellite";
-import type {AppSettings} from "../domain/settings";
-
-// Keep this transport module free of runtime imports so its API functions remain
-// directly executable under Node's type-stripping tests. These values mirror the
-// versioned frontend/backend defaults and are used only as a compatibility floor
-// when an older settings payload briefly appears during an upgrade.
-const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 5,
-  map: {
-    basemap: "dark",
-    themed_base_color: "#041018",
-    themed_contrast: 0.18,
-    space_environment: true,
-    shadow_opacity: 0.7,
-    debug: false,
-    time_scale: 1,
-  },
-  orbit: {
-    direction_vector_enabled: true,
-    position_update_ms: 1000,
-    path: {
-      enabled: true,
-      mode: "ground",
-      history_minutes: 90,
-      prediction_hours: 6,
-      resolution_seconds: 60,
-      refresh_seconds: 30,
-    },
-  },
-};
+import {DEFAULT_APP_SETTINGS, type AppSettings} from "../domain/settings";
 
 type PositionResponse = {
   satellite: {id: number; norad_id: string | null; name: string; active: boolean};
@@ -104,9 +75,9 @@ function normalizeAppSettings(payload: AppSettingsWire): AppSettings {
   const baseColor = typeof baseColorCandidate === "string" && /^#[0-9a-f]{6}$/i.test(baseColorCandidate)
     ? baseColorCandidate
     : DEFAULT_APP_SETTINGS.map.themed_base_color;
-  const contrast = typeof map.themed_contrast === "number" && Number.isFinite(map.themed_contrast)
-    ? Math.max(-0.95, Math.min(0.95, map.themed_contrast))
-    : DEFAULT_APP_SETTINGS.map.themed_contrast;
+  // Contrast is intentionally no longer user-configurable. Keep the persisted
+  // wire field for compatibility, but normalize rendering back to the stable default.
+  const contrast = DEFAULT_APP_SETTINGS.map.themed_contrast;
   const basemap = map.basemap === "dark" || map.basemap === "street" || map.basemap === "satellite"
     ? map.basemap
     : DEFAULT_APP_SETTINGS.map.basemap;
