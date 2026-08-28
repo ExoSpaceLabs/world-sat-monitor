@@ -5,6 +5,7 @@ import test from "node:test";
 const mapStyleUrl = new URL("../app/maps/styles.ts", import.meta.url);
 const globeMapUrl = new URL("../app/components/globe/GlobeMap.tsx", import.meta.url);
 const themeUrl = new URL("../app/maps/theme.ts", import.meta.url);
+const monitorStylesUrl = new URL("../app/components/world-sat-monitor/styles.css", import.meta.url);
 const orbitRendererUrl = new URL("../app/components/satellite/OrbitTrackLayer.ts", import.meta.url);
 const satelliteLayerUrl = new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url);
 const satelliteProjectionUrl = new URL("../app/components/satellite/satelliteProjection.ts", import.meta.url);
@@ -27,17 +28,23 @@ test("dark basemap uses the keyless Esri dark-gray raster base and reference lay
   assert.doesNotMatch(text, /API_KEY/);
 });
 
-test("dark basemap blends grayscale geography over the WorldSat cyan surface", async () => {
+test("dark basemap is anchored to the exact top-menu inactive and active surfaces", async () => {
   const text = await source(mapStyleUrl);
+  const menu = await source(monitorStylesUrl);
 
-  assert.match(text, /DARK_MAP_SURFACE = "#06272d"/);
-  assert.match(text, /id: "worldsat-dark-surface"/);
-  assert.match(text, /"background-color": DARK_MAP_SURFACE/);
-  assert.match(text, /"raster-opacity": 0\.42/);
+  assert.match(menu, /background:rgba\(6,23,32,\.82\)/);
+  assert.match(menu, /background:#0a2734/);
+  assert.match(text, /MENU_INACTIVE_SURFACE = "#061720"/);
+  assert.match(text, /MENU_ACTIVE_SURFACE = "#0a2734"/);
+  assert.match(text, /"background-color": MENU_INACTIVE_SURFACE/);
+  assert.match(text, /"worldsat:inactive-surface": MENU_INACTIVE_SURFACE/);
+  assert.match(text, /"worldsat:active-surface": MENU_ACTIVE_SURFACE/);
+  assert.match(text, /"raster-opacity": 0\.3/);
   assert.match(text, /"raster-saturation": -1/);
-  assert.match(text, /"raster-contrast": 0\.2/);
-  assert.match(text, /"raster-brightness-max": 0\.58/);
-  assert.match(text, /"raster-opacity": 0\.82/);
+  assert.match(text, /"raster-contrast": 0\.16/);
+  assert.match(text, /"raster-brightness-max": 0\.44/);
+  assert.match(text, /"raster-opacity": 0\.78/);
+  assert.doesNotMatch(text, /#06272d/);
 });
 
 test("dark basemap source errors install the real fallback style", async () => {
