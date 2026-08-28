@@ -8,11 +8,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CURRENT_SETTINGS_VERSION = 3
+CURRENT_SETTINGS_VERSION = 4
+DEFAULT_THEMED_WATER_COLOR = "#041018"
+DEFAULT_THEMED_LAND_COLOR = "#0a2c39"
+HEX_COLOR_PATTERN = r"^#[0-9A-Fa-f]{6}$"
 
 
 class MapSettings(BaseModel):
     basemap: Literal["dark", "street", "satellite"] = "dark"
+    themed_water_color: str = Field(default=DEFAULT_THEMED_WATER_COLOR, pattern=HEX_COLOR_PATTERN)
+    themed_land_color: str = Field(default=DEFAULT_THEMED_LAND_COLOR, pattern=HEX_COLOR_PATTERN)
     space_environment: bool = True
     shadow_opacity: float = Field(default=0.70, ge=0.0, le=1.0)
     debug: bool = False
@@ -53,6 +58,15 @@ def _migrate_settings(raw: object) -> object:
 
     migrated = dict(raw)
     legacy_satellite = migrated.pop("satellite", None)
+
+    map_settings = migrated.get("map")
+    if not isinstance(map_settings, dict):
+        map_settings = {}
+    else:
+        map_settings = dict(map_settings)
+    map_settings.setdefault("themed_water_color", DEFAULT_THEMED_WATER_COLOR)
+    map_settings.setdefault("themed_land_color", DEFAULT_THEMED_LAND_COLOR)
+    migrated["map"] = map_settings
 
     if "orbit" not in migrated and isinstance(legacy_satellite, dict):
         migrated["orbit"] = {
