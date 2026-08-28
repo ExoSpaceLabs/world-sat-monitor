@@ -1,5 +1,6 @@
 import {
   DEFAULT_APP_SETTINGS,
+  type GroupMarkerPlacement,
   type GroupOrbitDisplaySettings,
   type OrbitDisplaySettings,
   type OrbitTrackMode,
@@ -54,43 +55,44 @@ export function OrbitSettingsPanel({
   const setTrackMode = (mode: OrbitTrackMode) => updateSinglePath({mode});
   const updateGroup = (patch: Partial<GroupOrbitDisplaySettings>) =>
     onGroupChange({...groupSettings, ...patch});
+  const setGroupPlacement = (marker_placement: GroupMarkerPlacement) => updateGroup({marker_placement});
   const reset = () => {
     if (displayMode === "satellite") notifyOrbitDisplayChange(DEFAULT_APP_SETTINGS.orbit);
     onReset();
   };
 
   return (
-    <aside className="settings-panel orbit-settings-panel" aria-label="Orbit display settings">
+    <aside className="settings-panel orbit-settings-panel" aria-label={displayMode === "group" ? "Group settings" : "Object settings"}>
       <div className="settings-head">
         <div>
-          <small>{displayMode === "group" ? "GROUP DISPLAY CONTROL" : "SINGLE OBJECT CONTROL"}</small>
-          <h2>ORBIT SETTINGS</h2>
+          <small>{displayMode === "group" ? "CONSTELLATION DISPLAY + PROPAGATION" : "SELECTED OBJECT DISPLAY"}</small>
+          <h2>{displayMode === "group" ? "GROUP SETTINGS" : "OBJECT SETTINGS"}</h2>
         </div>
-        <button onClick={onClose} aria-label="Close orbit settings">×</button>
+        <button onClick={onClose} aria-label="Close settings">×</button>
       </div>
 
       {displayMode === "satellite" ? (
         <>
           <section>
-            <h3>SELECTED SATELLITE</h3>
+            <h3>OBJECT + ORBIT</h3>
             <div className="scene-options">
               <button className="scene-toggle" role="switch" aria-checked={singleSettings.path.enabled} onClick={() => updateSinglePath({enabled: !singleSettings.path.enabled})}>
-                <span><b>DRAW ORBIT PATH</b><small>ONLY THE SELECTED SATELLITE GETS A DETAILED PATH</small></span>
+                <span><b>DRAW ORBIT PATH</b><small>ONLY THE SELECTED OBJECT GETS A DETAILED PATH</small></span>
                 <i className={singleSettings.path.enabled ? "enabled" : ""}/>
               </button>
               <button className="scene-toggle" role="switch" aria-checked={singleSettings.direction_vector_enabled} onClick={() => commitSingle({...singleSettings, direction_vector_enabled: !singleSettings.direction_vector_enabled})}>
-                <span><b>DRAW DIRECTION VECTOR</b><small>SHOW CURRENT SATELLITE HEADING INDEPENDENTLY OF PATHS</small></span>
+                <span><b>DRAW DIRECTION VECTOR</b><small>SHOW CURRENT OBJECT HEADING</small></span>
                 <i className={singleSettings.direction_vector_enabled ? "enabled" : ""}/>
               </button>
-              <div className="track-mode-control" role="group" aria-label="Orbit track placement">
-                <span><b>TRACK PLACEMENT</b><small>GROUND = NADIR PROJECTION · ORBIT = ACTUAL ALTITUDE</small></span>
+              <div className="track-mode-control" role="group" aria-label="Object and orbit placement">
+                <span><b>OBJECT + TRACK PLACEMENT</b><small>GROUND = SATELLITE AND TRACK AT NADIR · ORBIT = BOTH AT PHYSICAL ALTITUDE</small></span>
                 <div>
                   <button className={singleSettings.path.mode === "ground" ? "active" : ""} onClick={() => setTrackMode("ground")}>GROUND</button>
                   <button className={singleSettings.path.mode === "orbit" ? "active" : ""} onClick={() => setTrackMode("orbit")}>ORBIT</button>
                 </div>
               </div>
-              <RangeControl label="HISTORY" detail="Track shown before display UTC for the selected satellite" value={singleSettings.path.history_minutes} min={0} max={1440} step={10} suffix=" min" onChange={(history_minutes) => updateSinglePath({history_minutes})}/>
-              <RangeControl label="PREDICTION" detail="Future detailed track for the selected satellite" value={singleSettings.path.prediction_hours} min={0} max={336} step={1} suffix=" h" onChange={(prediction_hours) => updateSinglePath({prediction_hours})}/>
+              <RangeControl label="HISTORY" detail="Track shown before display UTC for the selected object" value={singleSettings.path.history_minutes} min={0} max={1440} step={10} suffix=" min" onChange={(history_minutes) => updateSinglePath({history_minutes})}/>
+              <RangeControl label="PREDICTION" detail="Future detailed track for the selected object" value={singleSettings.path.prediction_hours} min={0} max={336} step={1} suffix=" h" onChange={(prediction_hours) => updateSinglePath({prediction_hours})}/>
               <RangeControl label="REQUESTED PATH STEP" detail="API sampling request; backend may decimate further" value={singleSettings.path.resolution_seconds} min={10} max={600} step={10} suffix=" s" onChange={(resolution_seconds) => updateSinglePath({resolution_seconds})}/>
               <div className="sat-setting-readout"><span>EFFECTIVE PATH STEP</span><b>{effectivePathResolution ? `${effectivePathResolution} s` : "--"}</b></div>
             </div>
@@ -98,7 +100,7 @@ export function OrbitSettingsPanel({
           <section>
             <h3>UPDATES</h3>
             <div className="scene-options">
-              <RangeControl label="POSITION INTERPOLATION UPDATE" detail="Selected-satellite position request cadence" value={singleSettings.position_update_ms} min={100} max={5000} step={100} suffix=" ms" onChange={(position_update_ms) => commitSingle({...singleSettings, position_update_ms})}/>
+              <RangeControl label="POSITION INTERPOLATION UPDATE" detail="Selected-object position request cadence" value={singleSettings.position_update_ms} min={100} max={5000} step={100} suffix=" ms" onChange={(position_update_ms) => commitSingle({...singleSettings, position_update_ms})}/>
               <RangeControl label="PATH REFRESH" detail="Re-query cadence for the selected history/prediction window" value={singleSettings.path.refresh_seconds} min={5} max={600} step={5} suffix=" s" onChange={(refresh_seconds) => updateSinglePath({refresh_seconds})}/>
             </div>
           </section>
@@ -106,10 +108,30 @@ export function OrbitSettingsPanel({
       ) : (
         <>
           <section>
-            <h3>DISPLAYED GROUP</h3>
+            <h3>GROUP RENDERING</h3>
             <div className="scene-options">
-              <div className="rotation-state"><span>RENDER POLICY</span><b>CURRENT / SIMULATED MARKERS ONLY</b></div>
-              <p className="settings-copy">Group mode never draws every member&apos;s orbit path. The prediction window controls how far ahead member positions are prepared for display.</p>
+              <div className="track-mode-control" role="group" aria-label="Group satellite placement">
+                <span><b>MARKER PLACEMENT</b><small>ORBIT = PHYSICAL ALTITUDE · NADIR = PROJECT MEMBERS ON EARTH</small></span>
+                <div>
+                  <button className={groupSettings.marker_placement === "orbit" ? "active" : ""} onClick={() => setGroupPlacement("orbit")}>ORBIT</button>
+                  <button className={groupSettings.marker_placement === "nadir" ? "active" : ""} onClick={() => setGroupPlacement("nadir")}>NADIR</button>
+                </div>
+              </div>
+              <button className="scene-toggle" role="switch" aria-checked={groupSettings.show_satellite_names} onClick={() => updateGroup({show_satellite_names: !groupSettings.show_satellite_names})}>
+                <span><b>SHOW SATELLITE NAMES</b><small>DRAW MEMBER NAMES; HOVER ALWAYS SHOWS THE NAME</small></span>
+                <i className={groupSettings.show_satellite_names ? "enabled" : ""}/>
+              </button>
+              <button className="scene-toggle" role="switch" aria-checked={groupSettings.direction_vector_enabled} onClick={() => updateGroup({direction_vector_enabled: !groupSettings.direction_vector_enabled})}>
+                <span><b>DRAW DIRECTION VECTORS</b><small>LIGHTWEIGHT HEADING VECTOR FOR EACH READY MEMBER</small></span>
+                <i className={groupSettings.direction_vector_enabled ? "enabled" : ""}/>
+              </button>
+            </div>
+          </section>
+          <section>
+            <h3>GROUP PROPAGATION</h3>
+            <div className="scene-options">
+              <div className="rotation-state"><span>PATH POLICY</span><b>MEMBER ORBIT PATHS DISABLED</b></div>
+              <p className="settings-copy">The prediction window controls how far ahead member positions are prepared. Individual group orbit paths are intentionally not rendered.</p>
               <RangeControl label="PREDICTION WINDOW" detail="Temporary propagation horizon for every displayed group member" value={groupSettings.prediction_hours} min={1} max={24} step={1} suffix=" h" onChange={(prediction_hours) => updateGroup({prediction_hours})}/>
               <RangeControl label="PROPAGATION STEP" detail="Stored group-display cadence; larger groups benefit from coarser steps" value={groupSettings.step_seconds} min={30} max={600} step={30} suffix=" s" onChange={(step_seconds) => updateGroup({step_seconds})}/>
             </div>
@@ -125,7 +147,7 @@ export function OrbitSettingsPanel({
       )}
 
       <div className="rotation-state"><span>PERSISTENCE</span><b>/data/settings.json</b></div>
-      <button className="settings-reset" onClick={reset}>RESET {displayMode === "group" ? "GROUP" : "SATELLITE"} ORBIT SETTINGS</button>
+      <button className="settings-reset" onClick={reset}>RESET {displayMode === "group" ? "GROUP" : "OBJECT"} SETTINGS</button>
     </aside>
   );
 }

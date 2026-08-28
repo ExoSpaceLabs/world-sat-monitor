@@ -11,6 +11,7 @@ from urllib.parse import unquote
 from .catalog import (
     CatalogError,
     CelesTrakCatalog,
+    CelesTrakGroupCatalog,
     celestrak_constellation_group,
     celestrak_constellation_groups,
 )
@@ -265,26 +266,61 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
     return metrics
 
 
+def _catalog_group_payload(connection, definition) -> dict[str, Any]:
+    local = get_provider_group(connection, definition.provider, definition.key)
+    payload = definition.payload()
+    payload["available"] = settings.celestrak_enabled
+    payload["local"] = {
+        "present": local is not None,
+        "group_id": int(local["id"]) if local is not None else None,
+        "member_count": int(local["member_count"]) if local is not None else 0,
+        "active_member_count": int(local["active_member_count"]) if local is not None else 0,
+    }
+    return payload
+
+
 def _catalog_groups_payload() -> dict[str, Any]:
-    groups = []
     with connect() as connection:
-        for definition in celestrak_constellation_groups():
-            local = get_provider_group(connection, definition.provider, definition.key)
-            payload = definition.payload()
-            payload["available"] = settings.celestrak_enabled
-            payload["local"] = {
-                "present": local is not None,
-                "group_id": int(local["id"]) if local is not None else None,
-                "member_count": int(local["member_count"]) if local is not None else 0,
-                "active_member_count": int(local["active_member_count"]) if local is not None else 0,
-            }
-            groups.append(payload)
+        groups = [
+            _catalog_group_payload(connection, definition)
+            for definition in celestrak_constellation_groups()
+        ]
     return {"provider": "celestrak", "groups": groups}
+
+
+def _catalog_group_search_payload(text: str, limit: int) -> dict[str, Any]:
+    catalog = CelesTrakGroupCatalog(
+        settings.celestrak_groups_url,
+        timeout_seconds=settings.celestrak_timeout_seconds,
+    )
+    definitions = catalog.search(text, limit=limit)
+    with connect() as connection:
+        groups = [
+            _catalog_group_payload(connection, definition)
+            for definition in definitions
+        ]
+    return {"query": text, "provider": "celestrak", "groups": groups}
 
 
 def _catalog_route(path: str, query: dict[str, list[str]]):
     if path == "/catalog/groups":
         return 200, _catalog_groups_payload()
+
+    if path == "/catalog/groups/search":
+        text = (query.get("q") or [""])[0].strip()
+        try:
+            limit = max(1, min(50, int((query.get("limit") or ["25"])[0])))
+        except ValueError:
+            return 422, {"detail": "limit must be an integer"}
+        if len(text) < 2:
+            return 422, {"detail": "catalog group query must contain at least 2 characters"}
+        if not settings.celestrak_enabled:
+            return 503, {"detail": "CelesTrak provider is disabled"}
+        try:
+            return 200, _catalog_group_search_payload(text, limit)
+        except CatalogError as error:
+            return 502, {"detail": str(error)}
+
     if path != "/catalog/search":
         return None
 
@@ -355,7 +391,12 @@ def _catalog_post_route(path: str, query: dict[str, list[str]]):
     requested_key = unquote(match.group(1))
     definition = celestrak_constellation_group(requested_key)
     if definition is None:
-        return 404, {"detail": f"unsupported CelesTrak constellation: {requested_key}"}
+        definition = CelesTrakGroupCatalog(
+            settings.celestrak_groups_url,
+            timeout_seconds=settings.celestrak_timeout_seconds,
+        ).resolve(requested_key)
+    if definition is None:
+        return 404, {"detail": f"unsupported CelesTrak group: {requested_key}"}
     if not settings.celestrak_enabled:
         return 503, {"detail": "CelesTrak provider is disabled"}
 
@@ -366,7 +407,7 @@ def _catalog_post_route(path: str, query: dict[str, list[str]]):
         )
         members = catalog.group(definition.key)
         if not members:
-            return 502, {"detail": f"CelesTrak constellation {definition.name} returned no members"}
+            return 502, {"detail": f"CelesTrak group {definition.name} returned no members"}
     except CatalogError as error:
         return 502, {"detail": str(error)}
 
@@ -375,8 +416,8 @@ def _catalog_post_route(path: str, query: dict[str, list[str]]):
             result = sync_provider_group(connection, definition, members)
             connection.commit()
     except Exception as error:
-        LOGGER.exception("failed to import provider constellation %s", definition.key)
-        return 500, {"detail": f"constellation import failed: {error}"}
+        LOGGER.exception("failed to import provider group %s", definition.key)
+        return 500, {"detail": f"provider group import failed: {error}"}
 
     group = result["group"]
     return 200, {

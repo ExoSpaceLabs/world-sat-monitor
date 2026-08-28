@@ -13,7 +13,7 @@ from .group_models import (
     SatelliteGroupMemberAdd,
     SatelliteGroupUpdate,
 )
-from .orbit import ecef_to_geodetic_spherical, interpolate_ecef
+from .orbit import CartesianState, ecef_to_geodetic_spherical, initial_bearing_deg, interpolate_ecef
 from .repository import (
     add_group_member,
     create_group,
@@ -55,9 +55,17 @@ def _position_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
         "state_time": row["state_time"],
-        "position": {"lat_deg": row["lat_deg"], "lon_deg": row["lon_deg"], "altitude_km": row["altitude_km"]},
+        "position": {"lat_deg": row["lat_deg"], "lon_deg": row["lon_deg"], "altitude_km": row["altitude_km"], "heading_deg": None},
         "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
     }
+
+
+def _sample_geodetic(sample: dict[str, Any]):
+    return ecef_to_geodetic_spherical(CartesianState(
+        x_ecef_km=float(sample["x_ecef_km"]),
+        y_ecef_km=float(sample["y_ecef_km"]),
+        z_ecef_km=float(sample["z_ecef_km"]),
+    ))
 
 
 def _position_at_payload(row: dict[str, Any], at: datetime) -> dict[str, Any]:
@@ -75,10 +83,13 @@ def _position_at_payload(row: dict[str, Any], at: datetime) -> dict[str, Any]:
     }
     ecef, _ = interpolate_ecef(before, after, at)
     geodetic = ecef_to_geodetic_spherical(ecef)
+    heading = None
+    if before["sample_time"] != after["sample_time"]:
+        heading = initial_bearing_deg(_sample_geodetic(before), _sample_geodetic(after))
     return {
         "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
         "state_time": at.isoformat(),
-        "position": {"lat_deg": geodetic.lat_deg, "lon_deg": geodetic.lon_deg, "altitude_km": geodetic.altitude_km},
+        "position": {"lat_deg": geodetic.lat_deg, "lon_deg": geodetic.lon_deg, "altitude_km": geodetic.altitude_km, "heading_deg": heading},
         "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
     }
 

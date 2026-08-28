@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app.catalog import (
     CelesTrakCatalog,
+    CelesTrakGroupCatalog,
     celestrak_constellation_group,
     celestrak_constellation_groups,
 )
@@ -20,7 +21,7 @@ WORKER_HEALTH = Path("backend/app/worker_health.py").read_text(encoding="utf-8")
 
 
 class ProviderGroupTests(unittest.TestCase):
-    def test_curated_celestrak_constellations_are_explicit(self):
+    def test_curated_celestrak_constellations_are_explicit_quick_picks(self):
         groups = {group.key: group.name for group in celestrak_constellation_groups()}
         self.assertEqual(groups["starlink"], "Starlink")
         self.assertEqual(groups["oneweb"], "OneWeb")
@@ -28,6 +29,17 @@ class ProviderGroupTests(unittest.TestCase):
         self.assertEqual(groups["iridium-NEXT"], "Iridium NEXT")
         self.assertEqual(celestrak_constellation_group("IRIDIUM-next").key, "iridium-NEXT")
         self.assertIsNone(celestrak_constellation_group("weather"))
+
+    def test_group_discovery_parses_live_group_links_and_keeps_fallbacks(self):
+        body = b'<html><body><a href="gp.php?GROUP=galileo&FORMAT=tle">Galileo Operational</a><a href="gp.php?GROUP=custom-demo">Custom Demo</a></body></html>'
+        with patch("app.catalog.urlopen", side_effect=[BytesIO(body), BytesIO(body)]):
+            catalog = CelesTrakGroupCatalog("https://example.test/NORAD/elements/")
+            matches = catalog.search("custom")
+            resolved = catalog.resolve("galileo")
+        self.assertEqual(matches[0].key, "custom-demo")
+        self.assertEqual(matches[0].name, "Custom Demo")
+        self.assertEqual(resolved.key, "galileo")
+        self.assertEqual(resolved.name, "Galileo Operational")
 
     def test_group_query_uses_satcat_group_without_ui_result_cap(self):
         body = json.dumps([FIXTURE[0]]).encode()
@@ -50,9 +62,11 @@ class ProviderGroupTests(unittest.TestCase):
         self.assertIn("ON CONFLICT (group_id, satellite_id)", STORE)
         self.assertIn("DELETE FROM satellite_group_members", STORE)
 
-    def test_provider_catalog_routes_are_read_and_explicit_import(self):
+    def test_provider_catalog_routes_are_searchable_and_import_dynamic_groups(self):
         self.assertIn('path == "/catalog/groups"', SERVICE)
+        self.assertIn('path == "/catalog/groups/search"', SERVICE)
         self.assertIn('r"/catalog/groups/([^/]+)/import"', SERVICE)
+        self.assertIn("CelesTrakGroupCatalog", SERVICE)
         self.assertIn("catalog.group(definition.key)", SERVICE)
         self.assertIn("sync_provider_group(connection, definition, members)", SERVICE)
         self.assertIn("extra_post=_catalog_post_route", SERVICE)

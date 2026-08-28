@@ -51,7 +51,7 @@ test("themed defaults retain the dark mission palette", async () => {
   assert.match(settings, /baseColor: "#041018"/);
   assert.match(settings, /contrast: 0\.18/);
   assert.match(settings, /themed_base_color/);
-  assert.match(settings, /version: 6/);
+  assert.match(settings, /version: 7/);
   assert.match(satelliteStyles, /\.sat-card[^\n]*background:rgba\(5,18,26,\.86\)/);
   assert.match(satelliteStyles, /\.follow-button\.active[^\n]*background:#0a2c39/);
 });
@@ -118,13 +118,13 @@ test("orbit shader switches street geometry at the projected earth silhouette", 
   assert.match(text, /streetContrast \? THEME_CYAN : THEME_GREEN/);
 });
 
-test("street satellite marker uses projected earth-disk overlap for map versus space contrast", async () => {
+test("street satellite marker uses placement-aware earth-disk overlap for map versus space contrast", async () => {
   const layer = await source(satelliteLayerUrl);
   const projection = await source(satelliteProjectionUrl);
   const styles = await source(satelliteStylesUrl);
 
   assert.match(layer, /usesStreetContrast\(map\)/);
-  assert.match(layer, /isSatelliteOverEarthDisk\(map, satellite\)/);
+  assert.match(layer, /isSatelliteOverEarthDisk\(map, displaySatellite\)/);
   assert.match(layer, /street-surface/);
   assert.match(layer, /street-space/);
   assert.match(projection, /projectedRayIntersectsEarth/);
