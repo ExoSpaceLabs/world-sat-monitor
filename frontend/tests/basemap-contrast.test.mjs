@@ -3,6 +3,7 @@ import {readFile} from "node:fs/promises";
 import test from "node:test";
 
 const mapStyleUrl = new URL("../app/maps/styles.ts", import.meta.url);
+const globeMapUrl = new URL("../app/components/globe/GlobeMap.tsx", import.meta.url);
 const themeUrl = new URL("../app/maps/theme.ts", import.meta.url);
 const orbitRendererUrl = new URL("../app/components/satellite/OrbitTrackLayer.ts", import.meta.url);
 const satelliteLayerUrl = new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url);
@@ -24,6 +25,15 @@ test("dark basemap uses the keyless Esri dark-gray raster base and reference lay
   assert.doesNotMatch(text, /cartocdn/i);
   assert.doesNotMatch(text, /dark_all/);
   assert.doesNotMatch(text, /API_KEY/);
+});
+
+test("dark basemap source errors install the real fallback style", async () => {
+  const text = await source(globeMapUrl);
+
+  assert.match(text, /fallbackActiveRef/);
+  assert.match(text, /basemapRef\.current !== "dark"/);
+  assert.match(text, /map\.setStyle\(fallbackStyle\(\)\)/);
+  assert.match(text, /fallbackActiveRef\.current \? "fallback" : "ready"/);
 });
 
 test("street contrast is derived from the active OSM map style", async () => {
