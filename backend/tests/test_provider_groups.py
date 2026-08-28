@@ -32,7 +32,7 @@ class ProviderGroupTests(unittest.TestCase):
 
     def test_group_discovery_parses_live_group_links_and_keeps_fallbacks(self):
         body = b'<html><body><a href="gp.php?GROUP=galileo&FORMAT=tle">Galileo Operational</a><a href="gp.php?GROUP=custom-demo">Custom Demo</a></body></html>'
-        with patch("app.catalog.urlopen", return_value=BytesIO(body)):
+        with patch("app.catalog.urlopen", side_effect=[BytesIO(body), BytesIO(body)]):
             catalog = CelesTrakGroupCatalog("https://example.test/NORAD/elements/")
             matches = catalog.search("custom")
             resolved = catalog.resolve("galileo")
