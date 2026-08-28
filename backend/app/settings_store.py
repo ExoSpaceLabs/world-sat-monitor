@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CURRENT_SETTINGS_VERSION = 6
+CURRENT_SETTINGS_VERSION = 7
 DEFAULT_THEMED_BASE_COLOR = "#041018"
 DEFAULT_THEMED_CONTRAST = 0.18
 HEX_COLOR_PATTERN = r"^#[0-9A-Fa-f]{6}$"
@@ -34,7 +34,7 @@ class OrbitPathSettings(BaseModel):
 
 
 class OrbitDisplaySettings(BaseModel):
-    """Detailed orbit policy for the single displayed satellite."""
+    """Detailed display and orbit policy for the single displayed object."""
 
     direction_vector_enabled: bool = True
     position_update_ms: int = Field(default=1000, ge=100, le=10000)
@@ -42,8 +42,10 @@ class OrbitDisplaySettings(BaseModel):
 
 
 class GroupOrbitDisplaySettings(BaseModel):
-    """Lightweight propagation/render policy for the displayed group."""
+    """Lightweight propagation and rendering policy for the displayed group."""
 
+    show_satellite_names: bool = False
+    direction_vector_enabled: bool = False
     position_update_ms: int = Field(default=2000, ge=500, le=10000)
     prediction_hours: int = Field(default=3, ge=1, le=336)
     step_seconds: int = Field(default=120, ge=10, le=3600)
@@ -107,7 +109,13 @@ def _migrate_settings(raw: object) -> object:
     path.setdefault("mode", "ground")
 
     group_orbit = migrated.get("group_orbit")
-    migrated["group_orbit"] = dict(group_orbit) if isinstance(group_orbit, dict) else {}
+    if isinstance(group_orbit, dict):
+        group_orbit = dict(group_orbit)
+    else:
+        group_orbit = {}
+    group_orbit.setdefault("show_satellite_names", False)
+    group_orbit.setdefault("direction_vector_enabled", False)
+    migrated["group_orbit"] = group_orbit
     migrated["version"] = CURRENT_SETTINGS_VERSION
     return migrated
 
