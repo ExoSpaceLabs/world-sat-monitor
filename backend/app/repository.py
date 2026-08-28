@@ -19,6 +19,16 @@ SATELLITE_SELECT = """
     LEFT JOIN satellite_identifiers si ON si.satellite_id = s.id
 """
 
+GROUP_SELECT = """
+    SELECT g.id, g.name, g.group_type, g.source, g.source_key, g.metadata,
+           g.created_at, g.updated_at,
+           COUNT(gm.satellite_id)::int AS member_count,
+           COUNT(gm.satellite_id) FILTER (WHERE s.active)::int AS active_member_count
+    FROM satellite_groups g
+    LEFT JOIN satellite_group_members gm ON gm.group_id = g.id
+    LEFT JOIN satellites s ON s.id = gm.satellite_id
+"""
+
 
 def _with_norad_identifier(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
@@ -187,6 +197,146 @@ def delete_satellite(connection, satellite_id: int) -> bool:
         (satellite_id,),
     ).fetchone()
     return row is not None
+
+
+def list_groups(connection) -> list[dict[str, Any]]:
+    return list(connection.execute(
+        f"""
+        {GROUP_SELECT}
+        GROUP BY g.id
+        ORDER BY g.name, g.id
+        """
+    ).fetchall())
+
+
+def get_group(connection, group_id: int) -> dict[str, Any] | None:
+    return connection.execute(
+        f"""
+        {GROUP_SELECT}
+        WHERE g.id = %s
+        GROUP BY g.id
+        """,
+        (group_id,),
+    ).fetchone()
+
+
+def create_group(connection, value: Any) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        INSERT INTO satellite_groups (name, group_type, source, metadata)
+        VALUES (%s, %s, 'user', %s)
+        RETURNING id
+        """,
+        (value.name, value.group_type, Jsonb(value.metadata)),
+    ).fetchone()
+    created = get_group(connection, int(row["id"]))
+    if created is None:
+        raise RuntimeError("created satellite group could not be reloaded")
+    return created
+
+
+def update_group(connection, group_id: int, changes: dict[str, Any]) -> dict[str, Any] | None:
+    assignments: list[str] = []
+    params: list[Any] = []
+    for field in ("name", "group_type", "metadata"):
+        if field not in changes:
+            continue
+        assignments.append(f"{field} = %s")
+        params.append(Jsonb(changes[field]) if field == "metadata" else changes[field])
+    if assignments:
+        assignments.append("updated_at = NOW()")
+        params.append(group_id)
+        row = connection.execute(
+            f"UPDATE satellite_groups SET {', '.join(assignments)} WHERE id = %s RETURNING id",
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return None
+    elif get_group(connection, group_id) is None:
+        return None
+    return get_group(connection, group_id)
+
+
+def delete_group(connection, group_id: int) -> bool:
+    return connection.execute(
+        "DELETE FROM satellite_groups WHERE id = %s RETURNING id",
+        (group_id,),
+    ).fetchone() is not None
+
+
+def list_group_members(connection, group_id: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT s.id, s.name, s.active, s.object_type, s.provider_preference,
+               s.metadata, s.created_at, s.updated_at,
+               gm.metadata AS membership_metadata, gm.added_at,
+               COALESCE(
+                   (SELECT jsonb_object_agg(si.namespace, si.value)
+                    FROM satellite_identifiers si
+                    WHERE si.satellite_id = s.id),
+                   '{}'::jsonb
+               ) AS identifiers
+        FROM satellite_group_members gm
+        JOIN satellites s ON s.id = gm.satellite_id
+        WHERE gm.group_id = %s
+        ORDER BY s.name, s.id
+        """,
+        (group_id,),
+    ).fetchall()
+    return [_with_norad_identifier(row) for row in rows if row is not None]
+
+
+def add_group_member(
+    connection,
+    group_id: int,
+    satellite_id: int,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    connection.execute(
+        """
+        INSERT INTO satellite_group_members (group_id, satellite_id, metadata)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (group_id, satellite_id)
+        DO UPDATE SET metadata = EXCLUDED.metadata
+        """,
+        (group_id, satellite_id, Jsonb(metadata or {})),
+    )
+    rows = list_group_members(connection, group_id)
+    return next((row for row in rows if row["id"] == satellite_id), None)
+
+
+def remove_group_member(connection, group_id: int, satellite_id: int) -> bool:
+    return connection.execute(
+        """
+        DELETE FROM satellite_group_members
+        WHERE group_id = %s AND satellite_id = %s
+        RETURNING satellite_id
+        """,
+        (group_id, satellite_id),
+    ).fetchone() is not None
+
+
+def get_group_current_positions(connection, group_id: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT s.id, s.name, s.active,
+               COALESCE(
+                   (SELECT jsonb_object_agg(si.namespace, si.value)
+                    FROM satellite_identifiers si
+                    WHERE si.satellite_id = s.id),
+                   '{}'::jsonb
+               ) AS identifiers,
+               scs.state_time, scs.lat_deg, scs.lon_deg, scs.altitude_km,
+               scs.source_run_id, scs.source_element_set_id
+        FROM satellite_group_members gm
+        JOIN satellites s ON s.id = gm.satellite_id
+        LEFT JOIN satellite_current_state scs ON scs.satellite_id = s.id
+        WHERE gm.group_id = %s
+        ORDER BY s.name, s.id
+        """,
+        (group_id,),
+    ).fetchall()
+    return [_with_norad_identifier(row) for row in rows if row is not None]
 
 
 def get_run_covering(
