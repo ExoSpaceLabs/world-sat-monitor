@@ -3,7 +3,11 @@
 import {useEffect, useMemo, useState, type FormEvent} from "react";
 import type {CatalogGroupDefinition} from "../../domain/catalog-group";
 import type {ManagedSatellite, SatelliteGroup, SatelliteGroupMember, SatelliteGroupType} from "../../domain/satellite";
-import {importProviderCatalogGroup, listProviderCatalogGroups} from "../../services/catalog-groups-api";
+import {
+  importProviderCatalogGroup,
+  listProviderCatalogGroups,
+  searchProviderCatalogGroups,
+} from "../../services/catalog-groups-api";
 import {
   addSatelliteGroupMember,
   createSatelliteGroup,
@@ -35,11 +39,15 @@ export function GroupPanel({
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [members, setMembers] = useState<SatelliteGroupMember[]>([]);
   const [providerGroups, setProviderGroups] = useState<CatalogGroupDefinition[]>([]);
+  const [groupSearch, setGroupSearch] = useState("");
+  const [providerSearchResults, setProviderSearchResults] = useState<CatalogGroupDefinition[]>([]);
+  const [providerSearchDone, setProviderSearchDone] = useState(false);
   const [providerNotice, setProviderNotice] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [groupType, setGroupType] = useState<SatelliteGroupType>("custom");
   const [candidateId, setCandidateId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [busyProviderKey, setBusyProviderKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +75,20 @@ export function GroupPanel({
     return () => { cancelled = true; };
   }, [expandedId]);
 
+  const searchProviderGroups = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    const clean = groupSearch.trim();
+    if (clean.length < 2 || searching || busy) return;
+    setSearching(true); setError(null); setProviderSearchDone(false);
+    try {
+      setProviderSearchResults(await searchProviderCatalogGroups(clean));
+      setProviderSearchDone(true);
+    } catch (caught) {
+      setProviderSearchResults([]); setProviderSearchDone(true);
+      setError(caught instanceof Error ? caught.message : "Could not search provider groups");
+    } finally { setSearching(false); }
+  };
+
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const cleanName = name.trim();
@@ -87,10 +109,11 @@ export function GroupPanel({
     try {
       const result = await importProviderCatalogGroup(group.key);
       setProviderGroups(await listProviderCatalogGroups());
+      if (groupSearch.trim().length >= 2) setProviderSearchResults(await searchProviderCatalogGroups(groupSearch.trim()));
       setProviderNotice(`${result.group.name}: ${result.group.member_count} members · ${result.created_satellites} new inactive objects`);
       await notifyChanged();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not import provider constellation");
+      setError(caught instanceof Error ? caught.message : "Could not import provider group");
     } finally { setBusyProviderKey(null); setBusy(false); }
   };
 
@@ -136,6 +159,13 @@ export function GroupPanel({
     setMembers([]); setCandidateId(""); setExpandedId(isExpanded ? null : groupId);
   };
 
+  const providerRow = (group: CatalogGroupDefinition) => (
+    <div className="provider-group-row" key={`${group.provider}:${group.key}`}>
+      <span><strong>{group.name}</strong><small>{group.key} · {group.local.present ? `${group.local.active_member_count}/${group.local.member_count} ACTIVE · IMPORTED` : "NOT IMPORTED"}</small></span>
+      <button type="button" disabled={busy || !group.available} onClick={() => void syncProviderGroup(group)}>{busyProviderKey === group.key ? "SYNCING…" : group.local.present ? "SYNC" : "IMPORT"}</button>
+    </div>
+  );
+
   return (
     <aside className="group-panel" aria-label="Satellite groups">
       <div className="group-panel-head">
@@ -145,16 +175,18 @@ export function GroupPanel({
 
       <section className="provider-group-catalog" aria-label="Provider constellations">
         <div className="provider-group-title">
-          <span><small>PROVIDER CATALOG</small><strong>CELESTRAK CONSTELLATIONS</strong></span>
+          <span><small>QUICK IMPORT</small><strong>CELESTRAK GROUPS</strong></span>
           <small>IMPORTS CREATE MISSING MEMBERS INACTIVE</small>
         </div>
-        {providerGroups.length === 0 && <div className="group-empty">NO PROVIDER CONSTELLATIONS AVAILABLE</div>}
-        {providerGroups.map((group) => (
-          <div className="provider-group-row" key={`${group.provider}:${group.key}`}>
-            <span><strong>{group.name}</strong><small>{group.local.present ? `${group.local.active_member_count}/${group.local.member_count} ACTIVE · IMPORTED` : "NOT IMPORTED"}</small></span>
-            <button type="button" disabled={busy || !group.available} onClick={() => void syncProviderGroup(group)}>{busyProviderKey === group.key ? "SYNCING…" : group.local.present ? "SYNC" : "IMPORT"}</button>
-          </div>
-        ))}
+        {providerGroups.length === 0 && <div className="group-empty">NO QUICK GROUPS AVAILABLE</div>}
+        {providerGroups.map(providerRow)}
+        <div className="provider-group-search-title">SEARCH CELESTRAK GROUP CATALOG</div>
+        <form className="provider-group-search" onSubmit={(event) => void searchProviderGroups(event)}>
+          <input value={groupSearch} onChange={(event) => { setGroupSearch(event.target.value); setProviderSearchDone(false); }} placeholder="Starlink, Galileo, Planet, Spire…" aria-label="Search provider groups"/>
+          <button type="submit" disabled={busy || searching || groupSearch.trim().length < 2}>{searching ? "SEARCH…" : "SEARCH"}</button>
+        </form>
+        {providerSearchResults.map(providerRow)}
+        {providerSearchDone && providerSearchResults.length === 0 && <div className="provider-group-search-empty">NO MATCHING CELESTRAK GROUPS</div>}
         {providerNotice && <div className="provider-group-notice">{providerNotice}</div>}
       </section>
 
@@ -211,7 +243,7 @@ export function GroupPanel({
           );
         })}
       </div>
-      <div className="group-note">DISPLAYING A GROUP REPLACES THE SINGLE-SATELLITE VIEW. INACTIVE MEMBERS ARE TEMPORARILY PROPAGATED FOR DISPLAY WITHOUT CHANGING MONITORING STATE.</div>
+      <div className="group-note">DISPLAYING A GROUP REPLACES THE SINGLE-OBJECT VIEW. INACTIVE MEMBERS ARE TEMPORARILY PROPAGATED FOR DISPLAY WITHOUT CHANGING MONITORING STATE.</div>
     </aside>
   );
 }
