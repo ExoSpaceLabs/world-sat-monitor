@@ -5,7 +5,36 @@ import type {
   SatelliteCreateRequest,
   SatelliteTrackPoint,
 } from "../domain/satellite";
-import {DEFAULT_APP_SETTINGS, type AppSettings} from "../domain/settings";
+import type {AppSettings} from "../domain/settings";
+
+// Keep this transport module free of runtime imports so its API functions remain
+// directly executable under Node's type-stripping tests. These values mirror the
+// versioned frontend/backend defaults and are used only as a compatibility floor
+// when an older settings payload briefly appears during an upgrade.
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  version: 5,
+  map: {
+    basemap: "dark",
+    themed_base_color: "#041018",
+    themed_contrast: 0.18,
+    space_environment: true,
+    shadow_opacity: 0.7,
+    debug: false,
+    time_scale: 1,
+  },
+  orbit: {
+    direction_vector_enabled: true,
+    position_update_ms: 1000,
+    path: {
+      enabled: true,
+      mode: "ground",
+      history_minutes: 90,
+      prediction_hours: 6,
+      resolution_seconds: 60,
+      refresh_seconds: 30,
+    },
+  },
+};
 
 type PositionResponse = {
   satellite: {id: number; norad_id: string | null; name: string; active: boolean};
