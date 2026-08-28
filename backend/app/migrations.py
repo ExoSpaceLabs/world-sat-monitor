@@ -104,6 +104,9 @@ CURRENT_SCHEMA_SQL = r"""
 ALTER TABLE propagation_jobs
     ADD COLUMN IF NOT EXISTS history_hours INTEGER NOT NULL DEFAULT 48
         CHECK (history_hours >= 0);
+ALTER TABLE propagation_jobs
+    ADD COLUMN IF NOT EXISTS horizon_hours INTEGER
+        CHECK (horizon_hours IS NULL OR horizon_hours > 0);
 
 ALTER TABLE propagation_jobs
     ALTER COLUMN step_seconds SET DEFAULT 60;
@@ -162,8 +165,22 @@ CREATE TABLE IF NOT EXISTS satellite_groups (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_requested_until TIMESTAMPTZ;
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_prediction_hours INTEGER NOT NULL DEFAULT 3
+        CHECK (display_prediction_hours > 0 AND display_prediction_hours <= 336);
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_step_seconds INTEGER NOT NULL DEFAULT 120
+        CHECK (display_step_seconds >= 10 AND display_step_seconds <= 3600);
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_refreshed_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS ix_satellite_groups_type_name
     ON satellite_groups (group_type, name);
+CREATE INDEX IF NOT EXISTS ix_satellite_groups_display_requested
+    ON satellite_groups (display_requested_until)
+    WHERE display_requested_until IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_satellite_groups_source_key
     ON satellite_groups (source, source_key)
     WHERE source_key IS NOT NULL;
