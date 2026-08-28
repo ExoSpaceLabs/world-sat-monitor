@@ -8,16 +8,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CURRENT_SETTINGS_VERSION = 4
-DEFAULT_THEMED_WATER_COLOR = "#041018"
-DEFAULT_THEMED_LAND_COLOR = "#0a2c39"
+CURRENT_SETTINGS_VERSION = 5
+DEFAULT_THEMED_BASE_COLOR = "#041018"
+DEFAULT_THEMED_CONTRAST = 0.18
 HEX_COLOR_PATTERN = r"^#[0-9A-Fa-f]{6}$"
 
 
 class MapSettings(BaseModel):
     basemap: Literal["dark", "street", "satellite"] = "dark"
-    themed_water_color: str = Field(default=DEFAULT_THEMED_WATER_COLOR, pattern=HEX_COLOR_PATTERN)
-    themed_land_color: str = Field(default=DEFAULT_THEMED_LAND_COLOR, pattern=HEX_COLOR_PATTERN)
+    themed_base_color: str = Field(default=DEFAULT_THEMED_BASE_COLOR, pattern=HEX_COLOR_PATTERN)
+    themed_contrast: float = Field(default=DEFAULT_THEMED_CONTRAST, ge=-0.95, le=0.95)
     space_environment: bool = True
     shadow_opacity: float = Field(default=0.70, ge=0.0, le=1.0)
     debug: bool = False
@@ -64,8 +64,14 @@ def _migrate_settings(raw: object) -> object:
         map_settings = {}
     else:
         map_settings = dict(map_settings)
-    map_settings.setdefault("themed_water_color", DEFAULT_THEMED_WATER_COLOR)
-    map_settings.setdefault("themed_land_color", DEFAULT_THEMED_LAND_COLOR)
+
+    legacy_water = map_settings.pop("themed_water_color", None)
+    map_settings.pop("themed_land_color", None)
+    if "themed_base_color" not in map_settings:
+        map_settings["themed_base_color"] = (
+            legacy_water if isinstance(legacy_water, str) else DEFAULT_THEMED_BASE_COLOR
+        )
+    map_settings.setdefault("themed_contrast", DEFAULT_THEMED_CONTRAST)
     migrated["map"] = map_settings
 
     if "orbit" not in migrated and isinstance(legacy_satellite, dict):
