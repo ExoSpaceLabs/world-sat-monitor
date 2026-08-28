@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Response, status
 
 from .config import settings
 from .db import connect, wait_for_database
+from .groups_api import router as groups_router
 from .migrations import migrate_legacy_schema
 from .orbit import (
     GeodeticState,
@@ -78,9 +79,10 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="WorldSat Monitor API",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
+app.include_router(groups_router)
 
 
 @app.get("/api/v1/health")
