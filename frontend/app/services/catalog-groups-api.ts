@@ -7,6 +7,11 @@ type CatalogGroupsResponse = {
 };
 
 
+type CatalogGroupSearchResponse = CatalogGroupsResponse & {
+  query: string;
+};
+
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
@@ -23,6 +28,12 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function listProviderCatalogGroups(): Promise<CatalogGroupDefinition[]> {
   return (await requestJson<CatalogGroupsResponse>("/api/v1/catalog/groups")).groups;
+}
+
+
+export async function searchProviderCatalogGroups(query: string): Promise<CatalogGroupDefinition[]> {
+  const params = new URLSearchParams({q: query});
+  return (await requestJson<CatalogGroupSearchResponse>(`/api/v1/catalog/groups/search?${params.toString()}`)).groups;
 }
 
 
