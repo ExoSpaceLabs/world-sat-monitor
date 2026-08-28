@@ -1,19 +1,17 @@
 import type {StyleSpecification} from "maplibre-gl";
+import {DEFAULT_THEMED_MAP_COLORS} from "../domain/settings";
 import type {Basemap} from "../domain/types";
 
 const OPENFREEMAP_DARK_STYLE_URL = "/map/openfreemap/styles/dark";
-const ESRI_DARK_BASE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+const NATURAL_EARTH_LAND_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_land.geojson";
 const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
-// These are the exact top-menu button surfaces from world-sat-monitor/styles.css.
-// The Esri source is raster, so it cannot assign these semantically to land and
-// water. Instead the inactive surface is the exact globe background/water anchor,
-// while the grayscale base is kept subtle enough that brighter land lifts toward
-// the active surface without introducing a third, unrelated teal.
-const MENU_INACTIVE_SURFACE = "#061720";
-const MENU_ACTIVE_SURFACE = "#0a2734";
+export type ThemedMapColors = {
+  water: string;
+  land: string;
+};
 
 type MutableStyleLayer = {
   id: string;
@@ -29,8 +27,11 @@ async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
   return style;
 }
 
-export async function loadBasemapStyle(mode: Basemap): Promise<StyleSpecification> {
-  if (mode === "dark") return darkRasterStyle();
+export async function loadBasemapStyle(
+  mode: Basemap,
+  themedColors: ThemedMapColors = DEFAULT_THEMED_MAP_COLORS,
+): Promise<StyleSpecification> {
+  if (mode === "dark") return themedMapStyle(themedColors);
 
   if (mode === "street") {
     return rasterStyle("osm-standard", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
@@ -62,46 +63,42 @@ export function fallbackStyle(): StyleSpecification {
   return rasterStyle("osm-fallback", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
 }
 
-function darkRasterStyle(): StyleSpecification {
+function themedMapStyle(colors: ThemedMapColors): StyleSpecification {
   return {
     version: 8,
     projection: {type: "globe"},
     metadata: {
-      "worldsat:inactive-surface": MENU_INACTIVE_SURFACE,
-      "worldsat:active-surface": MENU_ACTIVE_SURFACE,
+      "worldsat:theme-water": colors.water,
+      "worldsat:theme-land": colors.land,
     },
     sources: {
-      "esri-dark-base": {
-        type: "raster",
-        tiles: [ESRI_DARK_BASE_TILES],
-        tileSize: 256,
-        maxzoom: 16,
-        attribution: "Tiles © Esri and data providers",
+      "natural-earth-land": {
+        type: "geojson",
+        data: NATURAL_EARTH_LAND_URL,
+        attribution: "Land data © Natural Earth",
       },
       "esri-dark-reference": {
         type: "raster",
         tiles: [ESRI_DARK_REFERENCE_TILES],
         tileSize: 256,
         maxzoom: 16,
-        attribution: "Tiles © Esri and data providers",
+        attribution: "Reference tiles © Esri and data providers",
       },
     },
     layers: [
       {
-        id: "worldsat-dark-surface",
+        id: "worldsat-themed-water",
         type: "background",
-        paint: {"background-color": MENU_INACTIVE_SURFACE},
+        paint: {"background-color": colors.water},
       },
       {
-        id: "esri-dark-base",
-        type: "raster",
-        source: "esri-dark-base",
+        id: "worldsat-themed-land",
+        type: "fill",
+        source: "natural-earth-land",
         paint: {
-          "raster-opacity": 0.3,
-          "raster-saturation": -1,
-          "raster-contrast": 0.16,
-          "raster-brightness-min": 0,
-          "raster-brightness-max": 0.44,
+          "fill-color": colors.land,
+          "fill-opacity": 1,
+          "fill-outline-color": colors.land,
         },
       },
       {
@@ -109,10 +106,10 @@ function darkRasterStyle(): StyleSpecification {
         type: "raster",
         source: "esri-dark-reference",
         paint: {
-          "raster-opacity": 0.78,
+          "raster-opacity": 0.86,
           "raster-saturation": -0.45,
           "raster-contrast": 0.06,
-          "raster-brightness-max": 0.82,
+          "raster-brightness-max": 0.88,
         },
       },
     ],
