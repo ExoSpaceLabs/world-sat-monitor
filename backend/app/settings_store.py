@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CURRENT_SETTINGS_VERSION = 5
+CURRENT_SETTINGS_VERSION = 6
 DEFAULT_THEMED_BASE_COLOR = "#041018"
 DEFAULT_THEMED_CONTRAST = 0.18
 HEX_COLOR_PATTERN = r"^#[0-9A-Fa-f]{6}$"
@@ -34,17 +34,27 @@ class OrbitPathSettings(BaseModel):
 
 
 class OrbitDisplaySettings(BaseModel):
-    """Global orbit rendering/query policy shared by every tracked satellite."""
+    """Detailed orbit policy for the single displayed satellite."""
 
     direction_vector_enabled: bool = True
     position_update_ms: int = Field(default=1000, ge=100, le=10000)
     path: OrbitPathSettings = Field(default_factory=OrbitPathSettings)
 
 
+class GroupOrbitDisplaySettings(BaseModel):
+    """Lightweight propagation/render policy for the displayed group."""
+
+    position_update_ms: int = Field(default=2000, ge=500, le=10000)
+    prediction_hours: int = Field(default=3, ge=1, le=336)
+    step_seconds: int = Field(default=120, ge=10, le=3600)
+    refresh_seconds: int = Field(default=60, ge=15, le=1800)
+
+
 class AppSettings(BaseModel):
     version: int = Field(default=CURRENT_SETTINGS_VERSION, ge=CURRENT_SETTINGS_VERSION, le=CURRENT_SETTINGS_VERSION)
     map: MapSettings = Field(default_factory=MapSettings)
     orbit: OrbitDisplaySettings = Field(default_factory=OrbitDisplaySettings)
+    group_orbit: GroupOrbitDisplaySettings = Field(default_factory=GroupOrbitDisplaySettings)
 
 
 def default_app_settings() -> AppSettings:
@@ -68,9 +78,7 @@ def _migrate_settings(raw: object) -> object:
     legacy_water = map_settings.pop("themed_water_color", None)
     map_settings.pop("themed_land_color", None)
     if "themed_base_color" not in map_settings:
-        map_settings["themed_base_color"] = (
-            legacy_water if isinstance(legacy_water, str) else DEFAULT_THEMED_BASE_COLOR
-        )
+        map_settings["themed_base_color"] = legacy_water if isinstance(legacy_water, str) else DEFAULT_THEMED_BASE_COLOR
     map_settings.setdefault("themed_contrast", DEFAULT_THEMED_CONTRAST)
     migrated["map"] = map_settings
 
@@ -98,6 +106,8 @@ def _migrate_settings(raw: object) -> object:
         orbit["path"] = path
     path.setdefault("mode", "ground")
 
+    group_orbit = migrated.get("group_orbit")
+    migrated["group_orbit"] = dict(group_orbit) if isinstance(group_orbit, dict) else {}
     migrated["version"] = CURRENT_SETTINGS_VERSION
     return migrated
 

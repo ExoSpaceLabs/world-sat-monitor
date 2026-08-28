@@ -21,7 +21,12 @@ import {
   type SatelliteGroup,
   type SatelliteTrackPoint,
 } from "../../domain/satellite";
-import {DEFAULT_APP_SETTINGS, type AppSettings, type OrbitDisplaySettings} from "../../domain/settings";
+import {
+  DEFAULT_APP_SETTINGS,
+  type AppSettings,
+  type GroupOrbitDisplaySettings,
+  type OrbitDisplaySettings,
+} from "../../domain/settings";
 import {DEFAULT_BASEMAP, DEFAULT_SCENE_OPTIONS, type Basemap, type MapSession, type MapState, type SceneOptions} from "../../domain/types";
 import {getSolarState} from "../../domain/solar";
 import {
@@ -31,6 +36,8 @@ import {
   getSatelliteTrack,
   listManagedSatellites,
   listSatelliteGroups,
+  releaseSatelliteGroupDisplay,
+  requestSatelliteGroupDisplay,
   saveAppSettings,
 } from "../../services/worldsat-api";
 
@@ -38,13 +45,13 @@ type SimulationClock = {initialized: boolean; realAnchorMs: number; simulationAn
 type RotationReason = "active" | "follow" | "zoom";
 type ApiState = "connecting" | "online" | "offline";
 type PersistenceState = "loading" | "saved" | "saving" | "error";
+type DisplayTarget = {kind: "satellite"; noradId: string} | {kind: "group"; groupId: number};
 
 const NORMAL_SIMULATION_TICK_MS = 250;
 const ACCELERATED_SIMULATION_TICK_MS = 33;
 const SETTINGS_SAVE_DEBOUNCE_MS = 250;
 const SATELLITE_LIST_REFRESH_MS = 5000;
 const GROUP_LIST_REFRESH_MS = 5000;
-const GROUP_POSITION_REFRESH_MS = 2000;
 
 const EMPTY_ORBIT_DEBUG: OrbitDebugState = {
   error: null,
@@ -81,7 +88,7 @@ export function WorldSatMonitor() {
   const [followSatellite, setFollowSatellite] = useState(false);
   const [managedSatellites, setManagedSatellites] = useState<ManagedSatellite[]>([]);
   const [satelliteGroups, setSatelliteGroups] = useState<SatelliteGroup[]>([]);
-  const [visibleGroupIds, setVisibleGroupIds] = useState<Set<number>>(() => new Set());
+  const [displayTarget, setDisplayTarget] = useState<DisplayTarget>({kind: "satellite", noradId: MOCK_SATELLITE.norad});
   const [groupPositions, setGroupPositions] = useState<GroupPosition[]>([]);
   const [selectedNoradId, setSelectedNoradId] = useState(MOCK_SATELLITE.norad);
   const [satellite, setSatellite] = useState<Satellite>(MOCK_SATELLITE);
@@ -104,7 +111,14 @@ export function WorldSatMonitor() {
   const [orientation, setOrientation] = useState<SceneOrientation>({longitude: INITIAL_VIEW.center[0], inertialLongitude: INITIAL_VIEW.center[0], earthRotationDegrees: 0, cameraLockedToEarth: false, latitude: INITIAL_VIEW.center[1], zoom: INITIAL_VIEW.zoom, bearing: INITIAL_VIEW.bearing, pitch: INITIAL_VIEW.pitch});
   const [rotationReason, setRotationReason] = useState<RotationReason>("active");
 
-  const pathActive = appSettings.orbit.path.enabled
+  const displayedSatelliteNoradId = displayTarget.kind === "satellite" ? displayTarget.noradId : null;
+  const displayedGroupId = displayTarget.kind === "group" ? displayTarget.groupId : null;
+  const displayedGroup = useMemo(
+    () => displayedGroupId === null ? null : satelliteGroups.find((group) => group.id === displayedGroupId) ?? null,
+    [displayedGroupId, satelliteGroups],
+  );
+  const pathActive = displayTarget.kind === "satellite"
+    && appSettings.orbit.path.enabled
     && (appSettings.orbit.path.history_minutes > 0 || appSettings.orbit.path.prediction_hours > 0);
   const activeDisplaySatellites = useMemo(
     () => managedSatellites.filter((item) => item.active && item.norad_id),
@@ -141,21 +155,27 @@ export function WorldSatMonitor() {
   }, [scheduleSettingsSave]);
 
   const selectDisplayedSatellite = useCallback((noradId: string) => {
-    if (!noradId || selectedNoradRef.current === noradId) return;
+    if (!noradId) return;
+    const changedSatellite = selectedNoradRef.current !== noradId;
     selectedNoradRef.current = noradId;
     setSelectedNoradId(noradId);
+    setDisplayTarget({kind: "satellite", noradId});
     setFollowSatellite(false);
     setPositionReady(false);
     setPositionInterpolated(false);
-    setSatelliteTrack([]);
-    setEffectivePathResolution(null);
+    setGroupPositions([]);
+    setOrbitDebug(EMPTY_ORBIT_DEBUG);
+    if (changedSatellite) {
+      setSatelliteTrack([]);
+      setEffectivePathResolution(null);
+    }
   }, []);
 
   const refreshManagedSatellites = useCallback(async () => {
     const loaded = await listManagedSatellites();
     setManagedSatellites(loaded);
-    const active = loaded.filter((item) => item.active && item.norad_id);
-    if (!active.some((item) => item.norad_id === selectedNoradRef.current)) {
+    if (!loaded.some((item) => item.norad_id === selectedNoradRef.current)) {
+      const active = loaded.filter((item) => item.active && item.norad_id);
       const mock = active.find((item) => item.norad_id === MOCK_SATELLITE.norad);
       const fallback = mock?.norad_id ?? active[0]?.norad_id;
       if (fallback) selectDisplayedSatellite(fallback);
@@ -167,10 +187,9 @@ export function WorldSatMonitor() {
     const loaded = await listSatelliteGroups();
     setSatelliteGroups(loaded);
     const validIds = new Set(loaded.map((group) => group.id));
-    setVisibleGroupIds((current) => {
-      const next = new Set([...current].filter((groupId) => validIds.has(groupId)));
-      return next.size === current.size ? current : next;
-    });
+    setDisplayTarget((current) => current.kind === "group" && !validIds.has(current.groupId)
+      ? {kind: "satellite", noradId: selectedNoradRef.current}
+      : current);
     setApiState("online");
   }, []);
 
@@ -207,11 +226,8 @@ export function WorldSatMonitor() {
     if (!settingsLoaded) return;
     let cancelled = false;
     const refresh = async () => {
-      try {
-        await refreshManagedSatellites();
-      } catch {
-        if (!cancelled) setApiState("offline");
-      }
+      try { await refreshManagedSatellites(); }
+      catch { if (!cancelled) setApiState("offline"); }
     };
     void refresh();
     const interval = window.setInterval(refresh, SATELLITE_LIST_REFRESH_MS);
@@ -222,11 +238,8 @@ export function WorldSatMonitor() {
     if (!settingsLoaded) return;
     let cancelled = false;
     const refresh = async () => {
-      try {
-        await refreshSatelliteGroups();
-      } catch {
-        if (!cancelled) setApiState("offline");
-      }
+      try { await refreshSatelliteGroups(); }
+      catch { if (!cancelled) setApiState("offline"); }
     };
     void refresh();
     const interval = window.setInterval(refresh, GROUP_LIST_REFRESH_MS);
@@ -252,14 +265,14 @@ export function WorldSatMonitor() {
   }, [timeScale]);
 
   useEffect(() => {
-    if (!settingsLoaded || !selectedNoradId) return;
+    if (!settingsLoaded || !displayedSatelliteNoradId) return;
     let cancelled = false;
     let inFlight = false;
     const refresh = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
-        const result = await getSatellitePosition(selectedNoradId, nowRef.current);
+        const result = await getSatellitePosition(displayedSatelliteNoradId, nowRef.current);
         if (!cancelled) {
           setSatellite(result.satellite);
           setSatelliteIsMock(result.isMock);
@@ -268,49 +281,71 @@ export function WorldSatMonitor() {
           setApiState("online");
         }
       } catch {
-        // A newly activated satellite can legitimately be waiting for its first propagation run.
-      } finally {
-        inFlight = false;
-      }
+        // A newly selected or activated satellite can legitimately be waiting for propagation.
+      } finally { inFlight = false; }
     };
     void refresh();
     const interval = window.setInterval(refresh, appSettings.orbit.position_update_ms);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [appSettings.orbit.position_update_ms, selectedNoradId, settingsLoaded]);
+  }, [appSettings.orbit.position_update_ms, displayedSatelliteNoradId, settingsLoaded]);
+
+  // Releasing a group is tied only to group identity changes. Settings changes renew
+  // the same lease without racing a DELETE against the replacement POST.
+  useEffect(() => {
+    if (displayedGroupId === null) return;
+    const groupId = displayedGroupId;
+    return () => { void releaseSatelliteGroupDisplay(groupId).catch(() => undefined); };
+  }, [displayedGroupId]);
 
   useEffect(() => {
-    if (!settingsLoaded || visibleGroupIds.size === 0) return;
+    if (!settingsLoaded || displayedGroupId === null) return;
+    let cancelled = false;
+    let inFlight = false;
+    const renew = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await requestSatelliteGroupDisplay(displayedGroupId, appSettings.group_orbit);
+        if (!cancelled) setApiState("online");
+      } catch {
+        if (!cancelled) setApiState("offline");
+      } finally { inFlight = false; }
+    };
+    void renew();
+    const interval = window.setInterval(renew, appSettings.group_orbit.refresh_seconds * 1000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [
+    appSettings.group_orbit.prediction_hours,
+    appSettings.group_orbit.refresh_seconds,
+    appSettings.group_orbit.step_seconds,
+    displayedGroupId,
+    settingsLoaded,
+  ]);
+
+  useEffect(() => {
+    if (!settingsLoaded || displayedGroupId === null) return;
     let cancelled = false;
     let inFlight = false;
     const refresh = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
-        const responses = await Promise.all([...visibleGroupIds].map((groupId) => getSatelliteGroupPositions(groupId)));
+        const positions = await getSatelliteGroupPositions(displayedGroupId, nowRef.current);
         if (!cancelled) {
-          const bySatellite = new Map<number, GroupPosition>();
-          for (const positions of responses) {
-            for (const item of positions) {
-              const existing = bySatellite.get(item.satellite.id);
-              if (!existing || (!existing.position && item.position)) bySatellite.set(item.satellite.id, item);
-            }
-          }
-          setGroupPositions([...bySatellite.values()]);
+          setGroupPositions(positions);
           setApiState("online");
         }
       } catch {
         if (!cancelled) setGroupPositions([]);
-      } finally {
-        inFlight = false;
-      }
+      } finally { inFlight = false; }
     };
     void refresh();
-    const interval = window.setInterval(refresh, GROUP_POSITION_REFRESH_MS);
+    const interval = window.setInterval(refresh, appSettings.group_orbit.position_update_ms);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [settingsLoaded, visibleGroupIds]);
+  }, [appSettings.group_orbit.position_update_ms, displayedGroupId, settingsLoaded]);
 
   useEffect(() => {
-    if (!settingsLoaded || !pathActive || !selectedNoradId) return;
+    if (!settingsLoaded || !pathActive || !displayedSatelliteNoradId) return;
     let cancelled = false;
     let inFlight = false;
     const refresh = async () => {
@@ -321,7 +356,7 @@ export function WorldSatMonitor() {
       const end = new Date(center.getTime() + appSettings.orbit.path.prediction_hours * 3_600_000);
       try {
         const result = await getSatelliteTrack(
-          selectedNoradId,
+          displayedSatelliteNoradId,
           start,
           end,
           appSettings.orbit.path.resolution_seconds,
@@ -334,18 +369,21 @@ export function WorldSatMonitor() {
           setApiState("online");
         }
       } catch {
-        if (!cancelled) {
-          setSatelliteTrack([]);
-          setEffectivePathResolution(null);
-        }
-      } finally {
-        inFlight = false;
-      }
+        if (!cancelled) { setSatelliteTrack([]); setEffectivePathResolution(null); }
+      } finally { inFlight = false; }
     };
     void refresh();
     const interval = window.setInterval(refresh, appSettings.orbit.path.refresh_seconds * 1000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [appSettings.orbit.path.history_minutes, appSettings.orbit.path.prediction_hours, appSettings.orbit.path.refresh_seconds, appSettings.orbit.path.resolution_seconds, pathActive, selectedNoradId, settingsLoaded]);
+  }, [
+    appSettings.orbit.path.history_minutes,
+    appSettings.orbit.path.prediction_hours,
+    appSettings.orbit.path.refresh_seconds,
+    appSettings.orbit.path.resolution_seconds,
+    displayedSatelliteNoradId,
+    pathActive,
+    settingsLoaded,
+  ]);
 
   const solarState = useMemo(() => getSolarState(now), [now]);
   const persistMapSettings = useCallback((patch: Partial<AppSettings["map"]>) => {
@@ -361,9 +399,7 @@ export function WorldSatMonitor() {
       && current.historyVertices === next.historyVertices
       && current.predictionVertices === next.predictionVertices
       && current.headingVertices === next.headingVertices
-      && current.error === next.error
-      ? current
-      : next);
+      && current.error === next.error ? current : next);
   }, []);
   const handleShadowOpacityChange = useCallback((shadowOpacity: number) => { setScene((current) => ({...current, shadowOpacity})); persistMapSettings({shadow_opacity: shadowOpacity}); }, [persistMapSettings]);
   const handleThemeBaseColorChange = useCallback((themed_base_color: string) => { persistMapSettings({themed_base_color}); }, [persistMapSettings]);
@@ -388,28 +424,39 @@ export function WorldSatMonitor() {
     handleTimeReset();
     updateSettings({...appSettings, map: {...defaults}});
   }, [appSettings, applyTimeScale, handleTimeReset, updateSettings]);
-  const handleOrbitSettingsChange = useCallback((next: OrbitDisplaySettings) => {
+  const handleSingleOrbitSettingsChange = useCallback((next: OrbitDisplaySettings) => {
     updateSettings({...appSettings, orbit: next});
   }, [appSettings, updateSettings]);
-  const handleOrbitSettingsReset = useCallback(() => {
-    updateSettings({...appSettings, orbit: {...DEFAULT_APP_SETTINGS.orbit, path: {...DEFAULT_APP_SETTINGS.orbit.path}}});
+  const handleGroupOrbitSettingsChange = useCallback((next: GroupOrbitDisplaySettings) => {
+    updateSettings({...appSettings, group_orbit: next});
   }, [appSettings, updateSettings]);
+  const handleOrbitSettingsReset = useCallback(() => {
+    if (displayTarget.kind === "group") {
+      updateSettings({...appSettings, group_orbit: {...DEFAULT_APP_SETTINGS.group_orbit}});
+    } else {
+      updateSettings({...appSettings, orbit: {...DEFAULT_APP_SETTINGS.orbit, path: {...DEFAULT_APP_SETTINGS.orbit.path}}});
+    }
+  }, [appSettings, displayTarget.kind, updateSettings]);
   const handleSatelliteSelect = useCallback(() => setFollowSatellite(true), []);
   const handleDisplayedSatelliteChange = useCallback((noradId: string) => {
     selectDisplayedSatellite(noradId);
     setObjectsOpen(true);
     setGroupsOpen(false);
   }, [selectDisplayedSatellite]);
-  const handleGroupVisibility = useCallback((groupId: number) => {
-    setVisibleGroupIds((current) => {
-      const next = new Set(current);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
+  const handleGroupDisplay = useCallback((groupId: number) => {
+    setDisplayTarget({kind: "group", groupId});
+    setFollowSatellite(false);
+    setPositionReady(false);
+    setPositionInterpolated(false);
+    setSatelliteTrack([]);
+    setEffectivePathResolution(null);
+    setOrbitDebug(EMPTY_ORBIT_DEBUG);
+    setGroupPositions([]);
+    setObjectsOpen(false);
+    setGroupsOpen(true);
   }, []);
 
-  const rotationLabel = followSatellite
+  const rotationLabel = followSatellite && displayTarget.kind === "satellite"
     ? "CAMERA LOCKED TO SATELLITE · EARTH ROTATING"
     : rotationReason === "zoom"
       ? "CAMERA LOCKED TO EARTH ROTATION"
@@ -417,15 +464,15 @@ export function WorldSatMonitor() {
   const cameraSunDelta = normalizeLongitude(orientation.longitude - solarState.longitude);
   const altitudeRatio = satellite.altitude / EARTH_RADIUS_KM;
   const mapProjection = mapSession?.map.getProjection().type ?? "--";
-  const selectedPositionReady = positionReady && satellite.norad === selectedNoradId;
-  const visibleGroupPositions = visibleGroupIds.size > 0 ? groupPositions : [];
+  const selectedPositionReady = displayTarget.kind === "satellite" && positionReady && satellite.norad === selectedNoradId;
+  const visibleGroupPositions = displayTarget.kind === "group" ? groupPositions : [];
 
   return (
     <main className="monitor-shell" data-layer="page">
       <header className="topbar">
         <div className="brand"><span className="brand-mark"/><div><strong>WORLDSAT</strong><small>MISSION MONITOR</small></div></div>
         <div className="topbar-actions">
-          <div className="system-state"><span className={apiState === "online" ? "online" : ""}/> {satelliteIsMock ? "MOCK DATA" : "PROPAGATED DATA"} <b>UTC {now === INITIAL_UTC ? "--:--:--" : now.toISOString().slice(11, 19)}</b></div>
+          <div className="system-state"><span className={apiState === "online" ? "online" : ""}/> {displayTarget.kind === "group" ? "GROUP DISPLAY" : satelliteIsMock ? "MOCK DATA" : "PROPAGATED DATA"} <b>UTC {now === INITIAL_UTC ? "--:--:--" : now.toISOString().slice(11, 19)}</b></div>
           <button className={`settings-trigger ${objectsOpen ? "active" : ""}`} onClick={() => { setObjectsOpen((open) => !open); setSatelliteManagerOpen(false); setGroupsOpen(false); setOrbitSettingsOpen(false); setMapSettingsOpen(false); }} aria-expanded={objectsOpen} aria-label="Toggle displayed objects"><i/><span>OBJECTS</span></button>
           <button className={`settings-trigger ${satelliteManagerOpen ? "active" : ""}`} onClick={() => { setSatelliteManagerOpen((open) => !open); setObjectsOpen(false); setGroupsOpen(false); setOrbitSettingsOpen(false); setMapSettingsOpen(false); }} aria-expanded={satelliteManagerOpen} aria-label="Open satellite manager"><i/><span>SATELLITES</span></button>
           <button className={`settings-trigger ${groupsOpen ? "active" : ""}`} onClick={() => { setGroupsOpen((open) => !open); setObjectsOpen(false); setSatelliteManagerOpen(false); setOrbitSettingsOpen(false); setMapSettingsOpen(false); }} aria-expanded={groupsOpen} aria-label="Open satellite groups"><i/><span>GROUPS</span></button>
@@ -435,24 +482,31 @@ export function WorldSatMonitor() {
       </header>
       <section className="viewport">
         <SpaceBackground enabled={scene.spaceEnvironment} orientation={orientation} solarState={solarState}/>
-        <GlobeMap basemap={basemap} followSatellite={followSatellite && selectedPositionReady} resetKey={resetKey} satellite={satellite} themeBaseColor={appSettings.map.themed_base_color} themeContrast={appSettings.map.themed_contrast} timeResetKey={timeResetKey} timeScale={timeScale} onMapSession={setMapSession} onMapState={setMapState} onOrientationChange={setOrientation} onRotationChange={handleRotationChange}>
+        <GlobeMap basemap={basemap} followSatellite={displayTarget.kind === "satellite" && followSatellite && selectedPositionReady} resetKey={resetKey} satellite={satellite} themeBaseColor={appSettings.map.themed_base_color} themeContrast={appSettings.map.themed_contrast} timeResetKey={timeResetKey} timeScale={timeScale} onMapSession={setMapSession} onMapState={setMapState} onOrientationChange={setOrientation} onRotationChange={handleRotationChange}>
           <DayNightLayer enabled={scene.spaceEnvironment} mapSession={mapSession} onDebugState={handleShadowDebugChange} opacity={scene.shadowOpacity} solarState={solarState}/>
         </GlobeMap>
-        <GroupSatelliteLayer mapSession={mapSession} positions={visibleGroupPositions} selectedNoradId={selectedNoradId} onSelect={handleDisplayedSatelliteChange}/>
+        <GroupSatelliteLayer mapSession={mapSession} positions={visibleGroupPositions} selectedNoradId="" onSelect={handleDisplayedSatelliteChange}/>
         {selectedPositionReady && <SatelliteLayer mapSession={mapSession} satellite={satellite} track={pathActive ? satelliteTrack : []} selected onSelect={handleSatelliteSelect} onDebugState={handleOrbitDebugChange}/>} 
         <div className="eyebrow">ORBITAL VIEW / EARTH DETAIL</div>
         <div className="coordinates">{formatCoordinate(orientation.latitude, "N", "S")}&nbsp;&nbsp; {formatCoordinate(orientation.longitude, "E", "W")}&nbsp;&nbsp; Z{orientation.zoom.toFixed(1)}</div>
-        {scene.debug && <aside className="debug-overlay" data-layer="debug-overlay" aria-label="Scene debug telemetry"><strong>SCENE DEBUG</strong><dl><div><dt>SIM UTC</dt><dd>{now.toISOString()}</dd></div><div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div><div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div><div><dt>CAMERA FRAME</dt><dd>{orientation.cameraLockedToEarth ? "EARTH-LOCKED" : "INERTIAL"}</dd></div><div><dt>MAP PROJECTION</dt><dd>{mapProjection.toUpperCase()}</dd></div><div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div><div><dt>SUN RA (ECI)</dt><dd>{solarState.rightAscension.toFixed(3)}°</dd></div><div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div><div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div><div><dt>SHADOW MESH</dt><dd>{shadowDebug.triangleCount} TRIANGLES</dd></div><div><dt>ORBIT RENDER</dt><dd className={orbitDebug.ready ? "ok" : "bad"}>{orbitDebug.ready ? "READY" : "MISSING"}</dd></div><div><dt>ORBIT SHADER</dt><dd>{orbitDebug.shaderVariant.toUpperCase()}</dd></div><div><dt>ORBIT VERTICES</dt><dd>{orbitDebug.historyVertices} H · {orbitDebug.predictionVertices} P · {orbitDebug.headingVertices} V</dd></div><div><dt>ORBIT ERROR</dt><dd className={orbitDebug.error ? "bad" : ""}>{orbitDebug.error ?? "--"}</dd></div><div><dt>SAT ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} km · {(altitudeRatio * 100).toFixed(2)}% R⊕</dd></div><div><dt>GROUP MARKERS</dt><dd>{visibleGroupPositions.filter((item) => item.position).length}</dd></div><div><dt>PATH POINTS</dt><dd>{pathActive ? satelliteTrack.length : 0}</dd></div><div><dt>PATH STEP</dt><dd>{pathActive && effectivePathResolution ? `${effectivePathResolution} s` : "--"}</dd></div></dl></aside>}
+        {scene.debug && <aside className="debug-overlay" data-layer="debug-overlay" aria-label="Scene debug telemetry"><strong>SCENE DEBUG</strong><dl><div><dt>SIM UTC</dt><dd>{now.toISOString()}</dd></div><div><dt>DISPLAY MODE</dt><dd>{displayTarget.kind.toUpperCase()}</dd></div><div><dt>TIME SCALE</dt><dd>{timeScale}×</dd></div><div><dt>EARTH ROT</dt><dd>{orientation.earthRotationDegrees.toFixed(3)}°</dd></div><div><dt>CAMERA FRAME</dt><dd>{orientation.cameraLockedToEarth ? "EARTH-LOCKED" : "INERTIAL"}</dd></div><div><dt>MAP PROJECTION</dt><dd>{mapProjection.toUpperCase()}</dd></div><div><dt>SUBSOLAR LON</dt><dd>{solarState.longitude.toFixed(3)}°</dd></div><div><dt>SUN RA (ECI)</dt><dd>{solarState.rightAscension.toFixed(3)}°</dd></div><div><dt>CAMERA / SUN Δ</dt><dd>{cameraSunDelta.toFixed(3)}°</dd></div><div><dt>SHADOW RENDER</dt><dd className={shadowDebug.ready ? "ok" : "bad"}>{shadowDebug.ready ? "READY" : "MISSING"}</dd></div><div><dt>SHADOW MESH</dt><dd>{shadowDebug.triangleCount} TRIANGLES</dd></div><div><dt>ORBIT RENDER</dt><dd className={displayTarget.kind === "group" || orbitDebug.ready ? "ok" : "bad"}>{displayTarget.kind === "group" ? "GROUP MARKERS" : orbitDebug.ready ? "READY" : "MISSING"}</dd></div><div><dt>ORBIT SHADER</dt><dd>{displayTarget.kind === "group" ? "N/A" : orbitDebug.shaderVariant.toUpperCase()}</dd></div><div><dt>ORBIT VERTICES</dt><dd>{displayTarget.kind === "group" ? "N/A" : `${orbitDebug.historyVertices} H · ${orbitDebug.predictionVertices} P · ${orbitDebug.headingVertices} V`}</dd></div><div><dt>ORBIT ERROR</dt><dd className={orbitDebug.error ? "bad" : ""}>{displayTarget.kind === "group" ? "--" : orbitDebug.error ?? "--"}</dd></div><div><dt>SAT ALTITUDE</dt><dd>{displayTarget.kind === "group" ? "--" : `${satellite.altitude.toFixed(1)} km · ${(altitudeRatio * 100).toFixed(2)}% R⊕`}</dd></div><div><dt>GROUP MARKERS</dt><dd>{visibleGroupPositions.length}</dd></div><div><dt>PATH POINTS</dt><dd>{pathActive ? satelliteTrack.length : 0}</dd></div><div><dt>PATH STEP</dt><dd>{pathActive && effectivePathResolution ? `${effectivePathResolution} s` : "--"}</dd></div></dl></aside>}
         {mapSettingsOpen && <MapSettingsPanel basemap={basemap} scene={scene} themeBaseColor={appSettings.map.themed_base_color} themeContrast={appSettings.map.themed_contrast} timeScale={timeScale} onBasemapChange={handleBasemapChange} onDebugChange={handleDebugChange} onEnvironmentChange={handleEnvironmentChange} onShadowOpacityChange={handleShadowOpacityChange} onThemeBaseColorChange={handleThemeBaseColorChange} onThemeContrastChange={handleThemeContrastChange} onTimeReset={handleTimeReset} onTimeScaleChange={handleTimeScaleChange} onReset={handleMapSettingsReset} onClose={() => setMapSettingsOpen(false)}/>} 
-        {orbitSettingsOpen && <OrbitSettingsPanel settings={appSettings.orbit} effectivePathResolution={pathActive ? effectivePathResolution : null} onChange={handleOrbitSettingsChange} onReset={handleOrbitSettingsReset} onClose={() => setOrbitSettingsOpen(false)}/>} 
+        {orbitSettingsOpen && <OrbitSettingsPanel displayMode={displayTarget.kind} singleSettings={appSettings.orbit} groupSettings={appSettings.group_orbit} effectivePathResolution={displayTarget.kind === "satellite" && pathActive ? effectivePathResolution : null} onSingleChange={handleSingleOrbitSettingsChange} onGroupChange={handleGroupOrbitSettingsChange} onReset={handleOrbitSettingsReset} onClose={() => setOrbitSettingsOpen(false)}/>} 
         {satelliteManagerOpen && <SatelliteManager onClose={() => setSatelliteManagerOpen(false)} onChanged={refreshCatalogState}/>} 
-        {groupsOpen && <GroupPanel groups={satelliteGroups} managedSatellites={managedSatellites} visibleGroupIds={visibleGroupIds} onToggleVisibility={handleGroupVisibility} onChanged={refreshSatelliteGroups} onSelectSatellite={handleDisplayedSatelliteChange} onClose={() => setGroupsOpen(false)}/>} 
-        {objectsOpen && <SatellitePanel basemap={basemap} followSatellite={followSatellite} satellite={satellite} managedSatellites={managedSatellites} selectedNoradId={selectedNoradId} positionReady={positionReady} solarState={solarState} isMock={satelliteIsMock} interpolated={positionInterpolated} onSelect={handleDisplayedSatelliteChange} onToggleFollow={() => setFollowSatellite((active) => !active)}/>} 
+        {groupsOpen && <GroupPanel groups={satelliteGroups} managedSatellites={managedSatellites} displayedGroupId={displayedGroupId} onDisplayGroup={handleGroupDisplay} onChanged={refreshSatelliteGroups} onSelectSatellite={handleDisplayedSatelliteChange} onClose={() => setGroupsOpen(false)}/>} 
+        {objectsOpen && <SatellitePanel basemap={basemap} followSatellite={displayTarget.kind === "satellite" && followSatellite} satellite={satellite} managedSatellites={managedSatellites} selectedNoradId={selectedNoradId} positionReady={displayTarget.kind === "satellite" && positionReady} solarState={solarState} isMock={satelliteIsMock} interpolated={positionInterpolated} onSelect={handleDisplayedSatelliteChange} onToggleFollow={() => setFollowSatellite((active) => !active)}/>} 
         <div className="map-credit"><BasemapCredit basemap={basemap}/></div>
-        <div className="legend"><span><i className="sat-symbol"/> SATELLITE</span><span><i className="history-symbol"/> HISTORY</span><span><i className="prediction-symbol"/> PREDICTION</span><span><i className="vector-symbol"/> HEADING VECTOR</span></div>
+        {displayTarget.kind === "group"
+          ? <div className="legend"><span><i className="sat-symbol"/> GROUP MEMBER</span><span>{visibleGroupPositions.length}/{displayedGroup?.member_count ?? "--"} READY</span></div>
+          : <div className="legend"><span><i className="sat-symbol"/> SATELLITE</span><span><i className="history-symbol"/> HISTORY</span><span><i className="prediction-symbol"/> PREDICTION</span><span><i className="vector-symbol"/> HEADING VECTOR</span></div>}
         <div className="controls"><span>{rotationLabel}</span><span>DRAG CHANGES CAMERA · EARTH KEEPS ROTATING</span><button onClick={handleReset} aria-label="Reset globe camera">RESET VIEW</button></div>
       </section>
-      <footer><span>{activeDisplaySatellites.length || 1} OBJECT{(activeDisplaySatellites.length || 1) === 1 ? "" : "S"} TRACKED</span><span>{visibleGroupIds.size} GROUP{visibleGroupIds.size === 1 ? "" : "S"} VISIBLE</span><span>MAP <b className={mapState === "ready" ? "online" : ""}>{mapState.toUpperCase()}</b></span><span>ENVIRONMENT <b className={scene.spaceEnvironment ? "online" : ""}>{scene.spaceEnvironment ? `${timeScale}× UTC` : "OFF"}</b></span><span>API <b className={apiState === "online" ? "online" : ""}>{apiState.toUpperCase()}</b></span><span>SETTINGS <b className={persistenceState === "saved" ? "online" : ""}>{persistenceState.toUpperCase()}</b></span><em>UI CHECKPOINT 1.0</em></footer>
+      <footer>
+        <span>{displayTarget.kind === "group" ? `GROUP ${displayedGroup?.name ?? displayedGroupId}` : `OBJECT ${satellite.name}`} DISPLAYED</span>
+        <span>{activeDisplaySatellites.length || 1} MONITORED</span>
+        {displayTarget.kind === "group" && <span>{visibleGroupPositions.length}/{displayedGroup?.member_count ?? "--"} POSITIONS READY</span>}
+        <span>MAP <b className={mapState === "ready" ? "online" : ""}>{mapState.toUpperCase()}</b></span><span>ENVIRONMENT <b className={scene.spaceEnvironment ? "online" : ""}>{scene.spaceEnvironment ? `${timeScale}× UTC` : "OFF"}</b></span><span>API <b className={apiState === "online" ? "online" : ""}>{apiState.toUpperCase()}</b></span><span>SETTINGS <b className={persistenceState === "saved" ? "online" : ""}>{persistenceState.toUpperCase()}</b></span><em>UI CHECKPOINT 1.0</em>
+      </footer>
     </main>
   );
 }

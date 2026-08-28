@@ -125,14 +125,7 @@ def record_provider_fetch(
                 provider_fetch_state.latest_element_set_id
             )
         """,
-        (
-            satellite_id,
-            provider,
-            success,
-            error,
-            element_set_id,
-            success,
-        ),
+        (satellite_id, provider, success, error, element_set_id, success),
     )
 
 
@@ -144,6 +137,7 @@ def ensure_propagation_job(
     history_hours: int,
     horizon_days: int,
     step_seconds: int,
+    horizon_hours: int | None = None,
     now: datetime | None = None,
 ) -> tuple[int | None, bool]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -160,7 +154,15 @@ def ensure_propagation_job(
     if existing_work is not None:
         return int(existing_work["id"]), False
 
-    minimum_future = now + timedelta(days=min(1, horizon_days))
+    if horizon_hours is not None:
+        requested_future = timedelta(hours=horizon_hours)
+        # Avoid regenerating a whole constellation every provider cycle just because
+        # the rolling display window advanced a few seconds. Refresh once roughly
+        # 20 percent of the requested horizon has been consumed.
+        minimum_future = now + requested_future * 0.8
+    else:
+        minimum_future = now + timedelta(days=min(1, horizon_days))
+
     completed = connection.execute(
         """
         SELECT id
@@ -182,12 +184,12 @@ def ensure_propagation_job(
         """
         INSERT INTO propagation_jobs (
             satellite_id, element_set_id, history_hours, horizon_days,
-            step_seconds, status
+            horizon_hours, step_seconds, status
         )
-        VALUES (%s, %s, %s, %s, %s, 'pending')
+        VALUES (%s, %s, %s, %s, %s, %s, 'pending')
         RETURNING id
         """,
-        (satellite_id, element_set_id, history_hours, horizon_days, step_seconds),
+        (satellite_id, element_set_id, history_hours, horizon_days, horizon_hours, step_seconds),
     ).fetchone()
     return int(row["id"]), True
 
@@ -198,11 +200,18 @@ def cancel_inactive_pending_jobs(connection) -> int:
         UPDATE propagation_jobs pj
         SET status = 'cancelled',
             finished_at = NOW(),
-            error = 'satellite deactivated before propagation'
+            error = 'satellite no longer monitored or requested for display'
         FROM satellites s
         WHERE pj.satellite_id = s.id
           AND s.active = FALSE
           AND pj.status = 'pending'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM satellite_group_members gm
+              JOIN satellite_groups g ON g.id = gm.group_id
+              WHERE gm.satellite_id = s.id
+                AND g.display_requested_until > NOW()
+          )
         """
     )
     return cursor.rowcount
@@ -215,8 +224,27 @@ def claim_next_propagation_job(connection):
             SELECT pj.id
             FROM propagation_jobs pj
             JOIN satellites s ON s.id = pj.satellite_id
-            WHERE pj.status = 'pending' AND s.active = TRUE
-            ORDER BY pj.requested_at, pj.id
+            WHERE pj.status = 'pending'
+              AND (
+                  s.active = TRUE
+                  OR EXISTS (
+                      SELECT 1
+                      FROM satellite_group_members gm
+                      JOIN satellite_groups g ON g.id = gm.group_id
+                      WHERE gm.satellite_id = s.id
+                        AND g.display_requested_until > NOW()
+                  )
+              )
+            ORDER BY
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM satellite_group_members gm
+                    JOIN satellite_groups g ON g.id = gm.group_id
+                    WHERE gm.satellite_id = s.id
+                      AND g.display_requested_until > NOW()
+                ) THEN 0 ELSE 1 END,
+                pj.requested_at,
+                pj.id
             FOR UPDATE OF pj SKIP LOCKED
             LIMIT 1
         )
@@ -246,6 +274,33 @@ def is_satellite_active(connection, satellite_id: int, *, lock: bool = False) ->
         (satellite_id,),
     ).fetchone()
     return bool(row and row["active"])
+
+
+def is_satellite_propagation_requested(
+    connection,
+    satellite_id: int,
+    *,
+    lock: bool = False,
+) -> bool:
+    suffix = " FOR SHARE OF s" if lock else ""
+    row = connection.execute(
+        f"""
+        SELECT (
+            s.active
+            OR EXISTS (
+                SELECT 1
+                FROM satellite_group_members gm
+                JOIN satellite_groups g ON g.id = gm.group_id
+                WHERE gm.satellite_id = s.id
+                  AND g.display_requested_until > NOW()
+            )
+        ) AS requested
+        FROM satellites s
+        WHERE s.id = %s{suffix}
+        """,
+        (satellite_id,),
+    ).fetchone()
+    return bool(row and row["requested"])
 
 
 def finish_job(connection, job_id: int, status: str, error: str | None = None) -> None:

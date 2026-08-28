@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -154,12 +154,8 @@ class CelesTrakProvider:
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
 
-    def fetch_latest(self, identifiers: Mapping[str, str]) -> NormalizedElementSet:
-        norad_id = identifiers.get("NORAD_CAT_ID")
-        if not norad_id:
-            raise ProviderError("CelesTrak requires a NORAD_CAT_ID identifier")
-
-        query = urlencode({"CATNR": norad_id, "FORMAT": "JSON"})
+    def _load(self, parameters: Mapping[str, str]) -> list[dict[str, Any]]:
+        query = urlencode(parameters)
         request = Request(
             f"{self.base_url}?{query}",
             headers={
@@ -172,17 +168,32 @@ class CelesTrakProvider:
                 payload = json.load(response)
         except Exception as error:
             raise ProviderError(f"CelesTrak request failed: {error}") from error
-
         if not isinstance(payload, list) or not payload:
-            raise ProviderError(f"CelesTrak returned no GP data for {norad_id}")
+            raise ProviderError("CelesTrak returned no GP data")
+        records = [item for item in payload if isinstance(item, dict)]
+        if not records:
+            raise ProviderError("CelesTrak returned invalid GP JSON records")
+        return records
+
+    def fetch_latest(self, identifiers: Mapping[str, str]) -> NormalizedElementSet:
+        norad_id = identifiers.get("NORAD_CAT_ID")
+        if not norad_id:
+            raise ProviderError("CelesTrak requires a NORAD_CAT_ID identifier")
+        records = self._load({"CATNR": str(norad_id), "FORMAT": "JSON"})
         record = next(
-            (
-                item
-                for item in payload
-                if str(item.get("NORAD_CAT_ID", "")) == str(norad_id)
-            ),
-            payload[0],
+            (item for item in records if str(item.get("NORAD_CAT_ID", "")) == str(norad_id)),
+            records[0],
         )
-        if not isinstance(record, dict):
-            raise ProviderError("CelesTrak returned an invalid JSON record")
         return normalize_omm_payload(record, source=self.name)
+
+    def fetch_group(self, group_key: str) -> dict[str, NormalizedElementSet]:
+        records = self._load({"GROUP": group_key, "FORMAT": "JSON"})
+        result: dict[str, NormalizedElementSet] = {}
+        for record in records:
+            norad_id = str(record.get("NORAD_CAT_ID") or "").strip()
+            if not norad_id:
+                continue
+            result[norad_id] = normalize_omm_payload(record, source=self.name)
+        if not result:
+            raise ProviderError(f"CelesTrak returned no usable GP data for group {group_key}")
+        return result

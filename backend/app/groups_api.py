@@ -6,10 +6,26 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from .db import connect
-from .group_models import SatelliteGroupCreate, SatelliteGroupMemberAdd, SatelliteGroupUpdate
+from .group_display import release_group_display, request_group_display
+from .group_models import (
+    SatelliteGroupCreate,
+    SatelliteGroupDisplayRequest,
+    SatelliteGroupMemberAdd,
+    SatelliteGroupUpdate,
+)
+from .orbit import ecef_to_geodetic_spherical, interpolate_ecef
 from .repository import (
-    add_group_member, create_group, delete_group, get_group, get_group_current_positions,
-    get_satellite, list_group_members, list_groups, remove_group_member, update_group,
+    add_group_member,
+    create_group,
+    delete_group,
+    get_group,
+    get_group_current_positions,
+    get_group_positions_at,
+    get_satellite,
+    list_group_members,
+    list_groups,
+    remove_group_member,
+    update_group,
 )
 
 
@@ -40,6 +56,29 @@ def _position_payload(row: dict[str, Any]) -> dict[str, Any]:
         "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
         "state_time": row["state_time"],
         "position": {"lat_deg": row["lat_deg"], "lon_deg": row["lon_deg"], "altitude_km": row["altitude_km"]},
+        "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
+    }
+
+
+def _position_at_payload(row: dict[str, Any], at: datetime) -> dict[str, Any]:
+    before = {
+        "sample_time": row["before_time"],
+        "x_ecef_km": row["before_x_ecef_km"],
+        "y_ecef_km": row["before_y_ecef_km"],
+        "z_ecef_km": row["before_z_ecef_km"],
+    }
+    after = {
+        "sample_time": row["after_time"],
+        "x_ecef_km": row["after_x_ecef_km"],
+        "y_ecef_km": row["after_y_ecef_km"],
+        "z_ecef_km": row["after_z_ecef_km"],
+    }
+    ecef, _ = interpolate_ecef(before, after, at)
+    geodetic = ecef_to_geodetic_spherical(ecef)
+    return {
+        "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
+        "state_time": at.isoformat(),
+        "position": {"lat_deg": geodetic.lat_deg, "lon_deg": geodetic.lon_deg, "altitude_km": geodetic.altitude_km},
         "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
     }
 
@@ -134,18 +173,67 @@ def remove_member(group_id: int, satellite_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/{group_id}/display")
+def display_group(group_id: int, value: SatelliteGroupDisplayRequest):
+    with connect() as connection:
+        group = _load_group(connection, group_id)
+        display = request_group_display(
+            connection,
+            group_id,
+            prediction_hours=value.prediction_hours,
+            step_seconds=value.step_seconds,
+            lease_seconds=value.lease_seconds,
+        )
+        connection.commit()
+    if display is None:
+        raise HTTPException(status_code=404, detail="satellite group not found")
+    return {
+        "group": _group_payload(group),
+        "display": {
+            "requested_until": display["display_requested_until"],
+            "prediction_hours": display["display_prediction_hours"],
+            "step_seconds": display["display_step_seconds"],
+        },
+    }
+
+
+@router.delete("/{group_id}/display", status_code=status.HTTP_204_NO_CONTENT)
+def stop_display_group(group_id: int):
+    with connect() as connection:
+        _load_group(connection, group_id)
+        if not release_group_display(connection, group_id):
+            raise HTTPException(status_code=404, detail="satellite group not found")
+        connection.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{group_id}/positions")
 def group_positions(
     group_id: int,
-    active_only: bool = Query(default=True),
+    at: datetime | None = Query(default=None),
+    active_only: bool = Query(default=False),
     limit: int = Query(default=MAX_GROUP_POSITION_RESULTS, ge=1, le=MAX_GROUP_POSITION_RESULTS),
 ):
+    at_utc: datetime | None = None
+    if at is not None:
+        if at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="timestamps must include a timezone")
+        at_utc = at.astimezone(timezone.utc)
     with connect() as connection:
         group = _load_group(connection, group_id)
-        rows = get_group_current_positions(connection, group_id, active_only=active_only, limit=limit)
+        if at_utc is None:
+            rows = get_group_current_positions(connection, group_id, active_only=active_only, limit=limit)
+        else:
+            rows = get_group_positions_at(connection, group_id, at_utc, active_only=active_only, limit=limit)
+    payloads = (
+        [_position_payload(row) for row in rows]
+        if at_utc is None
+        else [_position_at_payload(row, at_utc) for row in rows]
+    )
     return {
         "group": _group_payload(group),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "at": at_utc.isoformat() if at_utc is not None else None,
         "returned": len(rows),
-        "positions": [_position_payload(row) for row in rows],
+        "positions": payloads,
     }

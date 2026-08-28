@@ -10,7 +10,12 @@ from psycopg.types.json import Jsonb
 from .config import settings
 from .db import connect, wait_for_database
 from .migrations import migrate_schema
-from .orbital_store import claim_next_propagation_job, finish_job, is_satellite_active, load_element_set
+from .orbital_store import (
+    claim_next_propagation_job,
+    finish_job,
+    is_satellite_propagation_requested,
+    load_element_set,
+)
 from .propagation import SGP4PropagationEngine
 from .retention import prune_obsolete_position_samples
 from .sampling_policy import PropagationSamplingPolicy
@@ -55,7 +60,11 @@ def _mark_cancelled(job_id: int, message: str) -> None:
 
 def _prune_samples() -> int:
     with connect() as connection:
-        deleted = prune_obsolete_position_samples(connection, settings.propagation_sample_retention_hours, settings.propagation_cleanup_batch_size)
+        deleted = prune_obsolete_position_samples(
+            connection,
+            settings.propagation_sample_retention_hours,
+            settings.propagation_cleanup_batch_size,
+        )
         connection.commit()
     return deleted
 
@@ -69,17 +78,24 @@ def run_propagation_once(now: datetime | None = None) -> bool:
     try:
         with connect() as connection:
             element_set = load_element_set(connection, int(job["element_set_id"]))
-            active = is_satellite_active(connection, satellite_id)
+            requested = is_satellite_propagation_requested(connection, satellite_id)
         if element_set is None:
             raise RuntimeError(f"element set {job['element_set_id']} no longer exists")
-        if not active:
-            _mark_cancelled(job_id, "satellite deactivated before propagation started")
+        if not requested:
+            _mark_cancelled(job_id, "satellite no longer monitored or requested for display")
             return True
 
         generated_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         step_seconds = int(job["step_seconds"])
-        start = _floor_time(generated_at - timedelta(hours=int(job["history_hours"])), step_seconds)
-        end = _floor_time(generated_at + timedelta(days=int(job["horizon_days"])), step_seconds)
+        start = _floor_time(
+            generated_at - timedelta(hours=int(job["history_hours"])),
+            step_seconds,
+        )
+        if job.get("horizon_hours") is not None:
+            end_delta = timedelta(hours=int(job["horizon_hours"]))
+        else:
+            end_delta = timedelta(days=int(job["horizon_days"]))
+        end = _floor_time(generated_at + end_delta, step_seconds)
         sampling_policy = _sampling_policy(step_seconds)
         engine = SGP4PropagationEngine()
         prepared = engine.prepare(element_set)
@@ -88,34 +104,108 @@ def run_propagation_once(now: datetime | None = None) -> bool:
         sample_count = 0
 
         with connect() as connection:
-            if not is_satellite_active(connection, satellite_id, lock=True):
-                finish_job(connection, job_id, "cancelled", "satellite deactivated while propagation was running")
+            if not is_satellite_propagation_requested(connection, satellite_id, lock=True):
+                finish_job(
+                    connection,
+                    job_id,
+                    "cancelled",
+                    "satellite no longer monitored or requested for display while propagation was running",
+                )
                 connection.commit()
                 return True
-            connection.execute("""
-                INSERT INTO propagation_runs (id, satellite_id, source_element_set_id, generated_at, start_time, end_time, step_seconds, sampling_policy, status, is_mock)
+            connection.execute(
+                """
+                INSERT INTO propagation_runs (
+                    id, satellite_id, source_element_set_id, generated_at,
+                    start_time, end_time, step_seconds, sampling_policy, status, is_mock
+                )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'running', %s)
-            """, (run_id, satellite_id, int(element_set["id"]), generated_at, start, end, step_seconds, Jsonb(sampling_policy.payload()), str(element_set["source"]).lower() == "mock"))
+                """,
+                (
+                    run_id,
+                    satellite_id,
+                    int(element_set["id"]),
+                    generated_at,
+                    start,
+                    end,
+                    step_seconds,
+                    Jsonb(sampling_policy.payload()),
+                    str(element_set["source"]).lower() == "mock",
+                ),
+            )
             with connection.cursor() as db_cursor:
-                with db_cursor.copy("""
-                    COPY position_samples (run_id, satellite_id, sample_time, x_ecef_km, y_ecef_km, z_ecef_km, lat_deg, lon_deg, altitude_km) FROM STDIN
-                """) as copy:
+                with db_cursor.copy(
+                    """
+                    COPY position_samples (
+                        run_id, satellite_id, sample_time,
+                        x_ecef_km, y_ecef_km, z_ecef_km,
+                        lat_deg, lon_deg, altitude_km
+                    ) FROM STDIN
+                    """
+                ) as copy:
                     for cursor_time in sampling_policy.iter_sample_times(start, end, generated_at):
                         state = engine.propagate_prepared(prepared, cursor_time)
-                        copy.write_row((run_id, satellite_id, cursor_time, state.ecef.x_ecef_km, state.ecef.y_ecef_km, state.ecef.z_ecef_km, state.geodetic.lat_deg, state.geodetic.lon_deg, state.geodetic.altitude_km))
+                        copy.write_row(
+                            (
+                                run_id,
+                                satellite_id,
+                                cursor_time,
+                                state.ecef.x_ecef_km,
+                                state.ecef.y_ecef_km,
+                                state.ecef.z_ecef_km,
+                                state.geodetic.lat_deg,
+                                state.geodetic.lon_deg,
+                                state.geodetic.altitude_km,
+                            )
+                        )
                         sample_count += 1
-            connection.execute("""
-                INSERT INTO satellite_current_state (satellite_id, state_time, x_ecef_km, y_ecef_km, z_ecef_km, lat_deg, lon_deg, altitude_km, source_run_id, source_element_set_id, updated_at)
+            connection.execute(
+                """
+                INSERT INTO satellite_current_state (
+                    satellite_id, state_time, x_ecef_km, y_ecef_km, z_ecef_km,
+                    lat_deg, lon_deg, altitude_km, source_run_id,
+                    source_element_set_id, updated_at
+                )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (satellite_id) DO UPDATE SET
-                    state_time=EXCLUDED.state_time, x_ecef_km=EXCLUDED.x_ecef_km, y_ecef_km=EXCLUDED.y_ecef_km, z_ecef_km=EXCLUDED.z_ecef_km,
-                    lat_deg=EXCLUDED.lat_deg, lon_deg=EXCLUDED.lon_deg, altitude_km=EXCLUDED.altitude_km,
-                    source_run_id=EXCLUDED.source_run_id, source_element_set_id=EXCLUDED.source_element_set_id, updated_at=NOW()
-            """, (satellite_id, generated_at, current.ecef.x_ecef_km, current.ecef.y_ecef_km, current.ecef.z_ecef_km, current.geodetic.lat_deg, current.geodetic.lon_deg, current.geodetic.altitude_km, run_id, int(element_set["id"])))
-            connection.execute("UPDATE propagation_runs SET status = 'completed' WHERE id = %s", (run_id,))
+                    state_time=EXCLUDED.state_time,
+                    x_ecef_km=EXCLUDED.x_ecef_km,
+                    y_ecef_km=EXCLUDED.y_ecef_km,
+                    z_ecef_km=EXCLUDED.z_ecef_km,
+                    lat_deg=EXCLUDED.lat_deg,
+                    lon_deg=EXCLUDED.lon_deg,
+                    altitude_km=EXCLUDED.altitude_km,
+                    source_run_id=EXCLUDED.source_run_id,
+                    source_element_set_id=EXCLUDED.source_element_set_id,
+                    updated_at=NOW()
+                """,
+                (
+                    satellite_id,
+                    generated_at,
+                    current.ecef.x_ecef_km,
+                    current.ecef.y_ecef_km,
+                    current.ecef.z_ecef_km,
+                    current.geodetic.lat_deg,
+                    current.geodetic.lon_deg,
+                    current.geodetic.altitude_km,
+                    run_id,
+                    int(element_set["id"]),
+                ),
+            )
+            connection.execute(
+                "UPDATE propagation_runs SET status = 'completed' WHERE id = %s",
+                (run_id,),
+            )
             finish_job(connection, job_id, "completed")
             connection.commit()
-        LOGGER.info("completed propagation job=%s satellite=%s samples=%s policy=%s", job_id, satellite_id, sample_count, sampling_policy.payload())
+        LOGGER.info(
+            "completed propagation job=%s satellite=%s samples=%s horizon=%s policy=%s",
+            job_id,
+            satellite_id,
+            sample_count,
+            f"{job['horizon_hours']}h" if job.get("horizon_hours") is not None else f"{job['horizon_days']}d",
+            sampling_policy.payload(),
+        )
         return True
     except Exception as error:
         LOGGER.exception("propagation job %s failed", job_id)
@@ -129,7 +219,14 @@ def main() -> None:
     migrate_schema()
     health = WorkerHealth("propagator")
     start_health_server(settings.propagator_health_port, health)
-    LOGGER.info("propagator started: poll=%ss history=%sh horizon=%sd base-step=%ss retention=%sh", settings.propagator_poll_seconds, settings.propagation_history_hours, settings.propagation_horizon_days, settings.propagation_step_seconds, settings.propagation_sample_retention_hours)
+    LOGGER.info(
+        "propagator started: poll=%ss history=%sh horizon=%sd base-step=%ss retention=%sh",
+        settings.propagator_poll_seconds,
+        settings.propagation_history_hours,
+        settings.propagation_horizon_days,
+        settings.propagation_step_seconds,
+        settings.propagation_sample_retention_hours,
+    )
     last_cleanup_at = 0.0
     while True:
         try:

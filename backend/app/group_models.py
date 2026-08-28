@@ -33,3 +33,9 @@ class SatelliteGroupUpdate(BaseModel):
 class SatelliteGroupMemberAdd(BaseModel):
     satellite_id: int = Field(gt=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SatelliteGroupDisplayRequest(BaseModel):
+    prediction_hours: int = Field(default=3, ge=1, le=336)
+    step_seconds: int = Field(default=120, ge=10, le=3600)
+    lease_seconds: int = Field(default=1800, ge=60, le=3600)

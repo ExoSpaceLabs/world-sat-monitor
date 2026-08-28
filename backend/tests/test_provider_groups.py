@@ -13,9 +13,7 @@ from app.catalog import (
 )
 
 
-FIXTURE = json.loads(
-    Path("backend/tests/fixtures/celestrak_satcat_iss.json").read_text(encoding="utf-8")
-)
+FIXTURE = json.loads(Path("backend/tests/fixtures/celestrak_satcat_iss.json").read_text(encoding="utf-8"))
 STORE = Path("backend/app/provider_group_store.py").read_text(encoding="utf-8")
 SERVICE = Path("backend/app/provider_service.py").read_text(encoding="utf-8")
 WORKER_HEALTH = Path("backend/app/worker_health.py").read_text(encoding="utf-8")
@@ -43,9 +41,10 @@ class ProviderGroupTests(unittest.TestCase):
         self.assertNotIn("MAX=", url)
         self.assertEqual(result[0].identifiers["NORAD_CAT_ID"], "25544")
 
-    def test_provider_import_creates_missing_satellites_inactive(self):
+    def test_provider_import_creates_missing_satellites_inactive_and_types_json_parameters(self):
         insertion = STORE.split("INSERT INTO satellites", 1)[1].split("RETURNING id", 1)[0]
         self.assertIn("FALSE", insertion)
+        self.assertIn("%s::text", insertion)
         self.assertNotIn("UPDATE satellites", STORE)
         self.assertIn("satellite_group_members", STORE)
         self.assertIn("ON CONFLICT (group_id, satellite_id)", STORE)

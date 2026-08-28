@@ -182,7 +182,7 @@ def remove_group_member(connection, group_id: int, satellite_id: int) -> bool:
     return connection.execute("DELETE FROM satellite_group_members WHERE group_id = %s AND satellite_id = %s RETURNING satellite_id", (group_id, satellite_id)).fetchone() is not None
 
 
-def get_group_current_positions(connection, group_id: int, active_only: bool = True, limit: int = 10000) -> list[dict[str, Any]]:
+def get_group_current_positions(connection, group_id: int, active_only: bool = False, limit: int = 10000) -> list[dict[str, Any]]:
     rows = connection.execute("""
         SELECT s.id, s.name, s.active, norad.value AS norad_id,
                scs.state_time, scs.lat_deg, scs.lon_deg, scs.altitude_km,
@@ -194,6 +194,53 @@ def get_group_current_positions(connection, group_id: int, active_only: bool = T
         WHERE gm.group_id = %s AND (%s = FALSE OR s.active)
         ORDER BY s.id LIMIT %s
     """, (group_id, active_only, limit)).fetchall()
+    return [_with_current_position_identifier(row) for row in rows]
+
+
+def get_group_positions_at(connection, group_id: int, at: datetime, active_only: bool = False, limit: int = 10000) -> list[dict[str, Any]]:
+    rows = connection.execute("""
+        SELECT s.id, s.name, s.active, norad.value AS norad_id,
+               run.id AS source_run_id, run.source_element_set_id,
+               before.sample_time AS before_time,
+               before.x_ecef_km AS before_x_ecef_km,
+               before.y_ecef_km AS before_y_ecef_km,
+               before.z_ecef_km AS before_z_ecef_km,
+               after.sample_time AS after_time,
+               after.x_ecef_km AS after_x_ecef_km,
+               after.y_ecef_km AS after_y_ecef_km,
+               after.z_ecef_km AS after_z_ecef_km
+        FROM satellite_group_members gm
+        JOIN satellites s ON s.id = gm.satellite_id
+        LEFT JOIN satellite_identifiers norad
+          ON norad.satellite_id = s.id AND norad.namespace = 'NORAD_CAT_ID'
+        JOIN LATERAL (
+            SELECT id, source_element_set_id
+            FROM propagation_runs
+            WHERE satellite_id = s.id
+              AND status = 'completed'
+              AND start_time <= %s
+              AND end_time >= %s
+            ORDER BY generated_at DESC
+            LIMIT 1
+        ) run ON TRUE
+        JOIN LATERAL (
+            SELECT sample_time, x_ecef_km, y_ecef_km, z_ecef_km
+            FROM position_samples
+            WHERE run_id = run.id AND sample_time <= %s
+            ORDER BY sample_time DESC
+            LIMIT 1
+        ) before ON TRUE
+        JOIN LATERAL (
+            SELECT sample_time, x_ecef_km, y_ecef_km, z_ecef_km
+            FROM position_samples
+            WHERE run_id = run.id AND sample_time >= %s
+            ORDER BY sample_time ASC
+            LIMIT 1
+        ) after ON TRUE
+        WHERE gm.group_id = %s AND (%s = FALSE OR s.active)
+        ORDER BY s.id
+        LIMIT %s
+    """, (at, at, at, at, group_id, active_only, limit)).fetchall()
     return [_with_current_position_identifier(row) for row in rows]
 
 
