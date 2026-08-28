@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
@@ -55,9 +56,26 @@ def _position_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
         "state_time": row["state_time"],
-        "position": {"lat_deg": row["lat_deg"], "lon_deg": row["lon_deg"], "altitude_km": row["altitude_km"]},
+        "position": {"lat_deg": row["lat_deg"], "lon_deg": row["lon_deg"], "altitude_km": row["altitude_km"], "heading_deg": None},
         "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
     }
+
+
+def _initial_bearing_deg(left, right) -> float | None:
+    if left is None or right is None:
+        return None
+    delta_lat = right.lat_deg - left.lat_deg
+    delta_lon = ((right.lon_deg - left.lon_deg + 180.0) % 360.0) - 180.0
+    if abs(delta_lat) < 1e-10 and abs(delta_lon) < 1e-10:
+        return None
+    lat1 = math.radians(left.lat_deg)
+    lat2 = math.radians(right.lat_deg)
+    lon_delta = math.radians(delta_lon)
+    y = math.sin(lon_delta) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon_delta)
+    if abs(x) < 1e-12 and abs(y) < 1e-12:
+        return None
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
 
 
 def _position_at_payload(row: dict[str, Any], at: datetime) -> dict[str, Any]:
@@ -75,10 +93,13 @@ def _position_at_payload(row: dict[str, Any], at: datetime) -> dict[str, Any]:
     }
     ecef, _ = interpolate_ecef(before, after, at)
     geodetic = ecef_to_geodetic_spherical(ecef)
+    before_geodetic = ecef_to_geodetic_spherical((before["x_ecef_km"], before["y_ecef_km"], before["z_ecef_km"]))
+    after_geodetic = ecef_to_geodetic_spherical((after["x_ecef_km"], after["y_ecef_km"], after["z_ecef_km"]))
+    heading = _initial_bearing_deg(before_geodetic, after_geodetic)
     return {
         "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
         "state_time": at.isoformat(),
-        "position": {"lat_deg": geodetic.lat_deg, "lon_deg": geodetic.lon_deg, "altitude_km": geodetic.altitude_km},
+        "position": {"lat_deg": geodetic.lat_deg, "lon_deg": geodetic.lon_deg, "altitude_km": geodetic.altitude_km, "heading_deg": heading},
         "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
     }
 
