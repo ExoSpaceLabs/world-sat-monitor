@@ -8,6 +8,7 @@ const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 const THEMED_DETAIL_OPACITY = 0.42;
+const THEMED_RASTER_CONTRAST = 0.18;
 
 export const THEMED_SURFACE_LAYER_ID = "worldsat-themed-surface";
 export const THEMED_BASE_LAYER_ID = "esri-dark-base";
@@ -22,10 +23,6 @@ type MutableStyleLayer = {
   type: string;
   layout?: Record<string, unknown>;
 };
-
-function clampRasterContrast(value: number) {
-  return Math.max(-0.95, Math.min(0.95, value));
-}
 
 async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
   const response = await fetch(OPENFREEMAP_DARK_STYLE_URL);
@@ -60,7 +57,11 @@ export async function loadBasemapStyle(
     {id: "satellite-imagery", type: "raster", source: "satellite-imagery"},
     ...style.layers.map((rawLayer) => {
       const layer = rawLayer as MutableStyleLayer;
-      if (layer.type !== "background" && layer.type !== "fill" && layer.type !== "fill-extrusion") return rawLayer;
+      const hiddenInSatellite = layer.type === "background"
+        || layer.type === "fill"
+        || layer.type === "fill-extrusion"
+        || layer.type === "line";
+      if (!hiddenInSatellite) return rawLayer;
       return {...rawLayer, layout: {...rawLayer.layout, visibility: "none" as const}};
     }),
   ];
@@ -72,13 +73,11 @@ export function fallbackStyle(): StyleSpecification {
 }
 
 function themedRasterStyle(theme: ThemedMapStyle): StyleSpecification {
-  const contrast = clampRasterContrast(theme.contrast);
   return {
     version: 8,
     projection: {type: "globe"},
     metadata: {
       "worldsat:theme-base": theme.baseColor,
-      "worldsat:theme-contrast": contrast,
       "worldsat:theme-detail-opacity": THEMED_DETAIL_OPACITY,
     },
     sources: {
@@ -108,11 +107,9 @@ function themedRasterStyle(theme: ThemedMapStyle): StyleSpecification {
         type: "raster",
         source: "esri-dark-base",
         paint: {
-          // One-color tinting: the detailed grayscale cartography is deliberately
-          // translucent so the selected mission color remains visible underneath.
           "raster-opacity": THEMED_DETAIL_OPACITY,
           "raster-saturation": -1,
-          "raster-contrast": contrast,
+          "raster-contrast": THEMED_RASTER_CONTRAST,
           "raster-brightness-min": 0,
           "raster-brightness-max": 0.58,
         },
