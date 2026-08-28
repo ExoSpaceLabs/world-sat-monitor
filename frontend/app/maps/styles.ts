@@ -1,11 +1,9 @@
 import type {StyleSpecification} from "maplibre-gl";
 import type {Basemap} from "../domain/types";
 
-const OPENFREEMAP_DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
+const OPENFREEMAP_DARK_STYLE_URL = "/map/openfreemap/styles/dark";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-
-type BasemapStyle = StyleSpecification | string;
 
 type MutableStyleLayer = {
   id: string;
@@ -21,11 +19,8 @@ async function loadOpenFreeMapDarkStyle(): Promise<StyleSpecification> {
   return style;
 }
 
-export async function loadBasemapStyle(mode: Basemap): Promise<BasemapStyle> {
-  // Keep OpenFreeMap's style URL intact for the normal dark map. Passing the
-  // fetched JSON object to MapLibre detaches relative sprite/glyph/source URLs
-  // from their stylesheet origin and can leave the vector basemap blank.
-  if (mode === "dark") return OPENFREEMAP_DARK_STYLE_URL;
+export async function loadBasemapStyle(mode: Basemap): Promise<StyleSpecification> {
+  if (mode === "dark") return loadOpenFreeMapDarkStyle();
 
   if (mode === "street") {
     return rasterStyle("osm-standard", [OSM_STANDARD_TILES], 19, "© OpenStreetMap contributors");
