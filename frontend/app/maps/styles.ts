@@ -7,11 +7,13 @@ const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
-// Derived from the UI cyan accent, but intentionally much darker so map detail
-// stays subordinate to satellite/orbit overlays. The grayscale Esri base is
-// blended over this color: brighter land lifts toward cyan while dark water
-// remains close to this deep background tone.
-const DARK_MAP_SURFACE = "#06272d";
+// These are the exact top-menu button surfaces from world-sat-monitor/styles.css.
+// The Esri source is raster, so it cannot assign these semantically to land and
+// water. Instead the inactive surface is the exact globe background/water anchor,
+// while the grayscale base is kept subtle enough that brighter land lifts toward
+// the active surface without introducing a third, unrelated teal.
+const MENU_INACTIVE_SURFACE = "#061720";
+const MENU_ACTIVE_SURFACE = "#0a2734";
 
 type MutableStyleLayer = {
   id: string;
@@ -64,6 +66,10 @@ function darkRasterStyle(): StyleSpecification {
   return {
     version: 8,
     projection: {type: "globe"},
+    metadata: {
+      "worldsat:inactive-surface": MENU_INACTIVE_SURFACE,
+      "worldsat:active-surface": MENU_ACTIVE_SURFACE,
+    },
     sources: {
       "esri-dark-base": {
         type: "raster",
@@ -84,18 +90,18 @@ function darkRasterStyle(): StyleSpecification {
       {
         id: "worldsat-dark-surface",
         type: "background",
-        paint: {"background-color": DARK_MAP_SURFACE},
+        paint: {"background-color": MENU_INACTIVE_SURFACE},
       },
       {
         id: "esri-dark-base",
         type: "raster",
         source: "esri-dark-base",
         paint: {
-          "raster-opacity": 0.42,
+          "raster-opacity": 0.3,
           "raster-saturation": -1,
-          "raster-contrast": 0.2,
+          "raster-contrast": 0.16,
           "raster-brightness-min": 0,
-          "raster-brightness-max": 0.58,
+          "raster-brightness-max": 0.44,
         },
       },
       {
@@ -103,10 +109,10 @@ function darkRasterStyle(): StyleSpecification {
         type: "raster",
         source: "esri-dark-reference",
         paint: {
-          "raster-opacity": 0.82,
-          "raster-saturation": -0.35,
-          "raster-contrast": 0.08,
-          "raster-brightness-max": 0.86,
+          "raster-opacity": 0.78,
+          "raster-saturation": -0.45,
+          "raster-contrast": 0.06,
+          "raster-brightness-max": 0.82,
         },
       },
     ],
