@@ -36,6 +36,9 @@ jobs:
       - name: Build and test
         working-directory: frontend
         run: npm test
+      - name: Benchmark constellation marker preparation
+        working-directory: frontend
+        run: npm run benchmark:groups
       - name: Validate production artifact
         working-directory: frontend
         run: npm run validate:artifact
@@ -54,11 +57,44 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
       - name: Compile backend and worker entry points
-        run: python -m compileall -q backend/app
-      - name: Test backend, provider normalization, and SGP4
+        run: python -m compileall -q backend/app backend/tools
+      - name: Test backend, provider normalization, SGP4, and scale policy
         env:
           PYTHONPATH: backend
         run: python -m unittest discover -s backend/tests -v
+
+  performance:
+    name: Constellation performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: worldsat
+          POSTGRES_USER: worldsat
+          POSTGRES_PASSWORD: worldsat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U worldsat -d worldsat"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Benchmark 100, 1k, and 5k satellite workloads
+        env:
+          PYTHONPATH: backend
+          DATABASE_URL: postgresql://worldsat:worldsat@localhost:5432/worldsat
+        run: python backend/tools/benchmark_constellation.py --sizes 100 1000 5000 --enforce
 
   legacy-migration:
     name: Legacy schema migration
@@ -145,6 +181,7 @@ jobs:
           curl --fail --silent http://localhost:3000/api/v1/satellites | grep 'WORLDSAT-01'
           curl --fail --silent http://localhost:3000/api/v1/satellites | grep '999999999'
           curl --fail --silent http://localhost:3000/api/v1/satellites/999999999/position | grep '"source_element_set_id"'
+          curl --fail --silent http://localhost:3000/api/v1/satellites/999999999/position | grep '"sampling_policy"'
           curl --fail --silent http://localhost:3000/api/v1/satellites/999999999/position | grep '"is_mock":true'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/999999999/track?resolution_seconds=60" | grep '"points"'
           docker compose exec -T backend test -s /data/settings.json
@@ -154,6 +191,11 @@ jobs:
                  AND to_regclass('public.provider_fetch_state') IS NOT NULL
                  AND to_regclass('public.satellite_current_state') IS NOT NULL
                  AND to_regclass('public.tle_sets') IS NULL);"             | grep '^t$'
+
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='propagation_runs'
+               AND column_name='sampling_policy';"             | grep '^1$'
 
           docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM information_schema.columns
              WHERE table_schema='public'
@@ -176,6 +218,9 @@ jobs:
           docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM satellite_current_state scs
              JOIN satellites s ON s.id=scs.satellite_id
              WHERE s.name='WORLDSAT-01' AND scs.source_element_set_id IS NOT NULL;"             | grep '^1$'
+
+          mock_id="$(docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT id FROM satellites WHERE name='WORLDSAT-01' LIMIT 1;")"
+          curl --fail --silent -X POST http://localhost:3000/api/v1/positions/current             -H 'Content-Type: application/json'             -d "{\"satellite_ids\":[${mock_id}]}" | grep '"WORLDSAT-01"'
 
           created="$(curl --fail --silent -X POST http://localhost:3000/api/v1/satellites             -H 'Content-Type: application/json'             -d '{"name":"CI-INACTIVE","active":false,"identifiers":[{"namespace":"NORAD_CAT_ID","value":"100001"},{"namespace":"COSPAR","value":"2026-001A"}]}')"
           satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"

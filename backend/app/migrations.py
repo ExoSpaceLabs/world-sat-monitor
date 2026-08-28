@@ -115,6 +115,14 @@ ALTER TABLE propagation_jobs
     ADD CONSTRAINT propagation_jobs_status_check
     CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'));
 
+ALTER TABLE propagation_runs
+    ADD COLUMN IF NOT EXISTS sampling_policy JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE INDEX IF NOT EXISTS ix_propagation_runs_completed_satellite_generated
+    ON propagation_runs (satellite_id, generated_at DESC)
+    INCLUDE (start_time, end_time, step_seconds, source_element_set_id, is_mock)
+    WHERE status = 'completed';
+
 CREATE TABLE IF NOT EXISTS provider_fetch_state (
     satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,

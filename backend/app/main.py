@@ -17,6 +17,7 @@ from .orbit import (
     initial_bearing_deg,
     interpolate_ecef,
 )
+from .positions_api import router as positions_router
 from .repository import (
     create_satellite,
     delete_satellite,
@@ -83,6 +84,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(groups_router)
+app.include_router(positions_router)
 
 
 @app.get("/api/v1/health")
@@ -245,6 +247,7 @@ def satellite_position(
             "run_id": str(run["id"]),
             "generated_at": run["generated_at"].isoformat(),
             "step_seconds": run["step_seconds"],
+            "sampling_policy": run["sampling_policy"],
             "is_mock": run["is_mock"],
             "source_element_set_id": run["source_element_set_id"],
         },
@@ -301,6 +304,7 @@ def satellite_track(
             "run_id": str(run["id"]),
             "generated_at": run["generated_at"].isoformat(),
             "raw_step_seconds": run["step_seconds"],
+            "sampling_policy": run["sampling_policy"],
             "is_mock": run["is_mock"],
             "source_element_set_id": run["source_element_set_id"],
         },

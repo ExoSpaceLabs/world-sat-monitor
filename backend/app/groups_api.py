@@ -3,54 +3,44 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from .db import connect
 from .group_models import SatelliteGroupCreate, SatelliteGroupMemberAdd, SatelliteGroupUpdate
 from .repository import (
-    add_group_member,
-    create_group,
-    delete_group,
-    get_group,
-    get_group_current_positions,
-    get_satellite,
-    list_group_members,
-    list_groups,
-    remove_group_member,
-    update_group,
+    add_group_member, create_group, delete_group, get_group, get_group_current_positions,
+    get_satellite, list_group_members, list_groups, remove_group_member, update_group,
 )
 
 
+MAX_GROUP_POSITION_RESULTS = 10000
 router = APIRouter(prefix="/api/v1/groups", tags=["groups"])
 
 
 def _group_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": row["id"],
-        "name": row["name"],
-        "group_type": row["group_type"],
-        "source": row["source"],
-        "source_key": row["source_key"],
-        "metadata": row["metadata"],
-        "member_count": row["member_count"],
-        "active_member_count": row["active_member_count"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
+        "id": row["id"], "name": row["name"], "group_type": row["group_type"],
+        "source": row["source"], "source_key": row["source_key"], "metadata": row["metadata"],
+        "member_count": row["member_count"], "active_member_count": row["active_member_count"],
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
     }
 
 
 def _member_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": row["id"],
-        "name": row["name"],
-        "active": row["active"],
-        "object_type": row["object_type"],
-        "provider_preference": row["provider_preference"],
-        "metadata": row["metadata"],
-        "identifiers": row["identifiers"],
-        "norad_id": row.get("norad_id"),
-        "membership_metadata": row["membership_metadata"],
-        "added_at": row["added_at"],
+        "id": row["id"], "name": row["name"], "active": row["active"],
+        "object_type": row["object_type"], "provider_preference": row["provider_preference"],
+        "metadata": row["metadata"], "identifiers": row["identifiers"], "norad_id": row.get("norad_id"),
+        "membership_metadata": row["membership_metadata"], "added_at": row["added_at"],
+    }
+
+
+def _position_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "satellite": {"id": row["id"], "name": row["name"], "active": row["active"], "norad_id": row.get("norad_id"), "identifiers": row["identifiers"]},
+        "state_time": row["state_time"],
+        "position": {"lat_deg": row["lat_deg"], "lon_deg": row["lon_deg"], "altitude_km": row["altitude_km"]},
+        "source": {"run_id": str(row["source_run_id"]), "source_element_set_id": row["source_element_set_id"]},
     }
 
 
@@ -63,10 +53,7 @@ def _load_group(connection, group_id: int) -> dict[str, Any]:
 
 def _require_user_managed(group: dict[str, Any]) -> None:
     if group["source"] != "user":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="provider-managed group cannot be changed through the custom group API",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="provider-managed group cannot be changed through the custom group API")
 
 
 @router.get("")
@@ -148,34 +135,17 @@ def remove_member(group_id: int, satellite_id: int):
 
 
 @router.get("/{group_id}/positions")
-def group_positions(group_id: int):
+def group_positions(
+    group_id: int,
+    active_only: bool = Query(default=True),
+    limit: int = Query(default=MAX_GROUP_POSITION_RESULTS, ge=1, le=MAX_GROUP_POSITION_RESULTS),
+):
     with connect() as connection:
         group = _load_group(connection, group_id)
-        rows = get_group_current_positions(connection, group_id)
-
+        rows = get_group_current_positions(connection, group_id, active_only=active_only, limit=limit)
     return {
         "group": _group_payload(group),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "positions": [
-            {
-                "satellite": {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "active": row["active"],
-                    "norad_id": row.get("norad_id"),
-                    "identifiers": row["identifiers"],
-                },
-                "state_time": row["state_time"],
-                "position": None if row["state_time"] is None else {
-                    "lat_deg": row["lat_deg"],
-                    "lon_deg": row["lon_deg"],
-                    "altitude_km": row["altitude_km"],
-                },
-                "source": None if row["state_time"] is None else {
-                    "run_id": str(row["source_run_id"]),
-                    "source_element_set_id": row["source_element_set_id"],
-                },
-            }
-            for row in rows
-        ],
+        "returned": len(rows),
+        "positions": [_position_payload(row) for row in rows],
     }
