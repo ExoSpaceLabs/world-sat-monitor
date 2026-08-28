@@ -36,9 +36,6 @@ services:
       DATABASE_URL: postgresql://worldsat:worldsat@db:5432/worldsat
       APP_SETTINGS_PATH: /data/settings.json
       MOCK_SEED_ENABLED: "true"
-      MOCK_HISTORY_HOURS: "48"
-      MOCK_PREDICTION_HOURS: "360"
-      MOCK_STEP_SECONDS: "10"
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +53,72 @@ services:
       timeout: 3s
       retries: 8
       start_period: 30s
+
+  orbital-provider:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: world-sat-monitor-backend:local
+    container_name: world-sat-monitor-orbital-provider
+    restart: unless-stopped
+    command: ["python", "-m", "app.provider_service"]
+    environment:
+      DATABASE_URL: postgresql://worldsat:worldsat@db:5432/worldsat
+      PROVIDER_POLL_SECONDS: "${PROVIDER_POLL_SECONDS:-5}"
+      PROVIDER_REFRESH_SECONDS: "${PROVIDER_REFRESH_SECONDS:-7200}"
+      CELESTRAK_ENABLED: "${CELESTRAK_ENABLED:-true}"
+      CELESTRAK_BASE_URL: "${CELESTRAK_BASE_URL:-https://celestrak.org/NORAD/elements/gp.php}"
+      CELESTRAK_TIMEOUT_SECONDS: "${CELESTRAK_TIMEOUT_SECONDS:-15}"
+      PROVIDER_HEALTH_PORT: "8010"
+      PROPAGATION_HISTORY_HOURS: "${PROPAGATION_HISTORY_HOURS:-48}"
+      PROPAGATION_HORIZON_DAYS: "${PROPAGATION_HORIZON_DAYS:-14}"
+      PROPAGATION_STEP_SECONDS: "${PROPAGATION_STEP_SECONDS:-60}"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8010"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 8
+      start_period: 15s
+
+  propagator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: world-sat-monitor-backend:local
+    container_name: world-sat-monitor-propagator
+    restart: unless-stopped
+    command: ["python", "-m", "app.propagator_service"]
+    environment:
+      DATABASE_URL: postgresql://worldsat:worldsat@db:5432/worldsat
+      PROPAGATOR_POLL_SECONDS: "${PROPAGATOR_POLL_SECONDS:-2}"
+      PROPAGATOR_HEALTH_PORT: "8011"
+      PROPAGATION_HISTORY_HOURS: "${PROPAGATION_HISTORY_HOURS:-48}"
+      PROPAGATION_HORIZON_DAYS: "${PROPAGATION_HORIZON_DAYS:-14}"
+      PROPAGATION_STEP_SECONDS: "${PROPAGATION_STEP_SECONDS:-60}"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8011"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8011/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 8
+      start_period: 15s
 
   db:
     image: postgres:17-bookworm

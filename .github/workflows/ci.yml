@@ -41,7 +41,7 @@ jobs:
         run: npm run validate:artifact
 
   backend:
-    name: Backend
+    name: Backend and orbital workers
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -53,9 +53,9 @@ jobs:
           python-version: "3.13"
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
-      - name: Compile backend
+      - name: Compile backend and worker entry points
         run: python -m compileall -q backend/app
-      - name: Test backend
+      - name: Test backend, provider normalization, and SGP4
         env:
           PYTHONPATH: backend
         run: python -m unittest discover -s backend/tests -v
@@ -94,9 +94,17 @@ jobs:
         run: python backend/tests/integration_legacy_migration.py
 
   compose:
-    name: Compose integration
+    name: Compose provider + propagator integration
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      CELESTRAK_ENABLED: "false"
+      PROVIDER_POLL_SECONDS: "1"
+      PROVIDER_REFRESH_SECONDS: "1"
+      PROPAGATOR_POLL_SECONDS: "1"
+      PROPAGATION_HISTORY_HOURS: "2"
+      PROPAGATION_HORIZON_DAYS: "2"
+      PROPAGATION_STEP_SECONDS: "60"
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -104,15 +112,30 @@ jobs:
         run: docker compose config --quiet
       - name: Build and start stack
         run: docker compose up --build -d
-      - name: Verify API, schema, lifecycle, and persistent settings
+      - name: Verify provider, propagation, API, schema, lifecycle, and settings
         run: |
           set -euo pipefail
-          for attempt in {1..45}; do
+
+          for attempt in {1..60}; do
             if curl --fail --silent http://localhost:3000/api/v1/health >/dev/null; then
               break
             fi
-            if [ "$attempt" -eq 45 ]; then
+            if [ "$attempt" -eq 60 ]; then
               docker compose logs
+              exit 1
+            fi
+            sleep 2
+          done
+
+          docker compose exec -T orbital-provider python -c             "import json,urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8010/health')); assert data['service']=='orbital-provider'"
+          docker compose exec -T propagator python -c             "import json,urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8011/health')); assert data['service']=='propagator'"
+
+          for attempt in {1..90}; do
+            if curl --fail --silent http://localhost:3000/api/v1/satellites/999999999/position | grep -q '"position"'; then
+              break
+            fi
+            if [ "$attempt" -eq 90 ]; then
+              docker compose logs orbital-provider propagator backend
               exit 1
             fi
             sleep 2
@@ -120,33 +143,62 @@ jobs:
 
           curl --fail --silent http://localhost:3000/api/v1/settings | grep 'prediction_hours'
           curl --fail --silent http://localhost:3000/api/v1/satellites | grep 'WORLDSAT-01'
-          curl --fail --silent http://localhost:3000/api/v1/satellites/99001/position | grep 'position'
-          curl --fail --silent "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60" | grep 'points'
+          curl --fail --silent http://localhost:3000/api/v1/satellites | grep '999999999'
+          curl --fail --silent http://localhost:3000/api/v1/satellites/999999999/position | grep '"source_element_set_id"'
+          curl --fail --silent http://localhost:3000/api/v1/satellites/999999999/position | grep '"is_mock":true'
+          curl --fail --silent "http://localhost:3000/api/v1/satellites/999999999/track?resolution_seconds=60" | grep '"points"'
           docker compose exec -T backend test -s /data/settings.json
 
-          docker compose exec -T db psql -U worldsat -d worldsat -Atc \
-            "SELECT (to_regclass('public.orbital_element_sets') IS NOT NULL AND to_regclass('public.satellite_identifiers') IS NOT NULL AND to_regclass('public.tle_sets') IS NULL);" \
-            | grep '^t$'
-          docker compose exec -T db psql -U worldsat -d worldsat -Atc \
-            "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='orbital_element_sets' AND column_name IN ('line1','line2');" \
-            | grep '^0$'
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT (to_regclass('public.orbital_element_sets') IS NOT NULL
+                 AND to_regclass('public.satellite_identifiers') IS NOT NULL
+                 AND to_regclass('public.provider_fetch_state') IS NOT NULL
+                 AND to_regclass('public.satellite_current_state') IS NOT NULL
+                 AND to_regclass('public.tle_sets') IS NULL);"             | grep '^t$'
 
-          created="$(curl --fail --silent -X POST http://localhost:3000/api/v1/satellites \
-            -H 'Content-Type: application/json' \
-            -d '{"name":"CI-INACTIVE","active":false,"identifiers":[{"namespace":"NORAD_CAT_ID","value":"100001"},{"namespace":"COSPAR","value":"2026-001A"}]}')"
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='orbital_element_sets'
+               AND column_name IN ('line1','line2');"             | grep '^0$'
+
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM orbital_element_sets oes
+             JOIN satellites s ON s.id=oes.satellite_id
+             WHERE s.name='WORLDSAT-01' AND oes.source='mock';"             | grep '^1$'
+
+          sleep 3
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM orbital_element_sets oes
+             JOIN satellites s ON s.id=oes.satellite_id
+             WHERE s.name='WORLDSAT-01' AND oes.source='mock';"             | grep '^1$'
+
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM propagation_jobs pj
+             JOIN satellites s ON s.id=pj.satellite_id
+             WHERE s.name='WORLDSAT-01' AND pj.status='completed';"             | grep -E '^[1-9][0-9]*$'
+
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM satellite_current_state scs
+             JOIN satellites s ON s.id=scs.satellite_id
+             WHERE s.name='WORLDSAT-01' AND scs.source_element_set_id IS NOT NULL;"             | grep '^1$'
+
+          created="$(curl --fail --silent -X POST http://localhost:3000/api/v1/satellites             -H 'Content-Type: application/json'             -d '{"name":"CI-INACTIVE","active":false,"identifiers":[{"namespace":"NORAD_CAT_ID","value":"100001"},{"namespace":"COSPAR","value":"2026-001A"}]}')"
           satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
           printf '%s' "$created" | grep '"active":false'
           printf '%s' "$created" | grep '"NORAD_CAT_ID":"100001"'
 
+          sleep 2
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc \
+            "SELECT count(*) FROM provider_fetch_state WHERE satellite_id=${satellite_id};" \
+            | grep '^0$'
+
           curl --fail --silent "http://localhost:3000/api/v1/satellites?active=false" | grep 'CI-INACTIVE'
-          curl --fail --silent -X PATCH "http://localhost:3000/api/v1/satellites/${satellite_id}" \
-            -H 'Content-Type: application/json' \
-            -d '{"name":"CI-INACTIVE-RENAMED"}' | grep 'CI-INACTIVE-RENAMED'
+          curl --fail --silent -X PATCH "http://localhost:3000/api/v1/satellites/${satellite_id}"             -H 'Content-Type: application/json'             -d '{"name":"CI-INACTIVE-RENAMED"}' | grep 'CI-INACTIVE-RENAMED'
           curl --fail --silent -X POST "http://localhost:3000/api/v1/satellites/${satellite_id}/activate" | grep '"active":true'
           curl --fail --silent "http://localhost:3000/api/v1/satellites?active=true" | grep 'CI-INACTIVE-RENAMED'
           curl --fail --silent -X POST "http://localhost:3000/api/v1/satellites/${satellite_id}/deactivate" | grep '"active":false'
-          curl --fail --silent -o /dev/null -w '%{http_code}' -X DELETE "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^204$'
-          curl --silent -o /dev/null -w '%{http_code}' "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^404$'
+
+          sleep 2
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM propagation_jobs
+             WHERE satellite_id=${satellite_id} AND status IN ('pending','running');"             | grep '^0$'
+
+          curl --fail --silent -o /dev/null -w '%{http_code}' -X DELETE             "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^204$'
+          curl --silent -o /dev/null -w '%{http_code}'             "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^404$'
       - name: Show logs on failure
         if: failure()
         run: docker compose logs

@@ -22,9 +22,22 @@ class Settings:
         "/data/settings.json",
     )
     mock_seed_enabled: bool = _as_bool("MOCK_SEED_ENABLED", True)
-    mock_history_hours: int = int(os.getenv("MOCK_HISTORY_HOURS", "48"))
-    mock_prediction_hours: int = int(os.getenv("MOCK_PREDICTION_HOURS", "360"))
-    mock_step_seconds: int = int(os.getenv("MOCK_STEP_SECONDS", "10"))
+
+    provider_poll_seconds: float = float(os.getenv("PROVIDER_POLL_SECONDS", "5"))
+    provider_refresh_seconds: int = int(os.getenv("PROVIDER_REFRESH_SECONDS", "7200"))
+    celestrak_enabled: bool = _as_bool("CELESTRAK_ENABLED", True)
+    celestrak_base_url: str = os.getenv(
+        "CELESTRAK_BASE_URL",
+        "https://celestrak.org/NORAD/elements/gp.php",
+    )
+    celestrak_timeout_seconds: float = float(os.getenv("CELESTRAK_TIMEOUT_SECONDS", "15"))
+    provider_health_port: int = int(os.getenv("PROVIDER_HEALTH_PORT", "8010"))
+
+    propagator_poll_seconds: float = float(os.getenv("PROPAGATOR_POLL_SECONDS", "2"))
+    propagator_health_port: int = int(os.getenv("PROPAGATOR_HEALTH_PORT", "8011"))
+    propagation_history_hours: int = int(os.getenv("PROPAGATION_HISTORY_HOURS", "48"))
+    propagation_horizon_days: int = int(os.getenv("PROPAGATION_HORIZON_DAYS", "14"))
+    propagation_step_seconds: int = int(os.getenv("PROPAGATION_STEP_SECONDS", "60"))
 
 
 settings = Settings()

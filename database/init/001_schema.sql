@@ -55,6 +55,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_orbital_element_sets_source_fingerprint
     ON orbital_element_sets (satellite_id, source, fingerprint)
     WHERE fingerprint IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS provider_fetch_state (
+    satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    last_attempt_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_error TEXT,
+    latest_element_set_id BIGINT REFERENCES orbital_element_sets(id) ON DELETE SET NULL,
+    PRIMARY KEY (satellite_id, provider)
+);
+
 CREATE TABLE IF NOT EXISTS propagation_runs (
     id UUID PRIMARY KEY,
     satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
@@ -87,15 +97,33 @@ CREATE TABLE IF NOT EXISTS position_samples (
 CREATE INDEX IF NOT EXISTS ix_position_samples_satellite_time
     ON position_samples (satellite_id, sample_time);
 
+CREATE TABLE IF NOT EXISTS satellite_current_state (
+    satellite_id BIGINT PRIMARY KEY REFERENCES satellites(id) ON DELETE CASCADE,
+    state_time TIMESTAMPTZ NOT NULL,
+    x_ecef_km DOUBLE PRECISION NOT NULL,
+    y_ecef_km DOUBLE PRECISION NOT NULL,
+    z_ecef_km DOUBLE PRECISION NOT NULL,
+    lat_deg DOUBLE PRECISION NOT NULL,
+    lon_deg DOUBLE PRECISION NOT NULL,
+    altitude_km DOUBLE PRECISION NOT NULL,
+    source_run_id UUID NOT NULL REFERENCES propagation_runs(id) ON DELETE CASCADE,
+    source_element_set_id BIGINT REFERENCES orbital_element_sets(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_current_state_time
+    ON satellite_current_state (state_time);
+
 CREATE TABLE IF NOT EXISTS propagation_jobs (
     id BIGSERIAL PRIMARY KEY,
     satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
     element_set_id BIGINT NOT NULL REFERENCES orbital_element_sets(id) ON DELETE CASCADE,
     requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    history_hours INTEGER NOT NULL DEFAULT 48 CHECK (history_hours >= 0),
     horizon_days INTEGER NOT NULL DEFAULT 14 CHECK (horizon_days > 0),
-    step_seconds INTEGER NOT NULL DEFAULT 10 CHECK (step_seconds > 0),
+    step_seconds INTEGER NOT NULL DEFAULT 60 CHECK (step_seconds > 0),
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     error TEXT
@@ -103,6 +131,10 @@ CREATE TABLE IF NOT EXISTS propagation_jobs (
 
 CREATE INDEX IF NOT EXISTS ix_propagation_jobs_status_requested
     ON propagation_jobs (status, requested_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_propagation_jobs_active_element
+    ON propagation_jobs (element_set_id)
+    WHERE status IN ('pending', 'running');
 
 CREATE TABLE IF NOT EXISTS prediction_error_daily (
     id BIGSERIAL PRIMARY KEY,

@@ -41,7 +41,7 @@ export type GlobeVector = readonly [number, number, number];
 
 export const MOCK_SATELLITE: Satellite = {
   name: "WORLDSAT-01",
-  norad: "99001",
+  norad: "999999999",
   lat: 18.4,
   lon: 32.7,
   altitude: 547,

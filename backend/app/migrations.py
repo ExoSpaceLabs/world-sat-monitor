@@ -3,6 +3,8 @@ from __future__ import annotations
 from .db import connect
 
 
+MIGRATION_LOCK_ID = 94712014
+
 LEGACY_TO_ELEMENT_SET_SQL = r"""
 ALTER TABLE satellites
     ADD COLUMN IF NOT EXISTS object_type TEXT NOT NULL DEFAULT 'payload',
@@ -98,10 +100,78 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_orbital_element_sets_source_fingerprint
     WHERE fingerprint IS NOT NULL;
 """
 
+CURRENT_SCHEMA_SQL = r"""
+ALTER TABLE propagation_jobs
+    ADD COLUMN IF NOT EXISTS history_hours INTEGER NOT NULL DEFAULT 48
+        CHECK (history_hours >= 0);
 
-def migrate_legacy_schema() -> bool:
-    """Migrate the pre-#12 TLE schema in-place. Returns True when migration ran."""
+ALTER TABLE propagation_jobs
+    ALTER COLUMN step_seconds SET DEFAULT 60;
+
+ALTER TABLE propagation_jobs
+    DROP CONSTRAINT IF EXISTS propagation_jobs_status_check;
+
+ALTER TABLE propagation_jobs
+    ADD CONSTRAINT propagation_jobs_status_check
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'));
+
+CREATE TABLE IF NOT EXISTS provider_fetch_state (
+    satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    last_attempt_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_error TEXT,
+    latest_element_set_id BIGINT REFERENCES orbital_element_sets(id) ON DELETE SET NULL,
+    PRIMARY KEY (satellite_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS satellite_current_state (
+    satellite_id BIGINT PRIMARY KEY REFERENCES satellites(id) ON DELETE CASCADE,
+    state_time TIMESTAMPTZ NOT NULL,
+    x_ecef_km DOUBLE PRECISION NOT NULL,
+    y_ecef_km DOUBLE PRECISION NOT NULL,
+    z_ecef_km DOUBLE PRECISION NOT NULL,
+    lat_deg DOUBLE PRECISION NOT NULL,
+    lon_deg DOUBLE PRECISION NOT NULL,
+    altitude_km DOUBLE PRECISION NOT NULL,
+    source_run_id UUID NOT NULL REFERENCES propagation_runs(id) ON DELETE CASCADE,
+    source_element_set_id BIGINT REFERENCES orbital_element_sets(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_current_state_time
+    ON satellite_current_state (state_time);
+
+WITH ranked_active_jobs AS (
+    SELECT id,
+           ROW_NUMBER() OVER (
+               PARTITION BY element_set_id
+               ORDER BY requested_at, id
+           ) AS duplicate_rank
+    FROM propagation_jobs
+    WHERE status IN ('pending', 'running')
+)
+UPDATE propagation_jobs
+SET status = 'cancelled',
+    finished_at = NOW(),
+    error = 'duplicate active job cancelled during schema migration'
+WHERE id IN (
+    SELECT id FROM ranked_active_jobs WHERE duplicate_rank > 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_propagation_jobs_active_element
+    ON propagation_jobs (element_set_id)
+    WHERE status IN ('pending', 'running');
+"""
+
+
+def migrate_schema() -> bool:
+    """Apply legacy conversion and additive worker schema updates.
+
+    Returns True only when the pre-#12 TLE schema was converted.
+    """
     with connect() as connection:
+        connection.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
         state = connection.execute(
             """
             SELECT
@@ -109,8 +179,14 @@ def migrate_legacy_schema() -> bool:
                 to_regclass('public.orbital_element_sets') IS NOT NULL AS has_element_sets
             """
         ).fetchone()
-        if not state["has_legacy_tle"] or state["has_element_sets"]:
-            return False
-        connection.execute(LEGACY_TO_ELEMENT_SET_SQL)
+        migrated_legacy = bool(state["has_legacy_tle"] and not state["has_element_sets"])
+        if migrated_legacy:
+            connection.execute(LEGACY_TO_ELEMENT_SET_SQL)
+        connection.execute(CURRENT_SCHEMA_SQL)
         connection.commit()
-        return True
+        return migrated_legacy
+
+
+def migrate_legacy_schema() -> bool:
+    """Backward-compatible migration entry point used by existing tests/tools."""
+    return migrate_schema()
