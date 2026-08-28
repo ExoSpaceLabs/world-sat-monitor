@@ -142,6 +142,35 @@ CREATE TABLE IF NOT EXISTS satellite_current_state (
 CREATE INDEX IF NOT EXISTS ix_satellite_current_state_time
     ON satellite_current_state (state_time);
 
+CREATE TABLE IF NOT EXISTS satellite_groups (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    group_type TEXT NOT NULL DEFAULT 'custom'
+        CHECK (group_type IN ('constellation', 'custom', 'mission')),
+    source TEXT NOT NULL DEFAULT 'user',
+    source_key TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_groups_type_name
+    ON satellite_groups (group_type, name);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_satellite_groups_source_key
+    ON satellite_groups (source, source_key)
+    WHERE source_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS satellite_group_members (
+    group_id BIGINT NOT NULL REFERENCES satellite_groups(id) ON DELETE CASCADE,
+    satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (group_id, satellite_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_group_members_satellite
+    ON satellite_group_members (satellite_id, group_id);
+
 WITH ranked_active_jobs AS (
     SELECT id,
            ROW_NUMBER() OVER (
@@ -166,7 +195,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_propagation_jobs_active_element
 
 
 def migrate_schema() -> bool:
-    """Apply legacy conversion and additive worker schema updates.
+    """Apply legacy conversion and additive worker/application schema updates.
 
     Returns True only when the pre-#12 TLE schema was converted.
     """
