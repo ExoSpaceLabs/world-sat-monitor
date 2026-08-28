@@ -8,29 +8,22 @@ const orbitRendererUrl = new URL("../app/components/satellite/OrbitTrackLayer.ts
 const satelliteLayerUrl = new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url);
 const satelliteProjectionUrl = new URL("../app/components/satellite/satelliteProjection.ts", import.meta.url);
 const satelliteStylesUrl = new URL("../app/components/satellite/styles.css", import.meta.url);
-const gatewayConfigUrl = new URL("../../gateway/nginx.conf", import.meta.url);
 
 async function source(url) {
   return readFile(url, "utf8");
 }
 
-test("dark basemap loads OpenFreeMap through the same-origin gateway", async () => {
+test("dark basemap uses the keyless Esri dark-gray raster base and reference layers", async () => {
   const text = await source(mapStyleUrl);
-  const gateway = await source(gatewayConfigUrl);
 
-  assert.match(text, /\/map\/openfreemap\/styles\/dark/);
-  assert.match(text, /mode === "dark"\) return loadOpenFreeMapDarkStyle\(\)/);
-  assert.doesNotMatch(text, /https:\/\/tiles\.openfreemap\.org\/styles\/dark/);
+  assert.match(text, /World_Dark_Gray_Base\/MapServer\/tile/);
+  assert.match(text, /World_Dark_Gray_Reference\/MapServer\/tile/);
+  assert.match(text, /mode === "dark"\) return darkRasterStyle\(\)/);
+  assert.match(text, /"esri-dark-base"/);
+  assert.match(text, /"esri-dark-reference"/);
   assert.doesNotMatch(text, /cartocdn/i);
   assert.doesNotMatch(text, /dark_all/);
   assert.doesNotMatch(text, /API_KEY/);
-
-  assert.match(gateway, /location \/map\/openfreemap\//);
-  assert.match(gateway, /proxy_pass https:\/\/tiles\.openfreemap\.org\//);
-  assert.match(gateway, /proxy_set_header Origin ""/);
-  assert.match(gateway, /proxy_set_header Referer ""/);
-  assert.match(gateway, /sub_filter_once off/);
-  assert.match(gateway, /sub_filter 'https:\/\/tiles\.openfreemap\.org' '\/map\/openfreemap'/);
 });
 
 test("street contrast is derived from the active OSM map style", async () => {
