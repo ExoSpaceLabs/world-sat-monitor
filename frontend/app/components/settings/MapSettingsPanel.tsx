@@ -27,29 +27,20 @@ export function MapSettingsPanel({
   basemap,
   scene,
   themeBaseColor,
-  themeContrast,
   timeScale,
   onBasemapChange,
   onDebugChange,
   onEnvironmentChange,
   onShadowOpacityChange,
   onThemeBaseColorChange,
-  onThemeContrastChange,
   onTimeReset,
   onTimeScaleChange,
   onReset,
   onClose,
 }: MapSettingsPanelProps) {
-  // Settings can briefly come from an older persisted/API schema during an
-  // upgrade. Never let a missing theme field take down the entire React tree.
   const safeBaseColor = /^#[0-9a-f]{6}$/i.test(themeBaseColor ?? "")
     ? themeBaseColor
     : DEFAULT_THEMED_MAP_STYLE.baseColor;
-  const safeContrast = Number.isFinite(themeContrast)
-    ? Math.max(-0.95, Math.min(0.95, themeContrast))
-    : DEFAULT_THEMED_MAP_STYLE.contrast;
-  const contrastPercent = Math.round(safeContrast * 100);
-  const contrastSliderPercent = ((contrastPercent + 95) / 190) * 100;
 
   return (
     <aside className="settings-panel" aria-label="Map settings">
@@ -76,20 +67,6 @@ export function MapSettingsPanel({
             <label className="theme-base-color">
               <span><b>TINT COLOR</b><output>{safeBaseColor.toUpperCase()}</output></span>
               <div><input type="color" value={safeBaseColor} onChange={(event) => onThemeBaseColorChange(event.target.value)} aria-label="Themed tint color"/><i style={{background: safeBaseColor}}/></div>
-            </label>
-            <label className="theme-contrast">
-              <span><b>CONTRAST</b><output>{contrastPercent > 0 ? "+" : ""}{contrastPercent}%</output></span>
-              <input
-                type="range"
-                min="-95"
-                max="95"
-                step="1"
-                value={contrastPercent}
-                onChange={(event) => onThemeContrastChange(Number(event.target.value) / 100)}
-                aria-label="Themed raster contrast"
-                style={{"--theme-contrast": `${contrastSliderPercent}%`} as CSSProperties}
-              />
-              <small>ESRI GRAYSCALE DETAIL · TINT IS BLENDED UNDER THE RASTER</small>
             </label>
           </div>
         )}
