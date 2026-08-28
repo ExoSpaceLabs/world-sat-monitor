@@ -4,6 +4,7 @@ import {useEffect, useRef} from "react";
 import type {ReactNode} from "react";
 import type {Map as MapLibreMap} from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import {
   INITIAL_VIEW,
   ROTATION_DEGREES_PER_SECOND,
@@ -143,6 +144,10 @@ export function GlobeMap({
       }),
     ]).then(([maplibre, style]) => {
       if (disposed || !containerRef.current) return;
+      // MapLibre v6 requires bundler consumers to provide a worker URL. Raster
+      // sources can appear to work without it while GeoJSON/vector sources fail
+      // silently, which made the themed land layer disappear entirely.
+      maplibre.setWorkerUrl(maplibreWorkerUrl);
       maplibreRef.current = maplibre;
       map = new maplibre.Map({
         container: containerRef.current,
