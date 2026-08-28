@@ -2,30 +2,191 @@ from __future__ import annotations
 
 from datetime import datetime
 import math
-from typing import Any
+from typing import Any, Iterable
+
+from psycopg.types.json import Jsonb
 
 
-def list_satellites(connection) -> list[dict[str, Any]]:
+SATELLITE_SELECT = """
+    SELECT s.id, s.name, s.active, s.object_type, s.provider_preference,
+           s.metadata, s.created_at, s.updated_at,
+           COALESCE(
+               jsonb_object_agg(si.namespace, si.value)
+                   FILTER (WHERE si.namespace IS NOT NULL),
+               '{}'::jsonb
+           ) AS identifiers
+    FROM satellites s
+    LEFT JOIN satellite_identifiers si ON si.satellite_id = s.id
+"""
+
+
+def _with_norad_identifier(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    result = dict(row)
+    identifiers = dict(result.get("identifiers") or {})
+    result["identifiers"] = identifiers
+    result["norad_id"] = identifiers.get("NORAD_CAT_ID")
+    return result
+
+
+def list_satellites(connection, active: bool | None = None) -> list[dict[str, Any]]:
+    where = "" if active is None else "WHERE s.active = %s"
+    params: tuple[Any, ...] = () if active is None else (active,)
     rows = connection.execute(
-        """
-        SELECT id, norad_id, name, active, created_at
-        FROM satellites
-        WHERE active = TRUE
-        ORDER BY name, norad_id
-        """
-    ).fetchall()
-    return list(rows)
-
-
-def get_satellite(connection, norad_id: int) -> dict[str, Any] | None:
-    return connection.execute(
-        """
-        SELECT id, norad_id, name, active, created_at
-        FROM satellites
-        WHERE norad_id = %s AND active = TRUE
+        f"""
+        {SATELLITE_SELECT}
+        {where}
+        GROUP BY s.id
+        ORDER BY s.name, s.id
         """,
-        (norad_id,),
+        params,
+    ).fetchall()
+    return [_with_norad_identifier(row) for row in rows if row is not None]
+
+
+def get_satellite(connection, satellite_id: int) -> dict[str, Any] | None:
+    row = connection.execute(
+        f"""
+        {SATELLITE_SELECT}
+        WHERE s.id = %s
+        GROUP BY s.id
+        """,
+        (satellite_id,),
     ).fetchone()
+    return _with_norad_identifier(row)
+
+
+def get_satellite_by_norad(connection, norad_id: str | int) -> dict[str, Any] | None:
+    row = connection.execute(
+        f"""
+        {SATELLITE_SELECT}
+        WHERE EXISTS (
+            SELECT 1
+            FROM satellite_identifiers lookup
+            WHERE lookup.satellite_id = s.id
+              AND lookup.namespace = 'NORAD_CAT_ID'
+              AND lookup.value = %s
+        )
+        GROUP BY s.id
+        """,
+        (str(norad_id),),
+    ).fetchone()
+    return _with_norad_identifier(row)
+
+
+def _replace_identifiers(connection, satellite_id: int, identifiers: Iterable[Any]) -> None:
+    connection.execute(
+        "DELETE FROM satellite_identifiers WHERE satellite_id = %s",
+        (satellite_id,),
+    )
+    for identifier in identifiers:
+        if hasattr(identifier, "namespace"):
+            namespace = identifier.namespace
+            value = identifier.value
+        else:
+            namespace = identifier["namespace"]
+            value = identifier["value"]
+        connection.execute(
+            """
+            INSERT INTO satellite_identifiers (satellite_id, namespace, value)
+            VALUES (%s, %s, %s)
+            """,
+            (satellite_id, namespace, value),
+        )
+
+
+def create_satellite(connection, value: Any) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        INSERT INTO satellites (
+            name, active, object_type, provider_preference, metadata
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            value.name,
+            value.active,
+            value.object_type,
+            value.provider_preference,
+            Jsonb(value.metadata),
+        ),
+    ).fetchone()
+    satellite_id = int(row["id"])
+    _replace_identifiers(connection, satellite_id, value.identifiers)
+    created = get_satellite(connection, satellite_id)
+    if created is None:
+        raise RuntimeError("created satellite could not be reloaded")
+    return created
+
+
+def update_satellite(connection, satellite_id: int, changes: dict[str, Any]) -> dict[str, Any] | None:
+    identifiers = changes.pop("identifiers", None) if "identifiers" in changes else None
+    assignments: list[str] = []
+    params: list[Any] = []
+
+    column_map = {
+        "name": "name",
+        "object_type": "object_type",
+        "provider_preference": "provider_preference",
+        "metadata": "metadata",
+    }
+    for field, column in column_map.items():
+        if field not in changes:
+            continue
+        assignments.append(f"{column} = %s")
+        value = changes[field]
+        params.append(Jsonb(value) if field == "metadata" else value)
+
+    if assignments:
+        assignments.append("updated_at = NOW()")
+        params.append(satellite_id)
+        updated = connection.execute(
+            f"""
+            UPDATE satellites
+            SET {', '.join(assignments)}
+            WHERE id = %s
+            RETURNING id
+            """,
+            tuple(params),
+        ).fetchone()
+        if updated is None:
+            return None
+    elif get_satellite(connection, satellite_id) is None:
+        return None
+
+    if identifiers is not None:
+        _replace_identifiers(connection, satellite_id, identifiers)
+        connection.execute(
+            "UPDATE satellites SET updated_at = NOW() WHERE id = %s",
+            (satellite_id,),
+        )
+
+    return get_satellite(connection, satellite_id)
+
+
+def set_satellite_active(connection, satellite_id: int, active: bool) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        UPDATE satellites
+        SET active = %s, updated_at = NOW()
+        WHERE id = %s
+        RETURNING id
+        """,
+        (active, satellite_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return get_satellite(connection, satellite_id)
+
+
+def delete_satellite(connection, satellite_id: int) -> bool:
+    row = connection.execute(
+        "DELETE FROM satellites WHERE id = %s RETURNING id",
+        (satellite_id,),
+    ).fetchone()
+    return row is not None
 
 
 def get_run_covering(
@@ -36,7 +197,7 @@ def get_run_covering(
 ) -> dict[str, Any] | None:
     return connection.execute(
         """
-        SELECT id, satellite_id, source_tle_id, generated_at, start_time, end_time,
+        SELECT id, satellite_id, source_element_set_id, generated_at, start_time, end_time,
                step_seconds, status, is_mock
         FROM propagation_runs
         WHERE satellite_id = %s

@@ -1,8 +1,10 @@
 # WorldSat Monitor architecture
 
-WorldSat Monitor is split into independently deployable frontend, backend, database, and gateway services. The backend owns orbital data access and interpolation; the frontend owns visualization and user interaction.
+WorldSat Monitor separates catalog management, external orbital-data acquisition, propagation, query APIs, and visualization. The boundary is intentional: the UI never becomes an orbit propagator, the user-facing backend never becomes a scheduled provider worker, and orbital workers never depend on browser state.
 
 ## Runtime topology
+
+Current development topology:
 
 ```mermaid
 flowchart LR
@@ -13,7 +15,76 @@ flowchart LR
     B --> CFG[(Mounted settings.json)]
 ```
 
-The browser talks to one same-origin gateway. The frontend never needs Docker-internal service names and the backend remains the API boundary for satellite state and persistent application settings.
+Target production topology:
+
+```mermaid
+flowchart LR
+    U[Browser] --> G[Gateway]
+    G --> F[Frontend]
+    G --> B[Backend API]
+    P[orbital-provider] --> DB[(PostgreSQL)]
+    W[propagator] --> DB
+    Q[quality-worker] --> DB
+    B --> DB
+    C[CelesTrak] --> P
+    S[Space-Track] --> P
+    O[Future operator/OEM sources] --> P
+```
+
+One PostgreSQL service remains the initial durable store. Service separation does not require premature distributed databases or message brokers. PostgreSQL can also act as the initial propagation-job queue with row locking such as `FOR UPDATE SKIP LOCKED`.
+
+## Satellite identity and lifecycle
+
+A WorldSat Monitor satellite has an internal database ID. External identities are attributes, not primary keys.
+
+```mermaid
+flowchart LR
+    SAT[satellites] --> ID[satellite_identifiers]
+    ID --> N[NORAD_CAT_ID]
+    ID --> C[COSPAR]
+    ID --> X[Future provider IDs]
+```
+
+Monitoring state is persisted independently from runtime map selection:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Inactive: add satellite
+    Inactive --> Active: activate
+    Active --> Inactive: deactivate
+    Inactive --> [*]: delete
+```
+
+Inactive means metadata and history are retained but scheduled provider/propagation work is disabled. Active means the provider service should keep current source data and the propagator should maintain configured predictions once those services are available. Deactivation never deletes orbital history.
+
+## Orbital source model
+
+The pre-#12 schema treated a two-line TLE record as the domain object. The canonical model is now an orbital element set with OMM/GP-compatible fields:
+
+```mermaid
+flowchart TD
+    T[TLE / Alpha-5] --> N[Normalized OrbitalElementSet]
+    J[GP JSON / CSV] --> N
+    O[CCSDS OMM XML/KVN] --> N
+    N --> DB[(orbital_element_sets)]
+    DB --> PROP[PropagationEngine]
+```
+
+`orbital_element_sets` stores source provenance, source format, mean-element theory, SGP4-relevant mean elements, optional provider fingerprint, and the original provider payload. TLE lines may exist inside `raw_payload` for a migrated or TLE-sourced record, but `line1`/`line2` are not required database columns.
+
+## Legacy schema migration
+
+When the backend starts against the previous TLE-centric schema, it performs one in-place transactional migration before mock seeding:
+
+```text
+satellites.norad_id -> satellite_identifiers[NORAD_CAT_ID]
+tle_sets -> orbital_element_sets (source_format=TLE, raw_payload={line1,line2})
+propagation_runs.source_tle_id -> source_element_set_id
+propagation_jobs.tle_id -> element_set_id
+prediction_error_daily.reference_tle_id -> reference_element_set_id
+```
+
+The migration runs only when the legacy table exists and the generalized table does not. CI executes the migration against a real PostgreSQL legacy fixture and verifies data/reference preservation.
 
 ## Current mock-orbit flow
 
@@ -29,161 +100,46 @@ flowchart TD
     TRACK --> UI
 ```
 
-The mock orbit exists so API and rendering work can proceed independently of the future TLE acquisition and SGP4 services.
+Mock propagation runs use `source_element_set_id = NULL`, allowing the API/rendering path to stay stable while the real provider and propagator are built.
 
-## Position interpolation
-
-```mermaid
-flowchart LR
-    T[Requested UTC] --> Q[Query surrounding samples]
-    Q --> A[t0 ECEF state]
-    Q --> B[t1 ECEF state]
-    A --> I[Linear Cartesian interpolation]
-    B --> I
-    I --> GEO[lat / lon / altitude]
-    GEO --> R[API response]
-```
-
-Interpolation is performed in Cartesian ECEF coordinates rather than directly interpolating longitude. This avoids discontinuities at the ±180 degree meridian.
-
-## Orbit display rendering
-
-Orbit settings are global. Every tracked satellite shares path history/prediction lengths, refresh cadence, interpolation cadence, direction-vector visibility, and track-placement mode.
-
-```mermaid
-flowchart TD
-    API[Backend track samples] --> SEG[Great-circle rendering subdivision]
-    SEG --> SPLIT[Dateline split]
-    SPLIT --> WORLD[Mercator world x/y]
-    WORLD --> TILE[Base-tile coordinates\nx/y × EXTENT]
-    TILE --> BUF[WebGL vertices + elevation metres]
-    SETTINGS[Global Orbit Settings] --> BUF
-    BUF --> PD[MapLibre getProjectionData\ntile 0/0/0]
-    PD --> MODE{Track placement}
-    MODE -->|GROUND| SURFACE[projectTileWithElevation\ndepth disabled]
-    MODE -->|ORBIT| SPACE[projectTileFor3D\nshared Earth depth test]
-    SURFACE --> HORIZON[Surface horizon clipping]
-    SPACE --> OCCLUSION[Physical Earth occlusion]
-    HORIZON --> VIEW[History / prediction / direction vector]
-    OCCLUSION --> VIEW
-```
-
-The orbit custom layer is declared as **3D** so MapLibre exposes the scene depth buffer, but the two display modes intentionally consume it differently. `GROUND` remains a readable surface overlay: depth testing is disabled and MapLibre's surface-horizon projection is used. `ORBIT` preserves real clip-space depth and keeps MapLibre's 3D depth test, so trajectory segments disappear only when the rendered Earth is actually in front of them.
-
-This distinction matters because MapLibre's `projectTileWithElevation(...)` intentionally replaces clip-space Z with a synthetic globe-horizon clipping value. That is correct for objects constrained to the surface, but it clips an elevated spacecraft trajectory too early. `projectTileFor3D(...)` preserves the real depth required for orbital geometry.
-
-The custom-layer tile projection consumes physical elevation in metres. The frontend therefore stores one altitude representation and leaves projection scaling to MapLibre.
-
-### Satellite marker projection
-
-The satellite DOM marker is still anchored at its nadir longitude/latitude for interaction, but its visible element is translated to the actual 3D projected spacecraft location.
-
-```mermaid
-flowchart TD
-    SAT[Current satellite state] --> FRAME{Active MapLibre camera frame}
-    FRAME -->|Globe| G[Sphere position\nradius = 1 + altitude / R]
-    FRAME -->|Mercator| M[World x/y + altitude metres]
-    G --> MVP[MapLibre model-view-projection matrix]
-    M --> MVP
-    MVP --> SCREEN[Spacecraft screen position]
-    NADIR[Nadir marker anchor] --> DELTA[Screen-space offset]
-    SCREEN --> DELTA
-    DELTA --> MARKER[Visible satellite marker]
-```
-
-This removes the previous radial pixel approximation. The current marker, heading-vector origin, history endpoint, and prediction origin now use the same physical altitude model, so a propagated point at the satellite timestamp should visually intersect the satellite marker.
-
-Far-side marker visibility is handled separately with a finite camera-to-satellite ray/sphere test. It dims only when Earth actually intersects that line of sight.
-
-The frontend never derives authoritative orbital states during rendering. Great-circle subdivision only adds display vertices between backend samples so long line segments follow the globe smoothly.
-
-### Runtime orbit diagnostics
-
-The custom layer reports its actual rendering state to Scene Debug:
+## Planned provider and propagation flow
 
 ```mermaid
 flowchart LR
-    L[OrbitTrackLayer] --> R[draw completed?]
-    L --> S[shader variant]
-    L --> V[history / prediction / heading vertex counts]
-    L --> E[shader or WebGL error]
-    R --> D[Scene Debug]
-    S --> D
-    V --> D
-    E --> D
-```
-
-This distinguishes an empty track from a renderer that failed to install, compile, or draw. A missing orbit overlay therefore has an observable failure state rather than silently disappearing.
-
-## Persistent settings
-
-```mermaid
-flowchart LR
-    UI[Map / Orbit Settings UI] -->|PUT /api/v1/settings| API[Backend]
-    API --> VALIDATE[Pydantic validation]
-    VALIDATE --> TMP[settings.json.tmp]
-    TMP --> SYNC[fsync]
-    SYNC --> RENAME[atomic replace]
-    RENAME --> JSON[(settings.json volume)]
-    JSON -->|startup GET| UI
-```
-
-Persistent configuration contains map and global orbit-display settings. Runtime interaction state such as the currently selected satellite or active camera drag is deliberately not stored in the settings document.
-
-Reset operations write default values back to the same mounted JSON configuration rather than keeping a second hidden source of truth.
-
-## Planned TLE and propagation pipeline
-
-```mermaid
-flowchart LR
-    CAT[(Managed satellites)] --> FETCH[TLE fetcher]
-    FETCH --> TLE[(tle_sets)]
+    CAT[(active satellites)] --> FETCH[orbital-provider]
+    FETCH --> ELEM[(orbital_element_sets)]
     FETCH --> JOB[(propagation_jobs)]
-    JOB --> PROP[SGP4 propagator]
-    TLE --> PROP
+    JOB --> PROP[propagator]
+    ELEM --> PROP
     PROP --> RUN[(propagation_runs)]
     PROP --> SAMPLE[(position_samples)]
-    SAMPLE --> API[Backend API]
-    TLE --> EVAL[Prediction evaluator]
-    RUN --> EVAL
-    EVAL --> ERR[(prediction error observations / aggregates)]
+    SAMPLE --> API[backend-api]
 ```
 
-The backend API is a read/query service. TLE collection and propagation are separate workers so provider latency, scheduled updates, or long-running propagation cannot block browser requests.
+Provider responsibilities are fetch, normalization, provenance, change detection and job enqueueing. It does not calculate trajectories or serve browser requests. The propagator owns orbital computation behind a `PropagationEngine` abstraction; SGP4 is the first planned implementation.
 
-PostgreSQL can initially act as the propagation job queue using row locking such as `FOR UPDATE SKIP LOCKED`. A dedicated broker is unnecessary until throughput or delivery guarantees demonstrate that one is actually required.
+## Backend API ownership
 
-## Prediction quality model
+The backend owns client-facing application operations: satellite CRUD, activate/deactivate lifecycle transitions, position/track queries and decimation, settings, and future group/quality queries. It does not fetch provider data or perform scheduled propagation inline.
 
-A newly published TLE is not ground truth. Prediction quality is therefore described as disagreement against a later reference state, initially a newer TLE and eventually a higher-quality ephemeris if one becomes available.
+Position and track compatibility endpoints currently resolve the displayed mock satellite by its `NORAD_CAT_ID`. Management endpoints use the internal satellite ID, keeping the domain model independent from the external catalog identifier.
 
-```mermaid
-flowchart TD
-    OLD[Older TLE at T0] --> PROP[Propagate to later epoch]
-    NEW[Later reference TLE / ephemeris] --> CMP[Compare states]
-    PROP --> CMP
-    CMP --> OBS[Raw error observation]
-    OBS --> DAY[Bucket by forecast horizon]
-    DAY --> AGG[Mean / RMS / P95 / Max / sample count]
-    AGG --> UI[Prediction quality graph]
-```
+## Frontend ownership
 
-This allows users to see how uncertainty tends to grow with forecast horizon without presenting a TLE-derived comparison as absolute navigation truth.
+The frontend owns visualization and user interaction. The satellite panel includes local catalog management: list active and inactive satellites, add metadata/identifiers manually, activate/deactivate monitoring, and delete inactive entries. Runtime display selection remains separate from persisted monitoring state.
 
-## Data ownership
+## Position interpolation and rendering boundary
 
-```mermaid
-flowchart TB
-    FETCHER[TLE fetcher] -->|writes| TLE[(tle_sets)]
-    PROPAGATOR[Propagator] -->|writes| RUN[(propagation_runs)]
-    PROPAGATOR -->|writes| SAMPLE[(position_samples)]
-    EVALUATOR[Error evaluator] -->|writes| ERR[(prediction quality)]
-    BACKEND[Backend API] -->|reads| TLE
-    BACKEND -->|reads| RUN
-    BACKEND -->|reads| SAMPLE
-    BACKEND -->|reads| ERR
-    BACKEND -->|owns| SETTINGS[(settings.json)]
-    FRONTEND[Frontend] -->|HTTP only| BACKEND
-```
+Interpolation remains Cartesian ECEF rather than longitude interpolation, avoiding discontinuities at the ±180 degree meridian. The frontend never derives authoritative orbital state; rendering-only subdivision may add visual vertices between backend samples but does not alter the orbital solution.
 
-Service ownership should remain narrow. In particular, the frontend does not propagate TLEs and the backend request process does not become the scheduler/propagator by convenience.
+`GROUND` mode uses surface placement and horizon clipping. `ORBIT` mode preserves actual altitude/depth so trajectory segments disappear only when Earth physically occludes them. Satellite marker occlusion uses a finite camera-to-satellite ray/sphere test.
+
+## Prediction quality
+
+Prediction-quality records reference generalized orbital element sets rather than TLE rows. A later GP/OMM set remains an estimate, not ground truth. `reference_kind` and element-set provenance allow future OEM/operator/GNSS references without changing the basic quality model.
+
+## CI contract
+
+`develop` and `main` both run CI. The development gate includes frontend lint/build/tests/artifact validation, backend compile/unit tests, a real PostgreSQL migration from the legacy TLE schema, full Compose startup, schema assertions proving TLE lines are not canonical columns, satellite CRUD/lifecycle checks, and the existing mock position/track/settings checks.
+
+Features remain on `develop` until this integration path is stable, then merge to `main`.

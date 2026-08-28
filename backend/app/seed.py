@@ -7,7 +7,7 @@ from .config import settings
 from .db import connect
 from .orbit import ecef_to_geodetic_spherical, mock_ecef_state
 
-MOCK_NORAD_ID = 99001
+MOCK_NORAD_ID = "99001"
 MOCK_NAME = "WORLDSAT-01"
 MOCK_HISTORY_SLACK_HOURS = 24
 MOCK_PREDICTION_SLACK_HOURS = 24
@@ -19,6 +19,43 @@ def _floor_time(value: datetime, step_seconds: int) -> datetime:
         timestamp - (timestamp % step_seconds),
         tz=timezone.utc,
     )
+
+
+def _ensure_mock_satellite(connection) -> int:
+    satellite = connection.execute(
+        """
+        SELECT s.id
+        FROM satellites s
+        JOIN satellite_identifiers si ON si.satellite_id = s.id
+        WHERE si.namespace = 'NORAD_CAT_ID' AND si.value = %s
+        LIMIT 1
+        """,
+        (MOCK_NORAD_ID,),
+    ).fetchone()
+    if satellite is not None:
+        connection.execute(
+            "UPDATE satellites SET name = %s, updated_at = NOW() WHERE id = %s",
+            (MOCK_NAME, satellite["id"]),
+        )
+        return int(satellite["id"])
+
+    satellite = connection.execute(
+        """
+        INSERT INTO satellites (name, active, object_type, metadata)
+        VALUES (%s, TRUE, 'payload', '{"mock": true}'::jsonb)
+        RETURNING id
+        """,
+        (MOCK_NAME,),
+    ).fetchone()
+    satellite_id = int(satellite["id"])
+    connection.execute(
+        """
+        INSERT INTO satellite_identifiers (satellite_id, namespace, value)
+        VALUES (%s, 'NORAD_CAT_ID', %s)
+        """,
+        (satellite_id, MOCK_NORAD_ID),
+    )
+    return satellite_id
 
 
 def ensure_mock_data() -> None:
@@ -43,17 +80,7 @@ def ensure_mock_data() -> None:
     )
 
     with connect() as connection:
-        satellite = connection.execute(
-            """
-            INSERT INTO satellites (norad_id, name, active)
-            VALUES (%s, %s, TRUE)
-            ON CONFLICT (norad_id)
-            DO UPDATE SET name = EXCLUDED.name, active = TRUE
-            RETURNING id
-            """,
-            (MOCK_NORAD_ID, MOCK_NAME),
-        ).fetchone()
-        satellite_id = satellite["id"]
+        satellite_id = _ensure_mock_satellite(connection)
 
         existing = connection.execute(
             """
@@ -70,6 +97,7 @@ def ensure_mock_data() -> None:
             (satellite_id, required_start, required_end),
         ).fetchone()
         if existing:
+            connection.commit()
             return
 
         run_id = str(uuid4())

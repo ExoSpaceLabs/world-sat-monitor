@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
   workflow_dispatch:
 
@@ -60,6 +60,39 @@ jobs:
           PYTHONPATH: backend
         run: python -m unittest discover -s backend/tests -v
 
+  legacy-migration:
+    name: Legacy schema migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: worldsat
+          POSTGRES_USER: worldsat
+          POSTGRES_PASSWORD: worldsat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U worldsat -d worldsat"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+      - name: Verify in-place migration from legacy TLE schema
+        env:
+          PYTHONPATH: backend
+          DATABASE_URL: postgresql://worldsat:worldsat@localhost:5432/worldsat
+        run: python backend/tests/integration_legacy_migration.py
+
   compose:
     name: Compose integration
     runs-on: ubuntu-latest
@@ -71,8 +104,9 @@ jobs:
         run: docker compose config --quiet
       - name: Build and start stack
         run: docker compose up --build -d
-      - name: Verify API and persistent settings through gateway
+      - name: Verify API, schema, lifecycle, and persistent settings
         run: |
+          set -euo pipefail
           for attempt in {1..45}; do
             if curl --fail --silent http://localhost:3000/api/v1/health >/dev/null; then
               break
@@ -83,11 +117,36 @@ jobs:
             fi
             sleep 2
           done
+
           curl --fail --silent http://localhost:3000/api/v1/settings | grep 'prediction_hours'
           curl --fail --silent http://localhost:3000/api/v1/satellites | grep 'WORLDSAT-01'
           curl --fail --silent http://localhost:3000/api/v1/satellites/99001/position | grep 'position'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60" | grep 'points'
           docker compose exec -T backend test -s /data/settings.json
+
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc \
+            "SELECT (to_regclass('public.orbital_element_sets') IS NOT NULL AND to_regclass('public.satellite_identifiers') IS NOT NULL AND to_regclass('public.tle_sets') IS NULL);" \
+            | grep '^t$'
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc \
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='orbital_element_sets' AND column_name IN ('line1','line2');" \
+            | grep '^0$'
+
+          created="$(curl --fail --silent -X POST http://localhost:3000/api/v1/satellites \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"CI-INACTIVE","active":false,"identifiers":[{"namespace":"NORAD_CAT_ID","value":"100001"},{"namespace":"COSPAR","value":"2026-001A"}]}')"
+          satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          printf '%s' "$created" | grep '"active":false'
+          printf '%s' "$created" | grep '"NORAD_CAT_ID":"100001"'
+
+          curl --fail --silent "http://localhost:3000/api/v1/satellites?active=false" | grep 'CI-INACTIVE'
+          curl --fail --silent -X PATCH "http://localhost:3000/api/v1/satellites/${satellite_id}" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"CI-INACTIVE-RENAMED"}' | grep 'CI-INACTIVE-RENAMED'
+          curl --fail --silent -X POST "http://localhost:3000/api/v1/satellites/${satellite_id}/activate" | grep '"active":true'
+          curl --fail --silent "http://localhost:3000/api/v1/satellites?active=true" | grep 'CI-INACTIVE-RENAMED'
+          curl --fail --silent -X POST "http://localhost:3000/api/v1/satellites/${satellite_id}/deactivate" | grep '"active":false'
+          curl --fail --silent -o /dev/null -w '%{http_code}' -X DELETE "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^204$'
+          curl --silent -o /dev/null -w '%{http_code}' "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^404$'
       - name: Show logs on failure
         if: failure()
         run: docker compose logs

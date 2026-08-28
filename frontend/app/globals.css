@@ -3,5 +3,6 @@
 @import "./components/background/styles.css";
 @import "./components/globe/styles.css";
 @import "./components/satellite/styles.css";
+@import "./components/satellite/manager.css";
 @import "./components/settings/styles.css";
 @import "./components/satellite/settings.css";

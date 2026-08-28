@@ -1,8 +1,13 @@
-import type {Satellite, SatelliteTrackPoint} from "../domain/satellite";
+import type {
+  ManagedSatellite,
+  Satellite,
+  SatelliteCreateRequest,
+  SatelliteTrackPoint,
+} from "../domain/satellite";
 import type {AppSettings} from "../domain/settings";
 
 type PositionResponse = {
-  satellite: {norad_id: number; name: string};
+  satellite: {id: number; norad_id: string | null; name: string; active: boolean};
   at: string;
   position: {
     lat_deg: number;
@@ -11,12 +16,12 @@ type PositionResponse = {
     heading_deg: number;
   };
   interpolated: boolean;
-  source: {is_mock: boolean; step_seconds: number};
+  source: {is_mock: boolean; step_seconds: number; source_element_set_id: number | null};
 };
 
 type TrackResponse = {
   resolution_seconds: number;
-  source: {is_mock: boolean};
+  source: {is_mock: boolean; source_element_set_id: number | null};
   points: Array<{
     time: string;
     lat_deg: number;
@@ -26,16 +31,21 @@ type TrackResponse = {
   }>;
 };
 
+type SatelliteListResponse = {
+  satellites: ManagedSatellite[];
+};
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
     ...init,
-    headers: {"Content-Type": "application/json"},
+    headers: {"Content-Type": "application/json", ...(init?.headers ?? {})},
   });
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${detail}`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -50,17 +60,56 @@ export function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
   });
 }
 
+export async function listManagedSatellites(active?: boolean): Promise<ManagedSatellite[]> {
+  const suffix = active === undefined ? "" : `?active=${active}`;
+  const payload = await requestJson<SatelliteListResponse>(`/api/v1/satellites${suffix}`);
+  return payload.satellites;
+}
+
+export function createManagedSatellite(value: SatelliteCreateRequest): Promise<ManagedSatellite> {
+  return requestJson<ManagedSatellite>("/api/v1/satellites", {
+    method: "POST",
+    body: JSON.stringify(value),
+  });
+}
+
+export function updateManagedSatellite(
+  satelliteId: number,
+  value: Partial<Omit<SatelliteCreateRequest, "active">>,
+): Promise<ManagedSatellite> {
+  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}`, {
+    method: "PATCH",
+    body: JSON.stringify(value),
+  });
+}
+
+export function activateManagedSatellite(satelliteId: number): Promise<ManagedSatellite> {
+  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}/activate`, {
+    method: "POST",
+  });
+}
+
+export function deactivateManagedSatellite(satelliteId: number): Promise<ManagedSatellite> {
+  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}/deactivate`, {
+    method: "POST",
+  });
+}
+
+export function deleteManagedSatellite(satelliteId: number): Promise<void> {
+  return requestJson<void>(`/api/v1/satellites/${satelliteId}`, {method: "DELETE"});
+}
+
 export async function getSatellitePosition(
-  noradId: number,
+  noradId: number | string,
   at: Date,
 ): Promise<{satellite: Satellite; isMock: boolean; interpolated: boolean}> {
   const payload = await requestJson<PositionResponse>(
-    `/api/v1/satellites/${noradId}/position?at=${encodeURIComponent(at.toISOString())}`,
+    `/api/v1/satellites/${encodeURIComponent(String(noradId))}/position?at=${encodeURIComponent(at.toISOString())}`,
   );
   return {
     satellite: {
       name: payload.satellite.name,
-      norad: String(payload.satellite.norad_id),
+      norad: payload.satellite.norad_id ?? "",
       lat: payload.position.lat_deg,
       lon: payload.position.lon_deg,
       altitude: payload.position.altitude_km,
@@ -72,7 +121,7 @@ export async function getSatellitePosition(
 }
 
 export async function getSatelliteTrack(
-  noradId: number,
+  noradId: number | string,
   start: Date,
   end: Date,
   resolutionSeconds: number,
@@ -84,7 +133,7 @@ export async function getSatelliteTrack(
     resolution_seconds: String(resolutionSeconds),
   });
   const payload = await requestJson<TrackResponse>(
-    `/api/v1/satellites/${noradId}/track?${params.toString()}`,
+    `/api/v1/satellites/${encodeURIComponent(String(noradId))}/track?${params.toString()}`,
   );
   const centerMs = center.getTime();
   return {

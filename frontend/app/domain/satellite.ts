@@ -7,6 +7,28 @@ export type Satellite = {
   heading: number;
 };
 
+export type ManagedSatellite = {
+  id: number;
+  name: string;
+  active: boolean;
+  object_type: string;
+  provider_preference: string | null;
+  metadata: Record<string, unknown>;
+  identifiers: Record<string, string>;
+  norad_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SatelliteCreateRequest = {
+  name: string;
+  active?: boolean;
+  object_type?: string;
+  provider_preference?: string | null;
+  metadata?: Record<string, unknown>;
+  identifiers?: Array<{namespace: string; value: string}>;
+};
+
 export type SatelliteTrackPoint = {
   time: string;
   lat: number;

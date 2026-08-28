@@ -2,54 +2,98 @@
 
 [![CI](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml)
 
-WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client; catalogue storage, propagated state, interpolation, persistent configuration, and eventually TLE ingestion live outside the UI.
+WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client: satellite catalog state, orbital-source data, propagation products, interpolation, and persistent configuration live outside the UI.
+
+Development work is performed on `develop`; `main` remains the stable branch and receives features after the development CI and integration path are stable.
 
 ## Repository layout
 
 ```text
-frontend/       3D web UI and API client
-backend/        FastAPI position/query/settings service
+frontend/       3D web UI, satellite management, API client
+backend/        FastAPI query/management/settings service
 database/       PostgreSQL bootstrap schema
 gateway/        Same-origin nginx gateway
 config/         Documented settings JSON example
-docs/           Architecture and system-flow diagrams
+docs/           Architecture and rendering documentation
 compose.yaml    Local multi-service deployment
 ```
 
-## Current backend/frontend slice
+## Current vertical slice
 
-The current vertical slice provides:
+The current application provides:
 
-- PostgreSQL satellite, TLE, propagation-run, position-sample, job, and prediction-error tables
+- PostgreSQL satellite metadata with separate external identifiers such as NORAD and COSPAR
+- active/inactive satellite monitoring lifecycle without deleting inactive catalog entries
+- generalized `orbital_element_sets` storage based on OMM/GP semantics rather than mandatory two-line TLE text
 - one dynamic backend-generated mock satellite (`WORLDSAT-01`, NORAD `99001`)
 - 10-second mock ECEF samples covering 48 hours of history and 15 days of future state
 - current/arbitrary UTC position lookup with ECEF interpolation
 - configurable history/prediction track queries with API-side decimation
 - solid historical, dashed prediction, and independently controlled direction-vector rendering
 - global `GROUND` / `ORBIT` track placement
-- MapLibre globe-aware elevated WebGL overlay rendering without screen-space altitude approximation
-- 14 daily mock prediction-disagreement buckets for future UI plotting
-- persistent map settings plus global orbit-display settings in a mounted JSON file
-- automatic migration of older settings files to the current schema
-- same-origin routing through nginx
+- MapLibre globe-aware elevated WebGL rendering and Earth occlusion
+- persistent map/orbit settings
+- satellite management UI for adding local catalog entries and enabling/disabling monitoring
+- in-place migration from the pre-#12 TLE-centric database schema
+- CI for frontend, backend, legacy-schema migration, and full Docker Compose integration
 
-The mock generator is temporary. Its purpose is to stabilize the API, database, rendering, and settings flows before adding a TLE provider and a real SGP4 propagation worker.
+The mock generator remains temporary. It stabilizes the API/database/rendering/lifecycle flows while the dedicated orbital-provider and propagation services are implemented.
 
-## Services
+## Service boundaries
 
 | Service | Responsibility |
 | --- | --- |
 | `gateway` | Exposes the application on port 3000 and routes `/api/` to the backend. |
-| `frontend` | Renders Earth, interpolated satellite state, history/prediction tracks, and controls. |
-| `backend` | Queries stored state, interpolates position, serves API responses, and persists settings. |
-| `db` | Stores managed satellites, immutable TLEs, propagation products, jobs, and quality metrics. |
-| `settings_data` | Docker volume containing `/data/settings.json`. |
+| `frontend` | Renders Earth/orbits and manages user interaction and satellite lifecycle controls. |
+| `backend` | Queries stored orbital state, interpolates positions, exposes satellite CRUD/lifecycle APIs, and persists application settings. |
+| `db` | Stores satellites, identifiers, orbital element sets, propagation jobs/products, and quality metrics. |
 
-Planned next services are a TLE fetcher and SGP4 orbit propagator. PostgreSQL already contains a `propagation_jobs` queue so a newly accepted TLE can enqueue work without making the user-facing backend perform propagation.
+Planned independent services are `orbital-provider`, `propagator`, and `quality-worker`. The backend request process must not become the fetch scheduler or propagator.
 
-See [`docs/architecture.md`](docs/architecture.md) for the complete service/data architecture and [`docs/orbit-display.md`](docs/orbit-display.md) for the globe-track rendering pipeline.
+## Orbital data model
 
-## Run
+A satellite is an internal entity and is not identified by a NORAD number in the primary key. External catalog identities live in `satellite_identifiers`:
+
+```text
+satellites
+    |
+    +-- satellite_identifiers
+    |      NORAD_CAT_ID
+    |      COSPAR
+    |      future provider namespaces
+    |
+    +-- orbital_element_sets
+           source
+           source_format
+           mean_element_theory
+           OMM/GP mean-element fields
+           raw_payload
+```
+
+Classic TLE/Alpha-5 can still be ingested later, but it is an input representation rather than the canonical database model. A legacy TLE row is migrated into an orbital element set with `source_format=TLE` and its original lines preserved in `raw_payload`.
+
+Propagation runs, jobs, and prediction-quality references now point to generalized orbital element sets.
+
+## Satellite lifecycle
+
+`active` means WorldSat Monitor should maintain orbital source data and propagation for that satellite once the provider/worker services are available.
+
+```text
+inactive
+  metadata + identifiers retained
+  no scheduled provider/propagation work
+
+active
+  metadata + identifiers retained
+  provider refresh required
+  propagation required when fresh elements arrive
+```
+
+Deactivation is non-destructive. Historical element sets and propagation products remain available. Runtime map selection is separate from monitoring state.
+
+## API
+
+Start the stack:
 
 ```bash
 docker compose up --build
@@ -57,44 +101,44 @@ docker compose up --build
 
 Open `http://localhost:3000`.
 
-The API is available through the same origin:
+Useful endpoints:
 
 ```bash
 curl http://localhost:3000/api/v1/health
 curl http://localhost:3000/api/v1/settings
 curl http://localhost:3000/api/v1/satellites
+curl "http://localhost:3000/api/v1/satellites?active=true"
 curl http://localhost:3000/api/v1/satellites/99001/position
 curl "http://localhost:3000/api/v1/satellites/99001/track?resolution_seconds=60"
-curl http://localhost:3000/api/v1/satellites/99001/prediction-error
 ```
 
-## Orbit display
-
-Orbit-display policy is global across tracked satellites. The Orbit Settings panel controls history/prediction lengths, path sampling/refresh, interpolated-position cadence, path visibility, direction-vector visibility, and `GROUND` versus `ORBIT` placement.
-
-`GROUND` forces elevation to zero and displays the satellite nadir track. `ORBIT` uses each propagated sample's altitude. History, prediction, and direction geometry is drawn by a MapLibre custom WebGL overlay. Samples are densified only for rendering, split at the dateline, and kept in geographic/world coordinates until MapLibre performs the final projection. Each vertex carries physical altitude in metres for the globe projection and conformal Mercator z for the flat projection.
-
-## Persistent settings
-
-The backend creates `/data/settings.json` on first startup and stores it in the Compose `settings_data` volume. The frontend loads that document through `GET /api/v1/settings`. UI changes are validated by the backend and atomically persisted through `PUT /api/v1/settings`.
-
-The schema is documented in [`config/settings.example.json`](config/settings.example.json).
-
-Inspect the live file:
+Create an inactive catalog entry:
 
 ```bash
-docker compose exec backend cat /data/settings.json
+curl -X POST http://localhost:3000/api/v1/satellites \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "EXAMPLE-SAT",
+    "active": false,
+    "identifiers": [
+      {"namespace": "NORAD_CAT_ID", "value": "100001"},
+      {"namespace": "COSPAR", "value": "2026-001A"}
+    ]
+  }'
 ```
 
-Reset the complete document to defaults:
+Lifecycle operations use the internal satellite ID returned by the API:
 
-```bash
-curl -X POST http://localhost:3000/api/v1/settings/reset
+```text
+POST   /api/v1/satellites/{id}/activate
+POST   /api/v1/satellites/{id}/deactivate
+PATCH  /api/v1/satellites/{id}
+DELETE /api/v1/satellites/{id}
 ```
 
-The Map Settings and Orbit Settings panels reset only their own section and persist the resulting full document. Satellite selection remains runtime UI state. Version-1 and version-2 settings documents are migrated automatically to schema version 3 while preserving applicable values.
+Active satellites must be deactivated before deletion.
 
-## Development
+## Development and CI
 
 Frontend:
 
@@ -111,10 +155,26 @@ Backend:
 PYTHONPATH=backend python -m unittest discover -s backend/tests -v
 ```
 
-The normal integration path is Docker Compose so the backend, PostgreSQL schema, mock seed, frontend, and settings volume stay aligned.
+CI runs on pushes to both `main` and `develop` and on pull requests. It covers:
 
-## Prediction quality
+1. frontend lint/build/tests/artifact validation;
+2. backend compile/unit tests;
+3. an actual PostgreSQL migration from the legacy TLE schema;
+4. full Docker Compose startup, schema assertions, satellite CRUD/activation/deactivation, position/track queries, and persistent settings.
 
-Prediction quality is stored per forecast-horizon day. The intended production evaluator compares an older propagation with a later reference ephemeris/TLE at matching timestamps and records mean, RMS, p95, maximum disagreement, and sample count.
+## Next services
 
-A later TLE is still an estimate, not physical ground truth. The UI should therefore present this as a prediction disagreement/error estimate. If precise GNSS or operator ephemerides are added later, the same model can identify them as a higher-quality reference source.
+The next production data path is:
+
+```text
+active satellites
+      -> orbital-provider
+      -> normalized orbital_element_sets
+      -> propagation_jobs
+      -> propagator / SGP4 initially
+      -> propagation_runs + position_samples
+      -> backend
+      -> frontend
+```
+
+See [`docs/architecture.md`](docs/architecture.md) for service ownership and data flow, and [`docs/orbit-display.md`](docs/orbit-display.md) for the globe-track rendering pipeline.

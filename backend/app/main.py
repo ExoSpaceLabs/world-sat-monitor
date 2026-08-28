@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+import psycopg
+from fastapi import FastAPI, HTTPException, Query, Response, status
 
 from .config import settings
 from .db import connect, wait_for_database
+from .migrations import migrate_legacy_schema
 from .orbit import (
     GeodeticState,
     ecef_to_geodetic_spherical,
@@ -14,13 +17,19 @@ from .orbit import (
     interpolate_ecef,
 )
 from .repository import (
+    create_satellite,
+    delete_satellite,
     get_position_bracket,
     get_prediction_errors,
     get_run_covering,
     get_satellite,
+    get_satellite_by_norad,
     get_track_points,
     list_satellites,
+    set_satellite_active,
+    update_satellite,
 )
+from .satellite_models import SatelliteCreate, SatelliteUpdate
 from .seed import ensure_mock_data
 from .settings_store import AppSettings, JsonSettingsStore
 
@@ -34,17 +43,42 @@ def _normalize_utc(value: datetime | None, default: datetime) -> datetime:
     return resolved.astimezone(timezone.utc)
 
 
+def _satellite_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "active": row["active"],
+        "object_type": row["object_type"],
+        "provider_preference": row["provider_preference"],
+        "metadata": row["metadata"],
+        "identifiers": row["identifiers"],
+        "norad_id": row.get("norad_id"),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _raise_identifier_conflict(error: psycopg.Error) -> None:
+    if isinstance(error, psycopg.errors.UniqueViolation):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="one or more satellite identifiers already belong to another satellite",
+        ) from error
+    raise error
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     app_settings_store.ensure()
     wait_for_database()
+    migrate_legacy_schema()
     ensure_mock_data()
     yield
 
 
 app = FastAPI(
     title="WorldSat Monitor API",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -72,31 +106,95 @@ def reset_app_settings() -> AppSettings:
 
 
 @app.get("/api/v1/satellites")
-def satellites():
+def satellites(active: bool | None = Query(default=None)):
     with connect() as connection:
-        rows = list_satellites(connection)
-    return {
-        "satellites": [
-            {
-                "norad_id": row["norad_id"],
-                "name": row["name"],
-                "active": row["active"],
-            }
-            for row in rows
-        ]
-    }
+        rows = list_satellites(connection, active=active)
+    return {"satellites": [_satellite_payload(row) for row in rows]}
+
+
+@app.post("/api/v1/satellites", status_code=status.HTTP_201_CREATED)
+def add_satellite(value: SatelliteCreate):
+    with connect() as connection:
+        try:
+            row = create_satellite(connection, value)
+            connection.commit()
+        except psycopg.Error as error:
+            connection.rollback()
+            _raise_identifier_conflict(error)
+    return _satellite_payload(row)
+
+
+@app.get("/api/v1/satellites/{satellite_id}")
+def satellite_details(satellite_id: int):
+    with connect() as connection:
+        row = get_satellite(connection, satellite_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="satellite not found")
+    return _satellite_payload(row)
+
+
+@app.patch("/api/v1/satellites/{satellite_id}")
+def patch_satellite(satellite_id: int, value: SatelliteUpdate):
+    changes = value.model_dump(exclude_unset=True)
+    with connect() as connection:
+        try:
+            row = update_satellite(connection, satellite_id, changes)
+            if row is None:
+                raise HTTPException(status_code=404, detail="satellite not found")
+            connection.commit()
+        except psycopg.Error as error:
+            connection.rollback()
+            _raise_identifier_conflict(error)
+    return _satellite_payload(row)
+
+
+@app.post("/api/v1/satellites/{satellite_id}/activate")
+def activate_satellite(satellite_id: int):
+    with connect() as connection:
+        row = set_satellite_active(connection, satellite_id, True)
+        if row is None:
+            raise HTTPException(status_code=404, detail="satellite not found")
+        connection.commit()
+    return _satellite_payload(row)
+
+
+@app.post("/api/v1/satellites/{satellite_id}/deactivate")
+def deactivate_satellite(satellite_id: int):
+    with connect() as connection:
+        row = set_satellite_active(connection, satellite_id, False)
+        if row is None:
+            raise HTTPException(status_code=404, detail="satellite not found")
+        connection.commit()
+    return _satellite_payload(row)
+
+
+@app.delete("/api/v1/satellites/{satellite_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_satellite(satellite_id: int):
+    with connect() as connection:
+        row = get_satellite(connection, satellite_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="satellite not found")
+        if row["active"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="deactivate satellite before deleting it",
+            )
+        if not delete_satellite(connection, satellite_id):
+            raise HTTPException(status_code=404, detail="satellite not found")
+        connection.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/v1/satellites/{norad_id}/position")
 def satellite_position(
-    norad_id: int,
+    norad_id: str,
     at: datetime | None = Query(default=None),
 ):
     request_now = datetime.now(timezone.utc)
     at_utc = _normalize_utc(at, request_now)
 
     with connect() as connection:
-        satellite = get_satellite(connection, norad_id)
+        satellite = get_satellite_by_norad(connection, norad_id)
         if satellite is None:
             raise HTTPException(status_code=404, detail="satellite not found")
 
@@ -123,7 +221,12 @@ def satellite_position(
     heading = initial_bearing_deg(before_geo, after_geo)
 
     return {
-        "satellite": {"norad_id": satellite["norad_id"], "name": satellite["name"]},
+        "satellite": {
+            "id": satellite["id"],
+            "norad_id": satellite["norad_id"],
+            "name": satellite["name"],
+            "active": satellite["active"],
+        },
         "at": at_utc.isoformat(),
         "segment": "prediction" if at_utc > request_now else "history",
         "position": {
@@ -141,14 +244,14 @@ def satellite_position(
             "generated_at": run["generated_at"].isoformat(),
             "step_seconds": run["step_seconds"],
             "is_mock": run["is_mock"],
-            "source_tle_id": run["source_tle_id"],
+            "source_element_set_id": run["source_element_set_id"],
         },
     }
 
 
 @app.get("/api/v1/satellites/{norad_id}/track")
 def satellite_track(
-    norad_id: int,
+    norad_id: str,
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     resolution_seconds: int = Query(default=60, ge=10, le=3600),
@@ -163,7 +266,7 @@ def satellite_track(
         raise HTTPException(status_code=422, detail="track window cannot exceed 15 days")
 
     with connect() as connection:
-        satellite = get_satellite(connection, norad_id)
+        satellite = get_satellite_by_norad(connection, norad_id)
         if satellite is None:
             raise HTTPException(status_code=404, detail="satellite not found")
 
@@ -182,7 +285,12 @@ def satellite_track(
         )
 
     return {
-        "satellite": {"norad_id": satellite["norad_id"], "name": satellite["name"]},
+        "satellite": {
+            "id": satellite["id"],
+            "norad_id": satellite["norad_id"],
+            "name": satellite["name"],
+            "active": satellite["active"],
+        },
         "start": start_utc.isoformat(),
         "end": end_utc.isoformat(),
         "requested_resolution_seconds": resolution_seconds,
@@ -192,6 +300,7 @@ def satellite_track(
             "generated_at": run["generated_at"].isoformat(),
             "raw_step_seconds": run["step_seconds"],
             "is_mock": run["is_mock"],
+            "source_element_set_id": run["source_element_set_id"],
         },
         "points": [
             {
@@ -207,10 +316,10 @@ def satellite_track(
 
 
 @app.get("/api/v1/satellites/{norad_id}/prediction-error")
-def prediction_error(norad_id: int):
+def prediction_error(norad_id: str):
     now = datetime.now(timezone.utc)
     with connect() as connection:
-        satellite = get_satellite(connection, norad_id)
+        satellite = get_satellite_by_norad(connection, norad_id)
         if satellite is None:
             raise HTTPException(status_code=404, detail="satellite not found")
 
@@ -220,10 +329,16 @@ def prediction_error(norad_id: int):
         rows = get_prediction_errors(connection, str(run["id"]))
 
     return {
-        "satellite": {"norad_id": satellite["norad_id"], "name": satellite["name"]},
+        "satellite": {
+            "id": satellite["id"],
+            "norad_id": satellite["norad_id"],
+            "name": satellite["name"],
+            "active": satellite["active"],
+        },
         "run_id": str(run["id"]),
         "reference_note": (
-            "Values are disagreement against a later reference ephemeris/TLE, not absolute truth."
+            "Values are disagreement against a later reference orbital element set or ephemeris, "
+            "not absolute navigation truth."
         ),
         "buckets": [
             {
