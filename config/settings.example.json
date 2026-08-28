@@ -1,7 +1,9 @@
 {
-  "version": 3,
+  "version": 5,
   "map": {
     "basemap": "dark",
+    "themed_base_color": "#041018",
+    "themed_contrast": 0.18,
     "space_environment": true,
     "shadow_opacity": 0.7,
     "debug": false,
