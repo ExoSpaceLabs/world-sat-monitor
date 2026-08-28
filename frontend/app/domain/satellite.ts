@@ -29,6 +29,21 @@ export type SatelliteCreateRequest = {
   identifiers?: Array<{namespace: string; value: string}>;
 };
 
+export type CatalogSearchResult = {
+  provider: string;
+  provider_object_id: string;
+  name: string;
+  object_type: string | null;
+  identifiers: Record<string, string>;
+  metadata: Record<string, unknown>;
+  local: {
+    present: boolean;
+    satellite_id: number | null;
+    active: boolean;
+    name: string | null;
+  };
+};
+
 export type SatelliteTrackPoint = {
   time: string;
   lat: number;

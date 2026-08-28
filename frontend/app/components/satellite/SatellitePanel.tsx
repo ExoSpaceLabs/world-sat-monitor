@@ -2,7 +2,7 @@
 
 import {useEffect, useState, type FormEvent} from "react";
 import type {Basemap} from "../../domain/types";
-import type {ManagedSatellite, Satellite} from "../../domain/satellite";
+import type {CatalogSearchResult, ManagedSatellite, Satellite} from "../../domain/satellite";
 import type {SolarState} from "../../domain/solar";
 import {solarElevation} from "../../domain/solar";
 import {
@@ -11,6 +11,7 @@ import {
   deactivateManagedSatellite,
   deleteManagedSatellite,
   listManagedSatellites,
+  searchSatelliteCatalog,
 } from "../../services/worldsat-api";
 
 type SatellitePanelProps = {
@@ -36,6 +37,9 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
   const [norad, setNorad] = useState("");
   const [cospar, setCospar] = useState("");
   const [monitorNow, setMonitorNow] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogResults, setCatalogResults] = useState<CatalogSearchResult[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +61,30 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
     return () => { cancelled = true; };
   }, []);
 
+  const replaceOrAppend = (item: ManagedSatellite) => {
+    setSatellites((current) => {
+      const without = current.filter((satellite) => satellite.id !== item.id);
+      return [...without, item].sort((left, right) => left.name.localeCompare(right.name));
+    });
+  };
+
+  const refreshCatalogLocal = (satellite: ManagedSatellite) => {
+    setCatalogResults((current) => current.map((result) => {
+      const same = Object.entries(result.identifiers).some(
+        ([namespace, value]) => satellite.identifiers[namespace] === value,
+      );
+      return same ? {
+        ...result,
+        local: {
+          present: true,
+          satellite_id: satellite.id,
+          active: satellite.active,
+          name: satellite.name,
+        },
+      } : result;
+    }));
+  };
+
   const toggleActive = async (item: ManagedSatellite) => {
     setBusyId(item.id);
     setError(null);
@@ -64,7 +92,8 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
       const updated = item.active
         ? await deactivateManagedSatellite(item.id)
         : await activateManagedSatellite(item.id);
-      setSatellites((current) => current.map((satellite) => satellite.id === updated.id ? updated : satellite));
+      replaceOrAppend(updated);
+      refreshCatalogLocal(updated);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not change monitoring state");
     } finally {
@@ -80,6 +109,11 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
     try {
       await deleteManagedSatellite(item.id);
       setSatellites((current) => current.filter((satellite) => satellite.id !== item.id));
+      setCatalogResults((current) => current.map((result) => (
+        result.local.satellite_id === item.id
+          ? {...result, local: {present: false, satellite_id: null, active: false, name: null}}
+          : result
+      )));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not delete satellite");
     } finally {
@@ -103,7 +137,7 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
         active: monitorNow,
         identifiers,
       });
-      setSatellites((current) => [...current, created].sort((left, right) => left.name.localeCompare(right.name)));
+      replaceOrAppend(created);
       setName("");
       setNorad("");
       setCospar("");
@@ -115,13 +149,112 @@ function SatelliteManager({onClose}: {onClose: () => void}) {
     }
   };
 
+  const searchCatalog = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const query = catalogQuery.trim();
+    if (query.length < 2) return;
+    setCatalogLoading(true);
+    setError(null);
+    try {
+      setCatalogResults(await searchSatelliteCatalog(query));
+    } catch (caught) {
+      setCatalogResults([]);
+      setError(caught instanceof Error ? caught.message : "Catalog search failed");
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
+  const addCatalogResult = async (result: CatalogSearchResult, active: boolean) => {
+    if (result.local.present && result.local.satellite_id !== null) {
+      const existing = satellites.find((satellite) => satellite.id === result.local.satellite_id);
+      if (active && existing && !existing.active) await toggleActive(existing);
+      return;
+    }
+
+    setBusyId(-2);
+    setError(null);
+    try {
+      const created = await createManagedSatellite({
+        name: result.name,
+        active,
+        object_type: result.object_type ?? "payload",
+        provider_preference: result.provider,
+        metadata: {
+          catalog_source: result.provider,
+          provider_object_id: result.provider_object_id,
+          ...result.metadata,
+        },
+        identifiers: Object.entries(result.identifiers).map(([namespace, value]) => ({namespace, value})),
+      });
+      replaceOrAppend(created);
+      refreshCatalogLocal(created);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not add catalog satellite");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <aside className="sat-manager" aria-label="Satellite management">
       <div className="sat-manager-head">
-        <div><small>LOCAL CATALOG</small><strong>SATELLITES</strong></div>
+        <div><small>LOCAL + PROVIDER CATALOG</small><strong>SATELLITES</strong></div>
         <button type="button" onClick={onClose} aria-label="Close satellite manager">×</button>
       </div>
 
+      <form className="sat-catalog-search" onSubmit={searchCatalog}>
+        <input
+          value={catalogQuery}
+          onChange={(event) => setCatalogQuery(event.target.value)}
+          placeholder="Search name, NORAD or COSPAR"
+          aria-label="Search satellite catalog"
+          minLength={2}
+        />
+        <button type="submit" disabled={catalogLoading || busyId !== null}>
+          {catalogLoading ? "SEARCHING…" : "SEARCH CELESTRAK"}
+        </button>
+      </form>
+
+      {catalogResults.length > 0 && (
+        <div className="sat-catalog-results">
+          {catalogResults.map((result) => (
+            <div className="sat-catalog-result" key={`${result.provider}:${result.provider_object_id}`}>
+              <div>
+                <strong>{result.name}</strong>
+                <small>
+                  NORAD {result.identifiers.NORAD_CAT_ID ?? "—"}
+                  {result.identifiers.COSPAR ? ` · ${result.identifiers.COSPAR}` : ""}
+                </small>
+              </div>
+              {result.local.present ? (
+                result.local.active ? (
+                  <span className="active">MONITORING</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busyId !== null}
+                    onClick={() => void addCatalogResult(result, true)}
+                  >
+                    MONITOR
+                  </button>
+                )
+              ) : (
+                <div className="sat-catalog-actions">
+                  <button type="button" disabled={busyId !== null} onClick={() => void addCatalogResult(result, false)}>
+                    ADD
+                  </button>
+                  <button type="button" disabled={busyId !== null} onClick={() => void addCatalogResult(result, true)}>
+                    ADD & MONITOR
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="sat-manager-divider">MANUAL ENTRY</div>
       <form className="sat-add-form" onSubmit={addSatellite}>
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Satellite name" aria-label="Satellite name" required/>
         <div className="sat-add-identifiers">

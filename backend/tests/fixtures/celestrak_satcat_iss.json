@@ -1,0 +1,22 @@
+[
+  {
+    "OBJECT_NAME": "ISS (ZARYA)",
+    "OBJECT_ID": "1998-067A",
+    "NORAD_CAT_ID": 25544,
+    "OBJECT_TYPE": "PAYLOAD",
+    "OPS_STATUS_CODE": "+",
+    "OWNER": "ISS",
+    "LAUNCH_DATE": "1998-11-20",
+    "DECAY_DATE": null
+  },
+  {
+    "OBJECT_NAME": "ISS DEB",
+    "OBJECT_ID": "1998-067QX",
+    "NORAD_CAT_ID": 99999,
+    "OBJECT_TYPE": "DEBRIS",
+    "OPS_STATUS_CODE": null,
+    "OWNER": "ISS",
+    "LAUNCH_DATE": "1998-11-20",
+    "DECAY_DATE": null
+  }
+]

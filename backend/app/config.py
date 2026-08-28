@@ -30,6 +30,10 @@ class Settings:
         "CELESTRAK_BASE_URL",
         "https://celestrak.org/NORAD/elements/gp.php",
     )
+    celestrak_catalog_url: str = os.getenv(
+        "CELESTRAK_CATALOG_URL",
+        "https://celestrak.org/satcat/records.php",
+    )
     celestrak_timeout_seconds: float = float(os.getenv("CELESTRAK_TIMEOUT_SECONDS", "15"))
     provider_health_port: int = int(os.getenv("PROVIDER_HEALTH_PORT", "8010"))
 

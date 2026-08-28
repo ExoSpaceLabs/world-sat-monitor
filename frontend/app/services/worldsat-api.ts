@@ -1,4 +1,5 @@
 import type {
+  CatalogSearchResult,
   ManagedSatellite,
   Satellite,
   SatelliteCreateRequest,
@@ -35,6 +36,12 @@ type SatelliteListResponse = {
   satellites: ManagedSatellite[];
 };
 
+type CatalogSearchResponse = {
+  query: string;
+  provider: string;
+  results: CatalogSearchResult[];
+};
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
@@ -64,6 +71,15 @@ export async function listManagedSatellites(active?: boolean): Promise<ManagedSa
   const suffix = active === undefined ? "" : `?active=${active}`;
   const payload = await requestJson<SatelliteListResponse>(`/api/v1/satellites${suffix}`);
   return payload.satellites;
+}
+
+export async function searchSatelliteCatalog(
+  query: string,
+  provider = "celestrak",
+): Promise<CatalogSearchResult[]> {
+  const params = new URLSearchParams({q: query, provider});
+  const payload = await requestJson<CatalogSearchResponse>(`/api/v1/catalog/search?${params.toString()}`);
+  return payload.results;
 }
 
 export function createManagedSatellite(value: SatelliteCreateRequest): Promise<ManagedSatellite> {

@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from .catalog import CatalogError, CelesTrakCatalog
 from .config import settings
 from .db import connect, wait_for_database
 from .migrations import migrate_schema
@@ -139,6 +140,71 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
     return metrics
 
 
+def _catalog_route(path: str, query: dict[str, list[str]]):
+    if path != "/catalog/search":
+        return None
+    text = (query.get("q") or [""])[0].strip()
+    provider = (query.get("provider") or ["celestrak"])[0].strip().lower()
+    try:
+        limit = max(1, min(50, int((query.get("limit") or ["25"])[0])))
+    except ValueError:
+        return 422, {"detail": "limit must be an integer"}
+    if len(text) < 2:
+        return 422, {"detail": "catalog query must contain at least 2 characters"}
+    if provider != "celestrak":
+        return 422, {"detail": f"unsupported catalog provider: {provider}"}
+    if not settings.celestrak_enabled:
+        return 503, {"detail": "CelesTrak provider is disabled"}
+
+    try:
+        catalog = CelesTrakCatalog(
+            settings.celestrak_catalog_url,
+            timeout_seconds=settings.celestrak_timeout_seconds,
+        )
+        results = catalog.search(text, limit=limit)
+    except CatalogError as error:
+        return 502, {"detail": str(error)}
+
+    payloads = []
+    with connect() as connection:
+        for item in results:
+            payload = item.payload()
+            identifiers = payload["identifiers"]
+            local = None
+            for namespace, value in identifiers.items():
+                row = connection.execute(
+                    """
+                    SELECT s.id, s.active, s.name
+                    FROM satellite_identifiers si
+                    JOIN satellites s ON s.id = si.satellite_id
+                    WHERE si.namespace = %s AND si.value = %s
+                    LIMIT 1
+                    """,
+                    (namespace, value),
+                ).fetchone()
+                if row is not None:
+                    local = {
+                        "present": True,
+                        "satellite_id": int(row["id"]),
+                        "active": bool(row["active"]),
+                        "name": row["name"],
+                    }
+                    break
+            payload["local"] = local or {
+                "present": False,
+                "satellite_id": None,
+                "active": False,
+                "name": None,
+            }
+            payloads.append(payload)
+
+    return 200, {
+        "query": text,
+        "provider": provider,
+        "results": payloads,
+    }
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -148,7 +214,7 @@ def main() -> None:
     migrate_schema()
     ensure_mock_data()
     health = WorkerHealth("orbital-provider")
-    start_health_server(settings.provider_health_port, health)
+    start_health_server(settings.provider_health_port, health, extra_get=_catalog_route)
     LOGGER.info(
         "orbital provider started: poll=%ss refresh=%ss celestrak=%s",
         settings.provider_poll_seconds,
