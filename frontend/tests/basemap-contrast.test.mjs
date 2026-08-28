@@ -13,11 +13,12 @@ async function source(url) {
   return readFile(url, "utf8");
 }
 
-test("dark basemap uses the keyless OpenFreeMap vector style", async () => {
+test("dark basemap gives MapLibre the keyless OpenFreeMap style URL directly", async () => {
   const text = await source(mapStyleUrl);
 
   assert.match(text, /tiles\.openfreemap\.org\/styles\/dark/);
-  assert.match(text, /mode === "dark"\) return loadOpenFreeMapDarkStyle\(\)/);
+  assert.match(text, /mode === "dark"\) return OPENFREEMAP_DARK_STYLE_URL/);
+  assert.doesNotMatch(text, /mode === "dark"\) return loadOpenFreeMapDarkStyle\(\)/);
   assert.doesNotMatch(text, /cartocdn/i);
   assert.doesNotMatch(text, /dark_all/);
   assert.doesNotMatch(text, /API_KEY/);
