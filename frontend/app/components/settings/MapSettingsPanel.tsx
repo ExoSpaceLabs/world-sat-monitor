@@ -7,11 +7,15 @@ const TIME_SCALES = [1, 10, 60, 360] as const;
 type MapSettingsPanelProps = {
   basemap: Basemap;
   scene: SceneOptions;
+  themeLandColor: string;
+  themeWaterColor: string;
   timeScale: number;
   onBasemapChange: (next: Basemap) => void;
   onDebugChange: (enabled: boolean) => void;
   onEnvironmentChange: (enabled: boolean) => void;
   onShadowOpacityChange: (opacity: number) => void;
+  onThemeLandColorChange: (color: string) => void;
+  onThemeWaterColorChange: (color: string) => void;
   onTimeReset: () => void;
   onTimeScaleChange: (scale: number) => void;
   onReset: () => void;
@@ -21,11 +25,15 @@ type MapSettingsPanelProps = {
 export function MapSettingsPanel({
   basemap,
   scene,
+  themeLandColor,
+  themeWaterColor,
   timeScale,
   onBasemapChange,
   onDebugChange,
   onEnvironmentChange,
   onShadowOpacityChange,
+  onThemeLandColorChange,
+  onThemeWaterColorChange,
   onTimeReset,
   onTimeScaleChange,
   onReset,
@@ -47,10 +55,22 @@ export function MapSettingsPanel({
               onClick={() => onBasemapChange(mode)}
               aria-pressed={basemap === mode}
             >
-              <i className={`basemap-swatch ${mode}`}/><span>{mode.toUpperCase()}</span>
+              <i className={`basemap-swatch ${mode}`}/><span>{mode === "dark" ? "THEMED" : mode.toUpperCase()}</span>
             </button>
           ))}
         </div>
+        {basemap === "dark" && (
+          <div className="theme-color-controls" aria-label="Themed basemap colors">
+            <label>
+              <span><b>WATER</b><output>{themeWaterColor.toUpperCase()}</output></span>
+              <div><input type="color" value={themeWaterColor} onChange={(event) => onThemeWaterColorChange(event.target.value)} aria-label="Themed water color"/><i style={{background: themeWaterColor}}/></div>
+            </label>
+            <label>
+              <span><b>LAND</b><output>{themeLandColor.toUpperCase()}</output></span>
+              <div><input type="color" value={themeLandColor} onChange={(event) => onThemeLandColorChange(event.target.value)} aria-label="Themed land color"/><i style={{background: themeLandColor}}/></div>
+            </label>
+          </div>
+        )}
       </section>
       <section>
         <h3>SPACE ENVIRONMENT</h3>
