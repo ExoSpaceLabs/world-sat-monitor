@@ -1,18 +1,31 @@
-import type {FeatureCollection, Point} from "geojson";
 import type {GroupPosition} from "../../domain/satellite";
 
-export type GroupMarkerProperties = {satellite_id: number; norad_id: string; name: string; active: boolean};
+export type GroupRenderPoint = {
+  satellite_id: number;
+  norad_id: string;
+  name: string;
+  active: boolean;
+  lat: number;
+  lon: number;
+  altitude: number;
+  heading: number | null;
+};
 
-export function buildGroupFeatureCollection(positions: GroupPosition[], selectedNoradId: string): FeatureCollection<Point, GroupMarkerProperties> {
-  return {
-    type: "FeatureCollection",
-    features: positions.flatMap((item) => {
-      if (!item.position || !item.satellite.norad_id || item.satellite.norad_id === selectedNoradId) return [];
-      return [{
-        type: "Feature" as const,
-        geometry: {type: "Point" as const, coordinates: [item.position.lon_deg, item.position.lat_deg]},
-        properties: {satellite_id: item.satellite.id, norad_id: item.satellite.norad_id, name: item.satellite.name, active: item.satellite.active},
-      }];
-    }),
-  };
+export function buildGroupRenderPoints(
+  positions: GroupPosition[],
+  selectedNoradId: string,
+): GroupRenderPoint[] {
+  return positions.flatMap((item) => {
+    if (!item.position || !item.satellite.norad_id || item.satellite.norad_id === selectedNoradId) return [];
+    return [{
+      satellite_id: item.satellite.id,
+      norad_id: item.satellite.norad_id,
+      name: item.satellite.name,
+      active: item.satellite.active,
+      lat: item.position.lat_deg,
+      lon: item.position.lon_deg,
+      altitude: item.position.altitude_km,
+      heading: item.position.heading_deg,
+    }];
+  });
 }
