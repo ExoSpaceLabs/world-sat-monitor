@@ -44,6 +44,7 @@ class OrbitDisplaySettings(BaseModel):
 class GroupOrbitDisplaySettings(BaseModel):
     """Lightweight propagation and rendering policy for the displayed group."""
 
+    marker_placement: Literal["orbit", "nadir"] = "orbit"
     show_satellite_names: bool = False
     direction_vector_enabled: bool = False
     position_update_ms: int = Field(default=2000, ge=500, le=10000)
@@ -113,6 +114,7 @@ def _migrate_settings(raw: object) -> object:
         group_orbit = dict(group_orbit)
     else:
         group_orbit = {}
+    group_orbit.setdefault("marker_placement", "orbit")
     group_orbit.setdefault("show_satellite_names", False)
     group_orbit.setdefault("direction_vector_enabled", False)
     migrated["group_orbit"] = group_orbit
