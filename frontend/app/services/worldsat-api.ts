@@ -35,6 +35,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
     },
   },
   group_orbit: {
+    marker_placement: "orbit",
     show_satellite_names: false,
     direction_vector_enabled: false,
     position_update_ms: 2000,
@@ -127,6 +128,9 @@ function normalizeAppSettings(payload: AppSettingsWire): AppSettings {
       },
     },
     group_orbit: {
+      marker_placement: groupOrbit.marker_placement === "nadir" || groupOrbit.marker_placement === "orbit"
+        ? groupOrbit.marker_placement
+        : DEFAULT_APP_SETTINGS.group_orbit.marker_placement,
       show_satellite_names: typeof groupOrbit.show_satellite_names === "boolean" ? groupOrbit.show_satellite_names : DEFAULT_APP_SETTINGS.group_orbit.show_satellite_names,
       direction_vector_enabled: typeof groupOrbit.direction_vector_enabled === "boolean" ? groupOrbit.direction_vector_enabled : DEFAULT_APP_SETTINGS.group_orbit.direction_vector_enabled,
       position_update_ms: typeof groupOrbit.position_update_ms === "number" && Number.isFinite(groupOrbit.position_update_ms) ? groupOrbit.position_update_ms : DEFAULT_APP_SETTINGS.group_orbit.position_update_ms,
