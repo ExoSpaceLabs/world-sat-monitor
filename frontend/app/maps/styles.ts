@@ -3,7 +3,7 @@ import {DEFAULT_THEMED_MAP_COLORS} from "../domain/settings";
 import type {Basemap} from "../domain/types";
 
 const OPENFREEMAP_DARK_STYLE_URL = "/map/openfreemap/styles/dark";
-const NATURAL_EARTH_LAND_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_land.geojson";
+const MAPLIBRE_LAND_TILEJSON = "https://demotiles.maplibre.org/tiles/tiles.json";
 const ESRI_DARK_REFERENCE_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const OSM_STANDARD_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -72,10 +72,9 @@ function themedMapStyle(colors: ThemedMapColors): StyleSpecification {
       "worldsat:theme-land": colors.land,
     },
     sources: {
-      "natural-earth-land": {
-        type: "geojson",
-        data: NATURAL_EARTH_LAND_URL,
-        attribution: "Land data © Natural Earth",
+      "maplibre-land": {
+        type: "vector",
+        url: MAPLIBRE_LAND_TILEJSON,
       },
       "esri-dark-reference": {
         type: "raster",
@@ -94,7 +93,8 @@ function themedMapStyle(colors: ThemedMapColors): StyleSpecification {
       {
         id: "worldsat-themed-land",
         type: "fill",
-        source: "natural-earth-land",
+        source: "maplibre-land",
+        "source-layer": "countries",
         paint: {
           "fill-color": colors.land,
           "fill-opacity": 1,
