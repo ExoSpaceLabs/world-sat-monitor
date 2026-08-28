@@ -27,6 +27,19 @@ test("dark basemap uses the keyless Esri dark-gray raster base and reference lay
   assert.doesNotMatch(text, /API_KEY/);
 });
 
+test("dark basemap blends grayscale geography over the WorldSat cyan surface", async () => {
+  const text = await source(mapStyleUrl);
+
+  assert.match(text, /DARK_MAP_SURFACE = "#06272d"/);
+  assert.match(text, /id: "worldsat-dark-surface"/);
+  assert.match(text, /"background-color": DARK_MAP_SURFACE/);
+  assert.match(text, /"raster-opacity": 0\.42/);
+  assert.match(text, /"raster-saturation": -1/);
+  assert.match(text, /"raster-contrast": 0\.2/);
+  assert.match(text, /"raster-brightness-max": 0\.58/);
+  assert.match(text, /"raster-opacity": 0\.82/);
+});
+
 test("dark basemap source errors install the real fallback style", async () => {
   const text = await source(globeMapUrl);
 
