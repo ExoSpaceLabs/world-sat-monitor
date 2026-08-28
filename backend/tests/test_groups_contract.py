@@ -12,7 +12,7 @@ MIGRATIONS = Path("backend/app/migrations.py").read_text(encoding="utf-8")
 class GroupContractTests(unittest.TestCase):
     def test_group_crud_and_membership_routes_are_explicit(self):
         self.assertIn('APIRouter(prefix="/api/v1/groups"', API)
-        self.assertIn('@router.post("")', API)
+        self.assertIn('@router.post("", status_code=status.HTTP_201_CREATED)', API)
         self.assertIn('@router.patch("/{group_id}")', API)
         self.assertIn('@router.delete("/{group_id}"', API)
         self.assertIn('@router.get("/{group_id}/members")', API)
