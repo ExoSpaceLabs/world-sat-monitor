@@ -29,17 +29,33 @@ WorldSat Monitor is intended as a lightweight engineering and mission-visualizat
 
 ### Published images
 
-For a normal deployment, use the release Compose file. It pulls the WorldSat Monitor frontend/backend images from GitHub Container Registry and uses upstream nginx/PostgreSQL images.
+Clone the repository so the release Compose file is available locally, then start the stack in detached mode:
 
 ```bash
-docker compose -f compose.images.yaml pull
+git clone https://github.com/ExoSpaceLabs/world-sat-monitor.git
+cd world-sat-monitor
 docker compose -f compose.images.yaml up -d
 ```
 
-Open:
+Docker Compose pulls the required published images automatically when they are needed.
+
+Open the WorldSat Monitor UI at:
 
 ```text
 http://localhost:3000
+```
+
+Useful runtime commands:
+
+```bash
+# Show service state
+docker compose -f compose.images.yaml ps
+
+# Follow service logs
+docker compose -f compose.images.yaml logs -f
+
+# Stop the detached stack and remove its containers/network
+docker compose -f compose.images.yaml down
 ```
 
 The release defaults to the version declared in `VERSION`. A deployment can explicitly pin an image version:
@@ -50,13 +66,17 @@ WORLDSAT_IMAGE_TAG=1.0.0 docker compose -f compose.images.yaml up -d
 
 ### Build from source
 
-For development or local modification:
+For development or local modification, from the cloned repository root:
 
 ```bash
 docker compose up --build -d
 ```
 
-The source Compose stack builds the frontend and shared Python backend image locally.
+The source Compose stack builds the frontend and shared Python backend image locally. Stop it with:
+
+```bash
+docker compose down
+```
 
 ## User interface
 
@@ -106,7 +126,7 @@ A large constellation remains one collapsed Manager row until expanded, rather t
 
 ### Orbital Settings
 
-Single and Group display modes have separate orbital visualization settings. Single mode controls the selected spacecraft trajectory and marker behavior; Group mode controls the collection marker representation. Direction vectors use the same visual language in both modes.
+Single and Group display modes have separate orbital visualization settings. Single mode controls the selected spacecraft trajectory and marker behavior; Group mode controls the collection marker representation. Both modes use the same **Nadir / Orbit** placement language, and direction vectors use the same visual language in both modes.
 
 ### Map Settings
 
