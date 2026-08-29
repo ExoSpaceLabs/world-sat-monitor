@@ -181,3 +181,39 @@ test("display lists stay simple while details and management are separated", asy
   assert.match(monitor, /<DetailsPanel/);
   assert.match(monitor, /<SatelliteManager/);
 });
+
+test("custom group member picker filters the local catalog and falls back to CelesTrak", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  const managerStyles = await readFile(new URL("../app/components/satellite/manager.css", import.meta.url), "utf8");
+
+  assert.match(satellitePanel, /Filter by satellite name or NORAD/);
+  assert.match(satellitePanel, /ANY STATE/);
+  assert.match(satellitePanel, /ACTIVE/);
+  assert.match(satellitePanel, /INACTIVE/);
+  assert.match(satellitePanel, /IN CONSTELLATION/);
+  assert.match(satellitePanel, /NOT IN CONSTELLATION/);
+  assert.match(satellitePanel, /matchesCandidateQuery/);
+  assert.match(satellitePanel, /satellite\.norad_id/);
+  assert.match(satellitePanel, /searchSatelliteCatalog\(query\)/);
+  assert.match(satellitePanel, /CELESTRAK FALLBACK/);
+  assert.match(satellitePanel, /IMPORT \+ ADD/);
+  assert.doesNotMatch(satellitePanel, /<select value=\{candidateId\}/);
+  assert.match(managerStyles, /\.group-member-picker/);
+  assert.match(managerStyles, /max-height:220px/);
+});
+
+test("single direction vector uses the grouped visual treatment", async () => {
+  const satelliteLayer = await readFile(new URL("../app/components/satellite/SatelliteLayer.tsx", import.meta.url), "utf8");
+  const groupLayer = await readFile(new URL("../app/components/groups/GroupSatelliteLayer.tsx", import.meta.url), "utf8");
+
+  assert.match(satelliteLayer, /DIRECTION_VECTOR_LENGTH_KM = 650/);
+  assert.match(groupLayer, /GROUP_VECTOR_LENGTH_KM = 650/);
+  assert.match(satelliteLayer, /setLineDash\(\[4, 4\]\)/);
+  assert.match(groupLayer, /setLineDash\(\[4, 4\]\)/);
+  assert.match(satelliteLayer, /lineWidth = 1/);
+  assert.match(groupLayer, /lineWidth = 1/);
+  assert.match(satelliteLayer, /rgba\(87,228,160,\.56\)/);
+  assert.match(groupLayer, /rgba\(87,228,160,\.56\)/);
+  assert.match(satelliteLayer, /trackLayerSettings/);
+  assert.match(satelliteLayer, /direction_vector_enabled: false/);
+});
