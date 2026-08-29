@@ -226,6 +226,7 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
   render(gl: WebGL2RenderingContext, args: CustomRenderMethodInput) {
     if (!this.state.enabled || !this.vertexBuffer || !this.indexBuffer) return;
 
+    const previousDepthMask = gl.getParameter(gl.DEPTH_WRITEMASK) as boolean;
     try {
       const shader = this.getProgram(gl, args);
       const projection = args.getProjectionData({
@@ -236,7 +237,11 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
       const sunLongitude = this.state.solarState.longitude * DEG;
       const latitudeRadius = Math.cos(sunLatitude);
 
+      // Illumination is a compositing overlay. It must never write into the
+      // shared MapLibre depth buffer, regardless of whether any orbit layer is
+      // installed later in the frame.
       gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
       gl.enable(gl.BLEND);
@@ -271,6 +276,8 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
       if (this.ready) this.ready = false;
       this.onDebugState?.({ready: false, triangleCount: this.triangleCount});
       console.error("Unable to render globe illumination", error);
+    } finally {
+      gl.depthMask(previousDepthMask);
     }
   }
 
