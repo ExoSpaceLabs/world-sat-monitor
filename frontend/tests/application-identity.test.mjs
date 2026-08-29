@@ -19,7 +19,7 @@ test("application identity exposes ExoSpaceLabs and v1.0.0", async () => {
   assert.match(application, /owner: "ExoSpaceLabs"/);
   assert.match(application, /version: "1\.0\.0"/);
   assert.match(application, /https:\/\/github\.com\/ExoSpaceLabs\/world-sat-monitor/);
-  assert.match(application, /exispacelabs@gmail\.com/);
+  assert.match(application, /exospacelabs@gmail\.com/);
   assert.match(about, /APPLICATION_INFO\.version/);
   assert.match(aboutStyles, /EXOSPACELABS/);
   assert.match(aboutStyles, /\.brand small::after/);

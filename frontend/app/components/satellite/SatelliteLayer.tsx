@@ -7,6 +7,7 @@ import type {MapSession} from "../../domain/types";
 import {usesStreetContrast} from "../../maps/theme";
 import {getAppSettings} from "../../services/worldsat-api";
 import {
+  headingEndpoint,
   isSatelliteOccluded,
   type GlobeVector,
   type Satellite,
@@ -22,6 +23,8 @@ import {
   isSatelliteOverEarthDisk,
   projectSatelliteScreenPosition,
 } from "./satelliteProjection";
+
+const DIRECTION_VECTOR_LENGTH_KM = 650;
 
 type MarkerElements = {
   heading: HTMLElement;
@@ -63,6 +66,10 @@ function placedSatellite(satellite: Satellite, settings: OrbitDisplaySettings): 
   return settings.path.mode === "ground"
     ? {...satellite, altitude: 0}
     : satellite;
+}
+
+function trackLayerSettings(settings: OrbitDisplaySettings): OrbitDisplaySettings {
+  return {...settings, direction_vector_enabled: false};
 }
 
 function updateMarkerPresentation(
@@ -127,6 +134,7 @@ export function SatelliteLayer({
   const elementsRef = useRef<MarkerElements | null>(null);
   const markerRef = useRef<MapLibreMarker | null>(null);
   const trackLayerRef = useRef<OrbitTrackLayer | null>(null);
+  const vectorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const latestSatelliteRef = useRef(satellite);
   const latestTrackRef = useRef(track);
   const orbitSettingsRef = useRef<OrbitDisplaySettings>(DEFAULT_APP_SETTINGS.orbit);
@@ -135,7 +143,7 @@ export function SatelliteLayer({
     latestSatelliteRef.current = satellite;
     trackLayerRef.current?.update({
       satellite,
-      settings: orbitSettingsRef.current,
+      settings: trackLayerSettings(orbitSettingsRef.current),
       track: latestTrackRef.current,
     });
     map?.triggerRepaint();
@@ -145,7 +153,7 @@ export function SatelliteLayer({
     latestTrackRef.current = track;
     trackLayerRef.current?.update({
       satellite: latestSatelliteRef.current,
-      settings: orbitSettingsRef.current,
+      settings: trackLayerSettings(orbitSettingsRef.current),
       track,
     });
     map?.triggerRepaint();
@@ -158,7 +166,7 @@ export function SatelliteLayer({
       orbitSettingsRef.current = settings.orbit;
       trackLayerRef.current?.update({
         satellite: latestSatelliteRef.current,
-        settings: settings.orbit,
+        settings: trackLayerSettings(settings.orbit),
         track: latestTrackRef.current,
       });
       map?.triggerRepaint();
@@ -169,7 +177,7 @@ export function SatelliteLayer({
       orbitSettingsRef.current = custom.detail;
       trackLayerRef.current?.update({
         satellite: latestSatelliteRef.current,
-        settings: custom.detail,
+        settings: trackLayerSettings(custom.detail),
         track: latestTrackRef.current,
       });
       map?.triggerRepaint();
@@ -232,7 +240,7 @@ export function SatelliteLayer({
     const layer = new OrbitTrackLayer(
       {
         satellite: latestSatelliteRef.current,
-        settings: orbitSettingsRef.current,
+        settings: trackLayerSettings(orbitSettingsRef.current),
         track: latestTrackRef.current,
       },
       mapSession.maplibre,
@@ -254,5 +262,69 @@ export function SatelliteLayer({
     };
   }, [mapSession, onDebugState]);
 
-  return null;
+  useEffect(() => {
+    if (!mapSession) return;
+    const {map, maplibre} = mapSession;
+    const canvas = vectorCanvasRef.current;
+    if (!canvas) return;
+
+    const draw = () => {
+      const width = map.getCanvas().clientWidth;
+      const height = map.getCanvas().clientHeight;
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const pixelWidth = Math.max(1, Math.round(width * dpr));
+      const pixelHeight = Math.max(1, Math.round(height * dpr));
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+      }
+
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, width, height);
+
+      const settings = orbitSettingsRef.current;
+      if (!settings.direction_vector_enabled) return;
+      const displaySatellite = placedSatellite(latestSatelliteRef.current, settings);
+      const camera = getGlobeCameraPosition(map);
+      if (camera && isSatelliteOccluded(displaySatellite, camera)) return;
+
+      const start = projectSatelliteScreenPosition(map, maplibre, displaySatellite);
+      if (!start) return;
+      const [endLon, endLat] = headingEndpoint(
+        displaySatellite.lon,
+        displaySatellite.lat,
+        displaySatellite.heading,
+        DIRECTION_VECTOR_LENGTH_KM,
+      );
+      const end = projectSatelliteScreenPosition(map, maplibre, {
+        ...displaySatellite,
+        lon: endLon,
+        lat: endLat,
+      });
+      if (!end) return;
+
+      context.beginPath();
+      context.setLineDash([4, 4]);
+      context.lineWidth = 1;
+      context.lineCap = "round";
+      context.strokeStyle = "rgba(87,228,160,.56)";
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.stroke();
+    };
+
+    map.on("render", draw);
+    draw();
+    return () => {
+      map.off("render", draw);
+      const context = canvas.getContext("2d");
+      if (context) context.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [mapSession]);
+
+  return <canvas ref={vectorCanvasRef} className="single-direction-vector-overlay" aria-hidden="true"/>;
 }
