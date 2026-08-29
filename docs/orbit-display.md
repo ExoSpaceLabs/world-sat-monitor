@@ -1,152 +1,245 @@
-# Orbit display rendering
+# Orbit and environment display
 
-This document describes the frontend orbit-rendering modes and the persistent settings that control them.
+WorldSat Monitor v1 has two mutually exclusive display modes, **Single** and **Group**, backed by different rendering workloads but the same persisted orbital state and globe projection.
 
-## Display modes
+## Display-mode model
 
-```mermaid
-flowchart LR
-    S[(propagated samples<br/>lat / lon / altitude)] --> R[MapLibre custom orbit layer]
-    C[/global orbit settings/] --> R
-    R -->|GROUND| G[nadir-projected history/prediction<br/>elevation = 0]
-    R -->|ORBIT| O[elevated history/prediction<br/>elevation = sample altitude]
-    C -->|direction_vector_enabled| D[current direction vector]
-```
-
-`GROUND` shows where the satellite path projects onto the Earth surface. `ORBIT` keeps the propagated altitude and renders the actual elevated trajectory.
-
-The custom layer is declared as `renderingMode = "3d"` so MapLibre makes its shared globe depth buffer available. The two track modes then deliberately use different visibility models:
-
-- `GROUND` is rendered as a surface overlay with `projectTileWithElevation(...)` and depth testing disabled. Surface-horizon clipping is appropriate because every point lies on the Earth.
-- `ORBIT` is rendered with `projectTileFor3D(...)` while retaining MapLibre's depth test. The Earth depth buffer therefore hides only the portion actually behind the planet. Elevated trajectory segments may remain visible beyond the surface tangent until the Earth physically occludes them.
-
-The direction vector is independent of path visibility and follows the selected track placement mode.
-
-## Projection and occlusion pipeline
-
-```mermaid
-flowchart TD
-    P[track samples<br/>lat / lon / altitude] --> D[densify great-circle segments<br/>max 1 degree]
-    D --> N[normalize longitude]
-    N --> X{dateline crossing?}
-    X -->|yes| S[split line strip]
-    X -->|no| M[keep same strip]
-    S --> C[Mercator world x/y]
-    M --> C
-    C --> T[convert x/y to tile 0 coordinates<br/>0..EXTENT]
-    T --> E[attach elevation in physical metres]
-    E --> V[WebGL vertex buffer]
-    V --> PDATA[args.getProjectionData<br/>tile 0/0/0]
-    PDATA --> MODE{track placement}
-    MODE -->|GROUND| SURFACE[projectTileWithElevation<br/>depth disabled]
-    MODE -->|ORBIT| SPACE[projectTileFor3D<br/>shared depth test]
-    SURFACE --> HC[surface tangent / globe horizon clipping]
-    SPACE --> DEPTH[Earth depth buffer]
-    HC --> F[history / prediction / heading]
-    DEPTH --> F
-```
-
-The orbit renderer uses tile-local geometry for the base `0/0/0` tile plus projection data obtained through `args.getProjectionData(...)`.
-
-For this contract, elevation is supplied in **physical metres**. The same geometry therefore works with both MapLibre's globe and Mercator shader variants without application-side screen-space altitude scaling.
-
-`projectTileWithElevation(...)` intentionally replaces clip-space Z with MapLibre's globe-horizon value. This is useful for surface features but is not physically correct for an orbit because a spacecraft can be visible above and beyond the surface horizon. `projectTileFor3D(...)` preserves the real projected Z, allowing the already-rendered Earth to provide the correct occlusion through the shared depth buffer.
-
-The orbit layer disables depth writes in ORBIT mode while retaining depth testing. This lets the Earth occlude the trajectory without allowing the trajectory itself to pollute the shared scene depth buffer.
-
-Backend samples are subdivided for rendering along great-circle arcs so consecutive custom-layer vertices are never more than roughly one angular degree apart. This is display-only interpolation and does not change authoritative backend orbit states.
-
-Dateline crossings are split before drawing. Prediction and direction-vector dash patterns use cumulative physical path distance rather than screen pixels.
-
-## Satellite marker altitude
-
-The HTML marker remains anchored by MapLibre at the satellite's nadir longitude/latitude, but the visible marker is offset to the **true projected satellite position** instead of using the old radial pixel approximation.
-
-```mermaid
-flowchart TD
-    SAT[current satellite<br/>lat / lon / altitude] --> FRAME{active camera transform}
-    FRAME -->|globe| SPHERE[unit-sphere position<br/>radius = 1 + altitude / Earth radius]
-    FRAME -->|Mercator| MERC[world x/y + altitude metres]
-    SPHERE --> MVP[MapLibre model-view-projection matrix]
-    MERC --> MVP
-    MVP --> SCREEN[elevated screen position]
-    NADIR[MapLibre DOM marker<br/>nadir screen position] --> DELTA[screen-space delta]
-    SCREEN --> DELTA
-    DELTA --> VISUAL[translate marker visual]
-```
-
-The globe branch uses the same sphere-axis convention as MapLibre and the same active globe model-view-projection matrix used by the 3D orbit path. The Mercator branch uses MapLibre world coordinates plus physical altitude metres. As a result, the current marker, heading-vector origin, history endpoint, and prediction origin all share the same physical altitude model.
-
-Marker far-side dimming remains based on finite camera-to-satellite ray/sphere intersection, so the marker only becomes occluded when the Earth is actually between the camera and spacecraft.
-
-## Custom-layer lifecycle
-
-`GlobeMap` publishes a `MapSession` from its `style.load` callback. That session is the lifecycle boundary used by custom overlays.
-
-```mermaid
-flowchart TD
-    STYLE[MapLibre style.load] --> SESSION[GlobeMap publishes MapSession]
-    SESSION --> SHADOW[install day/night custom layer]
-    SESSION --> ORBIT[install orbit custom layer immediately]
-    ORBIT --> DRAW[MapLibre render callback]
-    STYLE2[basemap replacement<br/>new style.load] --> SESSION2[new MapSession revision]
-    SESSION2 --> RECREATE[recreate custom overlays]
-```
-
-Once a `MapSession` exists, the orbit layer is installed immediately with `map.addLayer(...)`. It must **not** call `map.isStyleLoaded()` and then wait for another `style.load` event: the event that produced the session has already occurred, so that extra gate can leave the orbit layer permanently uninstalled.
-
-The `styleRevision` carried by `MapSession` causes React to recreate custom layers after a basemap replacement, because MapLibre removes custom layers together with the previous style.
-
-## Runtime diagnostics
-
-`OrbitTrackLayer` reports whether the custom layer has reached a successful draw, which shader projection variant is active, how many vertices exist in each geometry set, and the latest WebGL/shader error if rendering fails.
-
-With Scene Debug enabled, a healthy renderer should show:
+The top-level controls separate viewing from configuration:
 
 ```text
-ORBIT RENDER    READY
-ORBIT SHADER    GLOBE       # MERCATOR after the close-zoom projection switch
-ORBIT VERTICES  <nonzero H> · <nonzero P> · <nonzero V>
-ORBIT ERROR     --
+[ Single | Group ]   [ Details ]   [ Manager ]   [ Orbital Settings ]   [ Map Settings ]
 ```
 
-If the API contains track points but `ORBIT RENDER` is `MISSING`, the renderer has failed rather than the track being empty. `ORBIT SHADER = PENDING` with non-zero vertices means the custom layer has not reached its render callback; this is specifically an installation/lifecycle failure, not a geometry or shader-projection failure.
+`Single` and `Group` select the displayed target class. `Details` follows the current target. Manager and settings panels do not redefine the target model.
 
-## Rendering ownership
+## Single mode
 
-```mermaid
-flowchart LR
-    API[backend track API] --> UI[WorldSatMonitor state]
-    UI --> SAT[SatelliteLayer]
-    SAT --> MARKER[HTML satellite marker<br/>3D projected offset]
-    SAT --> TRACK[OrbitTrackLayer<br/>MapLibre custom WebGL layer]
-    SETTINGS[Orbit Settings] --> SAT
-    TRACK --> MAP[MapLibre projection + depth buffer]
-    MAP --> TRACK
+Single mode displays one selected active satellite in detail.
+
+### Satellite marker
+
+The selected satellite uses a MapLibre marker whose geographic anchor remains the satellite subpoint while its visual position is projected to the configured orbital/surface altitude.
+
+The marker supports:
+
+- spacecraft name;
+- heading and altitude label;
+- selected state;
+- Earth occlusion;
+- street-map contrast treatment;
+- camera-follow selection.
+
+When the spacecraft is behind Earth, visibility is determined using a finite camera-to-satellite ray/sphere test. The marker is dimmed/occluded consistently rather than allowed to flicker around the limb.
+
+### History and prediction
+
+Detailed trajectory rendering uses the custom WebGL `OrbitTrackLayer`.
+
+The API supplies stored propagated points around the selected time. The frontend divides them into:
+
+- **history**, rendered as a solid trajectory;
+- **prediction**, rendered with a physical-distance dash pattern;
+- **heading vector**, rendered independently from trajectory history/prediction.
+
+The current spacecraft position joins the history and prediction paths so the rendered line remains continuous through the selected state.
+
+### Ground versus orbit placement
+
+Single orbital settings support two path placement modes:
+
+- **GROUND**: path geometry is placed at Earth surface elevation;
+- **ORBIT**: path and marker preserve propagated altitude above the globe.
+
+ORBIT mode uses MapLibre's 3D projection/depth-aware path so the globe can physically occlude trajectory segments on the far side.
+
+### Path time window
+
+The UI requests only the configured detailed window around the selected satellite, not the full stored propagation horizon. History/prediction durations and requested resolution are frontend settings; the backend decimates stored samples accordingly.
+
+The effective returned resolution may be coarser than requested if required to respect API point limits.
+
+### Follow satellite
+
+`FOLLOW SATELLITE` locks the camera to the selected spacecraft while Earth continues to rotate according to simulation time. Switching selected satellite or switching to Group mode disables the existing follow state.
+
+## Group mode
+
+Group mode is optimized for current situational awareness rather than thousands of detailed trajectories.
+
+A selected collection may represent:
+
+- a provider constellation;
+- a custom group;
+- a mission group.
+
+The frontend requests a batched current-position product and renders all available members into one canvas overlay.
+
+### Why group markers are batched
+
+Thousands of individual MapLibre/DOM markers would create needless layout/event overhead. Group rendering instead prepares the visible member set once and draws compact markers into a single browser canvas.
+
+The renderer:
+
+- projects each current member through the globe projection;
+- applies Earth occlusion;
+- clips markers outside the viewport;
+- draws active/inactive presentation;
+- optionally draws direction vectors;
+- optionally draws spacecraft names;
+- keeps a projected-point index for hover/click hit testing.
+
+Clicking a group member selects that satellite and transitions to detailed Single display.
+
+### Group orbital settings
+
+Group settings are intentionally separate from Single settings. They control collection-oriented presentation such as:
+
+- marker placement at ground or orbital altitude;
+- direction-vector visibility;
+- satellite-name visibility;
+- group refresh behavior/prediction request parameters used by the group display lease.
+
+Detailed per-object history/prediction is not drawn for every group member. A constellation of several thousand satellites does not need several thousand simultaneous historical spaghetti trails to prove that software can consume a GPU.
+
+## Details panel
+
+Details is independent from the Single/Group list panel and follows the selected target.
+
+### Satellite Details
+
+Single Details contains current display information including:
+
+- altitude;
+- heading;
+- latitude;
+- longitude;
+- active basemap;
+- propagated/interpolated state;
+- orbital source;
+- illumination state;
+- follow control.
+
+### Group Details
+
+Group Details contains aggregate information including:
+
+- members;
+- active members;
+- positions ready;
+- coverage percentage;
+- collection type;
+- source/source key;
+- average altitude;
+- altitude range;
+- last synchronization time.
+
+The Single and Group list panels use the same width/docking geometry so opening Details never covers the active display list.
+
+## Simulation time and Earth rotation
+
+WorldSat Monitor maintains a simulation clock anchored to real time plus a configurable time-scale factor.
+
+At normal speed:
+
+```text
+simulation UTC ~= real UTC
 ```
 
-Orbital data remains owned by the backend. The frontend only decides how already-propagated state is visualized.
+At accelerated speed, Earth rotation and solar/environment state advance consistently with the simulation clock.
 
-## Persistent settings
+Resetting simulation time returns the anchor to current real UTC while preserving the chosen time scale.
 
-Settings schema version 3 adds orbit placement mode and direction-vector visibility:
+Camera manipulation and Earth rotation are separate concepts. Dragging changes the camera; it does not stop the UTC Earth rotation model.
 
-```json
-{
-  "version": 3,
-  "orbit": {
-    "direction_vector_enabled": true,
-    "position_update_ms": 1000,
-    "path": {
-      "enabled": true,
-      "mode": "ground",
-      "history_minutes": 90,
-      "prediction_hours": 6,
-      "resolution_seconds": 60,
-      "refresh_seconds": 30
-    }
-  }
-}
+## Space background
+
+When the environment is enabled, the viewport includes an inertial-style star/sun background behind the MapLibre globe.
+
+The intended layering is:
+
+```text
+page controls
+satellite/group overlays
+orbit rendering
+night illumination
+MapLibre Earth
+space background
 ```
 
-Older settings schemas are migrated automatically.
+The background is not a basemap and does not rotate as if painted onto Earth.
+
+## Solar state
+
+Solar geometry is calculated from simulation UTC and expressed as the current subsolar latitude/longitude plus inertial solar information used by scene rendering.
+
+That state drives:
+
+- visible sun/background orientation;
+- day/night surface illumination;
+- satellite illumination reporting in Details.
+
+## Day/night illumination
+
+The night hemisphere is rendered by a custom MapLibre WebGL layer.
+
+The vertex shader uses MapLibre's projection helpers and a globe tile mesh. Surface normals are compared with the ECEF sun vector:
+
+```text
+illumination = dot(surface_normal, sun_direction)
+```
+
+A narrow smooth transition is applied around the terminator. The night-side alpha is then scaled by the user-configured shadow opacity.
+
+The layer participates in MapLibre's **3D render pass** so it remains installed/renderable independently from the Single satellite orbit layer. While drawing the surface-darkening pass it disables depth/stencil/culling and uses alpha blending, because the operation is intended to darken the rendered globe surface rather than become independent 3D geometry.
+
+This is important in Group mode, where the detailed Single `OrbitTrackLayer` is not mounted.
+
+## Shadow opacity
+
+Map Settings exposes night-shadow opacity. The default is defined in application settings and reset with the rest of the map defaults.
+
+Opacity changes only visualization. It does not affect computed solar state or satellite illumination classification.
+
+## Basemap interaction
+
+The same satellite/group geometry is used on all three basemaps:
+
+- Dark;
+- Street;
+- Satellite.
+
+Street mode applies stronger surface contrast to detailed orbital graphics. Group markers retain their compact active/inactive presentation.
+
+See [basemap-contrast.md](basemap-contrast.md).
+
+## Debug telemetry
+
+Scene debug mode exposes useful renderer state including:
+
+- simulation UTC and time scale;
+- display mode;
+- Earth rotation;
+- map projection;
+- subsolar longitude;
+- camera/sun delta;
+- shadow renderer readiness and mesh size;
+- orbit renderer readiness/shader/vertex counts;
+- group marker count;
+- selected satellite altitude/path resolution.
+
+The overlay exists for renderer validation and should not become a replacement for application-level Details.
+
+## Persistence
+
+Map/orbit settings are persisted through the backend with a short UI debounce. Single and Group orbital settings remain separate so changing a collection presentation does not silently rewrite the selected-satellite path configuration.
+
+## Rendering principle
+
+WorldSat Monitor keeps physical/model state separate from presentation:
+
+- backend: orbital acquisition, propagation, stored state;
+- frontend domain: selected target and display settings;
+- MapLibre/custom layers: projection and rendering;
+- panels: navigation/inspection/management.
+
+That boundary is what allows the same future orbit or telemetry source to feed either a detailed spacecraft view or a constellation display without duplicating the orbital model in browser code.

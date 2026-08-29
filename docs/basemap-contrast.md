@@ -1,84 +1,115 @@
-# Basemap orbital contrast
+# Basemap and contrast policy
 
-WorldSat Monitor keeps orbital state independent from basemap styling. Basemap-specific logic is used only when presentation requires additional contrast.
+WorldSat Monitor v1 provides three MapLibre globe basemaps. Satellite/orbit rendering adapts to the selected surface so tracking graphics remain readable without tying orbital semantics to one cartographic style.
 
-## Display policy
+## Basemap modes
 
-```mermaid
-flowchart TD
-    MAP[Active MapLibre style] --> TYPE{Basemap}
-    TYPE -->|CARTO Dark| DARK[Use CARTO dark_all unchanged]
-    DARK --> DEFAULT[Normal WorldSat orbital palette]
+### Dark
 
-    TYPE -->|OpenStreetMap Street| STREET[Enable street contrast mode]
-    STREET --> OVERLAP{Rendered point projects over Earth disk?}
-    OVERLAP -->|yes| BLACK[Near-black satellite / orbit rendering]
-    OVERLAP -->|no| CYAN[WorldSat cyan rendering over space]
+Dark is the default engineering view.
 
-    TYPE -->|Satellite imagery| NORMAL[Normal WorldSat orbital palette]
+It uses:
+
+- Esri `World_Dark_Gray_Base` raster tiles;
+- Esri `World_Dark_Gray_Reference` raster tiles;
+- a configurable WorldSat surface base color;
+- desaturation, brightness, opacity, and contrast treatment in MapLibre.
+
+The WorldSat surface background is always present, so a temporarily missing raster tile does not turn the globe into an unstyled transparent object.
+
+Dark mode does not require a client API key.
+
+### Street
+
+Street mode uses OpenStreetMap standard raster tiles:
+
+```text
+https://tile.openstreetmap.org/{z}/{x}/{y}.png
 ```
 
-## Dark basemap
+The style remains globe-projected. Satellite/orbit presentation switches to stronger dark/light contrast because the underlying surface can be much brighter than the default dark map.
 
-The Dark option uses the original CARTO `dark_all` raster tiles with no application color grading. Earlier experiments with overlays, raster hue rotation, brightness/contrast adjustments, and a replacement vector style were removed.
+### Satellite
 
-This is intentional. CARTO Dark already provides a restrained grey/black background that keeps the satellite marker and trajectory palette visually dominant. The application therefore leaves its raster colors, luminance, boundaries, and labels unchanged.
+Satellite mode uses Esri World Imagery as the surface and loads the OpenFreeMap dark style through the WorldSat gateway for label/symbol data. Background/fill/line layers from that vector style are hidden, leaving useful labels/symbols over the imagery.
 
-```mermaid
-flowchart LR
-    CARTO[CARTO dark_all tiles] --> RASTER[MapLibre raster layer]
-    RASTER --> MAP[Dark globe unchanged]
-```
+This avoids presenting a second opaque cartographic surface over the imagery while keeping geographic context.
 
-## Street-map orbit contrast
+## Fallback behavior
 
-Street tiles are much brighter than the dark and satellite scenes. Cyan trajectory geometry can disappear against roads, water, and labels. The required rule is visual rather than geographic: geometry that is projected over the Earth disk is black; geometry projected over the surrounding space background is cyan.
+If the requested style cannot be loaded, WorldSat Monitor can fall back to an OpenStreetMap raster globe rather than leaving the map unusable.
 
-The orbit shader evaluates that rule from the **actual elevated trajectory point**, not from its nadir. For each vertex it constructs the camera ray to the 3D point and tests that ray against the unit Earth sphere.
+External tile/provider availability is therefore a visualization dependency, not a backend orbital-service dependency. Provider/propagator/API health remains separate from basemap availability.
 
-```mermaid
-flowchart LR
-    P[Orbit vertex<br/>lat / lon / altitude] --> POS[Actual 3D globe position]
-    CAM[Camera position] --> RAY[Camera-to-point ray]
-    POS --> RAY
-    RAY --> HIT{Ray intersects Earth sphere?}
-    HIT -->|yes| B[Surface color<br/>near black]
-    HIT -->|no| C[Space color<br/>cyan]
-    P --> PROJ[Normal GROUND / ORBIT projection]
-    B --> FRAG[Fragment color]
-    C --> FRAG
-    PROJ --> FRAG
-```
+## Attribution
 
-This distinction matters near the limb. An elevated orbit point may already be visibly outside the Earth silhouette while its nadir still belongs to the visible hemisphere. Nadir-based coloring therefore produced black trajectory arcs floating outside the globe. Camera-ray/sphere intersection instead switches color at the projected globe silhouette.
+The UI displays attribution for the active map source.
 
-Earth occlusion remains independent. In `ORBIT` mode the elevated trajectory still uses `projectTileFor3D` and the Earth depth buffer, so far-side geometry remains occluded exactly as before. On flat Mercator projection there is no globe silhouette; Street is treated entirely as map surface and uses black rendering.
+Current sources include:
 
-## Satellite marker contrast
+- Esri and its data providers for Dark/Satellite imagery;
+- OpenStreetMap contributors for Street/fallback data;
+- OpenFreeMap-derived overlays in Satellite mode.
 
-The DOM satellite marker follows the same projected-overlap rule as the WebGL trajectory:
+Do not remove or obscure provider attribution when changing map layout.
 
-```mermaid
-flowchart TD
-    SAT[Satellite state incl. altitude] --> STYLE{Street style active?}
-    STYLE -->|no| DEFAULT[Normal WorldSat marker palette]
-    STYLE -->|yes| RAY[Camera ray to actual satellite position]
-    RAY --> HIT{Ray intersects Earth sphere?}
-    HIT -->|yes| SURFACE[Black marker + light halo]
-    HIT -->|no| SPACE[Cyan marker + cyan glow]
-    SAT --> OCC{Earth actually occludes satellite?}
-    OCC -->|yes| DIM[Existing dimmed/occluded state]
-    OCC -->|no| KEEP[Keep selected contrast state]
-```
+## Orbital graphic contrast
 
-The light halo around the black Street marker keeps the core and label readable over dark road labels or boundaries while retaining black as the primary on-map color.
+WorldSat orbital graphics are semantic overlays and should remain recognizable across basemaps.
 
-## Ownership
+### Dark / Satellite-style surfaces
 
-- `frontend/app/maps/styles.ts` owns basemap construction; CARTO Dark is intentionally unmodified.
-- `frontend/app/maps/theme.ts` owns shared display colors and detection of the active Street style.
-- `OrbitTrackLayer.ts` owns per-fragment Street trajectory contrast using camera-ray/sphere overlap.
-- `satelliteProjection.ts` computes the equivalent projected Earth-disk overlap for the DOM marker.
-- `SatelliteLayer.tsx` maps that result to marker CSS classes.
+The normal space palette is used:
 
-No backend samples, TLE-derived states, interpolation values, altitudes, or prediction data are modified by this feature.
+- active/selected satellite markers use the WorldSat green/cyan accent;
+- history uses a solid path;
+- prediction uses a dashed path;
+- heading/direction vectors remain distinct from trajectory segments;
+- group members use compact luminous markers;
+- occluded detailed satellites are dimmed rather than allowed to flicker.
+
+### Street surface
+
+A bright street map can make the normal luminous palette disappear into roads, labels, or coastlines. The single-satellite marker and WebGL orbit renderer therefore choose a high-contrast surface treatment when the projected geometry overlaps Earth.
+
+When the same geometry is visually over space rather than the map surface, the normal space palette is retained.
+
+This is a presentation rule only. It does not alter satellite state or path geometry.
+
+## Group rendering
+
+Group display uses one canvas overlay for the current-state members of the selected collection. Each member is projected through the same MapLibre globe transformation/occlusion helpers used elsewhere in the frontend.
+
+Group markers therefore remain a single batched render workload even for large constellations. Names and direction vectors are optional Group orbital settings because drawing them for thousands of members is both visually noisy and computationally unnecessary.
+
+## Day/night environment interaction
+
+The space environment is independent from basemap choice.
+
+When enabled, it adds:
+
+- inertial stars/sun background;
+- Earth rotation based on simulation UTC/time scale;
+- a custom WebGL day/night illumination pass over the globe.
+
+The day/night layer darkens the night hemisphere by blending black with configurable opacity. It does not replace the basemap, and it is rendered in the globe 3D pass so the effect remains present in both Single and Group display modes.
+
+The default shadow opacity is defined by application settings and can be changed/reset from Map Settings.
+
+## Theme controls
+
+Dark mode exposes a themed base color and contrast parameter. These controls affect cartographic presentation only. They do not alter:
+
+- orbital source data;
+- satellite/group membership;
+- propagation;
+- solar geometry;
+- trajectory sampling.
+
+## Design rule
+
+Basemap code should answer only:
+
+> What Earth surface/context should the user see, and how should overlays remain legible on it?
+
+It should not become responsible for orbital state, group lifecycle, provider acquisition, or propagation. Keeping those concerns separate prevents a failed tile source from becoming, through the usual miracles of software entropy, a failed satellite tracker.

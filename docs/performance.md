@@ -1,10 +1,22 @@
 # Constellation-scale performance policy
 
-WorldSat Monitor treats **current state** and **trajectory history/prediction** as different workloads. Current constellation rendering must never scan the trajectory table. Detailed trajectories stay selected-object work.
+WorldSat Monitor v1 treats **current state** and **trajectory history/prediction** as different workloads. This is the central scaling rule of the application.
 
-## Reproducible benchmarks
+A constellation view must not scan the detailed trajectory table simply to answer where its members are now.
 
-Backend benchmark:
+## Performance goals
+
+The v1 performance design targets:
+
+- inexpensive current-state access for hundreds to several thousand satellites;
+- one detailed trajectory workload for the selected satellite;
+- bounded browser rendering work for large groups;
+- controlled trajectory-storage growth;
+- deterministic CI benchmarks rather than relying on subjective map smoothness.
+
+## Backend benchmark
+
+Run:
 
 ```bash
 DATABASE_URL=postgresql://worldsat:worldsat@localhost:5432/worldsat \
@@ -12,18 +24,9 @@ PYTHONPATH=backend \
 python backend/tools/benchmark_constellation.py --sizes 100 1000 5000 --enforce
 ```
 
-The benchmark initializes an empty PostgreSQL schema, seeds deterministic synthetic constellation state, measures repeated queries, verifies the query plan does not touch `position_samples`, exercises one selected-satellite track query, and verifies retention removes only superseded trajectory rows. All benchmark data is rolled back.
+The benchmark uses PostgreSQL, seeds deterministic synthetic current/trajectory state, exercises current-state and selected-track queries, verifies query behavior, and checks trajectory retention.
 
-Frontend marker-preparation benchmark:
-
-```bash
-cd frontend
-npm run benchmark:groups
-```
-
-This measures the JavaScript work required to convert 100, 1,000, 5,000 and 10,000 current positions into the single GeoJSON source consumed by MapLibre's WebGL circle layer. It is intentionally not presented as a browser FPS benchmark. Browser frame rate also depends on GPU, window size, basemap and driver.
-
-CI runs both benchmarks on every push/PR. Conservative CI p95 limits are:
+Conservative CI p95 limits are:
 
 | Workload | CI p95 target |
 | --- | ---: |
@@ -32,40 +35,118 @@ CI runs both benchmarks on every push/PR. Conservative CI p95 limits are:
 | Group current state, 5,000 objects | <= 800 ms |
 | Arbitrary 5,000-object current-state selection | <= 1,000 ms |
 | One selected track, common UI window | <= 200 ms |
-| 10,000-object GeoJSON preparation | <= 100 ms |
 
-On a local Node 22.13 run used while implementing #18, 10,000-object GeoJSON preparation was about 1 ms median / 4 ms p95. The serialized GeoJSON was about 1.6 MB before gateway gzip. Backend timings are environment-dependent and are printed by the dedicated CI job rather than hard-coded into this document.
+The limits are CI guardrails rather than promises for every host/storage configuration.
 
-For interactive browser profiling, use a production build, show a 5,000+ member group, keep detailed track rendering enabled only for one selected satellite, and record a 10-second Performance trace while rotating/zooming the globe. The target is no pathological long-task loop from marker DOM creation; group markers are one WebGL GeoJSON circle layer, not thousands of DOM nodes. A selected satellite remains a separate detailed layer and is never hidden by group LOD.
+## Frontend group benchmark
+
+Run:
+
+```bash
+cd frontend
+npm run benchmark:groups
+```
+
+The frontend benchmark measures the JavaScript preparation required to convert large current-position arrays into the render-point representation consumed by the group canvas renderer.
+
+CI includes workloads through 10,000 objects and uses a conservative target of:
+
+| Workload | CI target |
+| --- | ---: |
+| 10,000-object group render preparation | <= 100 ms p95 |
+
+This is not a browser FPS benchmark. Actual frame rate additionally depends on:
+
+- GPU/driver;
+- viewport size and device pixel ratio;
+- map zoom/pitch;
+- basemap;
+- whether names/direction vectors are enabled;
+- number of visible, non-occluded objects.
+
+## Browser rendering strategy
+
+Group mode does **not** create one DOM/MapLibre marker per satellite.
+
+`GroupSatelliteLayer` uses a single canvas overlay:
+
+1. current positions are transformed into compact render points;
+2. each member is projected through MapLibre/globe helpers;
+3. Earth-occluded/off-screen points are skipped;
+4. visible markers are drawn into the canvas;
+5. optional direction vectors/names are drawn in the same pass;
+6. projected points are retained for hover/click hit testing.
+
+This keeps DOM complexity essentially constant as group size grows.
+
+A selected satellite remains a separate detailed renderer using its own MapLibre marker and custom WebGL orbit layer.
+
+### Interactive profiling
+
+For manual browser profiling:
+
+1. use a production frontend build;
+2. display a multi-thousand-member constellation;
+3. test with names/direction vectors both disabled and enabled;
+4. rotate/zoom the globe for at least ten seconds;
+5. record browser Performance/GPU traces;
+6. verify there is no marker-DOM explosion or repeated allocation loop dominating every frame.
 
 ## Current-state query strategy
 
-`GET /api/v1/groups/{id}/positions` uses one joined query over:
+### Stored groups
 
-- `satellite_group_members`
-- `satellites`
-- `satellite_current_state`
-- the NORAD identifier row
+`GET /api/v1/groups/{id}/positions` performs one joined current-state query over the selected collection.
 
-It defaults to active members with a current state and is capped at 10,000 results. Missing/inactive members remain available through the membership endpoint without bloating the rendering response.
+The relevant data path is:
 
-`POST /api/v1/positions/current` accepts up to 10,000 local satellite IDs and/or NORAD IDs and performs one current-state query. It exists for arbitrary selections that are not naturally represented by one stored group.
+```text
+satellite_group_members
+        + satellites
+        + satellite_current_state
+        + external identifier row
+```
 
-Neither current-state path touches `position_samples`. `satellite_current_state` is the authoritative optimized answer to “where is everything now?”.
+It is capped at 10,000 returned positions.
 
-The gateway enables gzip for JSON responses because several-thousand-object current-state payloads compress well and otherwise spend more time crossing the browser boundary than being queried.
+### Arbitrary selections
+
+`POST /api/v1/positions/current` accepts batches of local satellite IDs and/or NORAD identifiers, also capped at 10,000 requested objects.
+
+### Critical invariant
+
+Neither current-state path scans `position_samples`.
+
+`satellite_current_state` is the optimized one-row-per-satellite answer to:
+
+> Where is everything now?
+
+The detailed trajectory table answers a different question and is kept out of the large-group hot path.
+
+## Gateway compression
+
+The nginx gateway enables compression for JSON responses where appropriate. Multi-thousand-object current-state payloads are repetitive and compress well; avoiding needless transfer volume is cheaper than pretending network serialization is someone else's performance problem.
 
 ## Trajectory storage policy
 
-A uniform 60-second grid over the default 48-hour history plus 14-day prediction horizon creates:
+A uniform 60-second grid over the default 48-hour history plus 14-day prediction horizon would create:
 
 ```text
 (48 h + 14 d) * 3600 / 60 + 1 = 23,041 samples/run/satellite
 ```
 
-That is 23.0 million rows for one generation of 1,000 monitored satellites and 115.2 million rows for 5,000. Keeping that layout and then “optimizing PostgreSQL” would be an impressively elaborate way to preserve an avoidable problem.
+That means roughly:
 
-Propagation therefore stores a tiered `tiered-v1` cadence by default:
+- 23.0 million rows for one run generation of 1,000 satellites;
+- 115.2 million rows for one run generation of 5,000 satellites.
+
+Storing that uniformly and then heroically tuning PostgreSQL around it would preserve an avoidable problem.
+
+v1 therefore uses tiered propagation sampling.
+
+## Tiered sampling
+
+Default `tiered-v1` policy:
 
 | Region relative to generation | Default cadence |
 | --- | ---: |
@@ -73,57 +154,91 @@ Propagation therefore stores a tiered `tiered-v1` cadence by default:
 | +24 h through +72 h | 300 s |
 | Beyond +72 h | 900 s |
 
-For the default 48 h / 14 d window this produces about **5,953 samples/run/satellite**, roughly a **74% row reduction**, while preserving full cadence for the UI's common history and near-prediction windows. The exact policy is persisted in `propagation_runs.sampling_policy`.
+For the default 48-hour history / 14-day horizon, this produces approximately **5,953 samples/run/satellite**, roughly a **74% row reduction** compared with the uniform 60-second layout.
 
-Position queries already interpolate between bracketing samples. Track queries now decimate by time bucket rather than assuming every stored point has uniform spacing, so the tiered storage policy does not leak into the UI API contract.
+The exact sampling policy is persisted in `propagation_runs.sampling_policy`.
 
-The tier parameters are configurable with:
+Configurable parameters:
 
-- `PROPAGATION_NEAR_HORIZON_HOURS`
-- `PROPAGATION_MID_HORIZON_HOURS`
-- `PROPAGATION_MID_STEP_SECONDS`
-- `PROPAGATION_FAR_STEP_SECONDS`
+```text
+PROPAGATION_NEAR_HORIZON_HOURS
+PROPAGATION_MID_HORIZON_HOURS
+PROPAGATION_MID_STEP_SECONDS
+PROPAGATION_FAR_STEP_SECONDS
+```
+
+## Interpolation and track decimation
+
+Position requests interpolate between bracketing samples in ECEF space.
+
+Track requests decimate by time bucket according to requested resolution and API point limits. They do not assume stored samples have a uniform cadence.
+
+This means the storage optimization does not leak into the UI as a requirement to understand tier boundaries.
 
 ## Index strategy
 
-The primary trajectory access patterns are covered by:
+Important access paths include:
 
-- primary key `(run_id, sample_time)` for bracketing/track reads within a selected propagation run;
-- `ix_position_samples_satellite_time (satellite_id, sample_time)` for satellite/time maintenance and diagnostics;
-- `ix_propagation_runs_completed_satellite_generated`, a partial completed-run index used to find the newest run covering a request;
+- primary key `(run_id, sample_time)` for bracketing/track reads;
+- `ix_position_samples_satellite_time (satellite_id, sample_time)` for satellite/time maintenance;
+- partial completed-run lookup index for newest covering runs;
 - primary key `satellite_current_state(satellite_id)` for batch current-state joins;
-- primary key `satellite_group_members(group_id, satellite_id)` for group fan-in.
+- primary key `satellite_group_members(group_id, satellite_id)` for group membership fan-in.
 
-A larger covering index on every trajectory coordinate was deliberately not added. Duplicating several floating-point columns into another index would increase the dominant storage cost to accelerate a query that already reads only one selected run.
+A large covering index duplicating all trajectory coordinates is deliberately avoided because write/storage cost would be paid on the largest table to accelerate a run-local read path that already has a suitable key.
 
 ## Retention
 
-The propagator periodically removes `position_samples` belonging to completed runs older than the configured superseded-run retention window. It does **not** delete `propagation_runs` or `prediction_error_daily`, so run provenance and quality metrics remain available.
+The propagator periodically removes trajectory samples from superseded completed runs older than the configured retention window.
 
-For active satellites, two run references are protected:
+It does **not** delete the propagation-run provenance row merely because detailed samples are removed.
 
-1. the newest completed propagation run;
+For active satellites, protected references include:
+
+1. the newest completed run;
 2. the run referenced by `satellite_current_state`.
 
-Inactive satellites do not pin trajectory samples indefinitely. On reactivation the normal provider/propagation lifecycle produces a fresh current run.
+Inactive satellites do not pin detailed trajectory samples indefinitely. Reactivation causes the normal provider/propagation lifecycle to produce fresh state.
 
 Defaults:
 
-- `PROPAGATION_SAMPLE_RETENTION_HOURS=24`
-- `PROPAGATION_CLEANUP_INTERVAL_SECONDS=300`
-- `PROPAGATION_CLEANUP_BATCH_SIZE=250000`
+```text
+PROPAGATION_SAMPLE_RETENTION_HOURS=24
+PROPAGATION_CLEANUP_INTERVAL_SECONDS=300
+PROPAGATION_CLEANUP_BATCH_SIZE=250000
+```
 
-Cleanup is batched to avoid one enormous delete transaction.
+Cleanup is batched to avoid one enormous transaction and unnecessary lock/vacuum pressure.
 
 ## Partitioning decision
 
-`position_samples` is **not partitioned in #18**. The main read path is run-oriented, group/current-state reads bypass the table entirely, tiered sampling removes roughly three quarters of the previously planned rows, and superseded samples are deleted in bounded batches. Time partitioning would add migration/constraint complexity without helping the primary `(run_id, sample_time)` read.
+`position_samples` is not partitioned in v1.
 
-Re-evaluate native PostgreSQL partitioning when production measurements show one of these conditions:
+Current reasons:
 
-- retained `position_samples` consistently exceeds roughly 100 million rows;
-- retention batches take multiple seconds or cause unacceptable vacuum pressure;
-- selected-run track p95 exceeds the documented target despite healthy cache/index plans;
-- storage retention must span long historical periods that are no longer represented by a small number of active runs.
+- primary reads are run-local;
+- group/current-state reads bypass the table;
+- tiered sampling removes most of the previously expected far-horizon rows;
+- superseded samples are deleted in bounded batches;
+- partitioning would add migration/constraint complexity before measurements justify it.
 
-If that threshold is reached, benchmark **run-generation/time partitioning versus time-only partitioning** before migration. The partition key must preserve efficient run-local reads; partitioning by calendar time merely because the table contains timestamps would be decorative architecture.
+Re-evaluate native PostgreSQL partitioning when real deployment measurements show conditions such as:
+
+- retained `position_samples` consistently around or above 100 million rows;
+- cleanup batches taking multiple seconds or causing unacceptable vacuum pressure;
+- selected-run track p95 exceeding the documented target despite healthy indexes/cache;
+- a requirement to retain long historical trajectory windows.
+
+If that threshold is reached, benchmark run-generation/time partitioning against time-only partitioning. The partition key must preserve efficient selected-run reads; choosing calendar partitions merely because the table contains timestamps would be decorative architecture.
+
+## CI enforcement
+
+Performance checks run in the normal CI pipeline on both `develop` and `main`.
+
+The goal is regression detection:
+
+- a group query accidentally scanning trajectory history should fail visibly;
+- a change that turns marker preparation into an unexpectedly expensive operation should be caught;
+- storage/retention policy should remain testable and reproducible.
+
+These tests complement, rather than replace, browser profiling on realistic hardware and network/provider conditions.

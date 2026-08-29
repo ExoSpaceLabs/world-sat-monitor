@@ -23,7 +23,7 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("ghcr.io/exospacelabs/world-sat-monitor-backend", IMAGE_COMPOSE)
         self.assertEqual(IMAGE_COMPOSE.count("world-sat-monitor-backend:${WORLDSAT_IMAGE_TAG"), 3)
 
-    def test_image_publication_is_main_only_and_ci_gated(self):
+    def test_image_publication_is_main_only_ci_gated_and_immutable(self):
         self.assertIn("workflow_run:", PUBLISH)
         self.assertIn("workflows: [CI]", PUBLISH)
         self.assertIn("branches: [main]", PUBLISH)
@@ -31,8 +31,13 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("workflow_run.head_branch == 'main'", PUBLISH)
         self.assertNotIn("develop", PUBLISH)
         self.assertNotIn("workflow_dispatch", PUBLISH)
+        self.assertIn("contents: write", PUBLISH)
         self.assertIn("packages: write", PUBLISH)
         self.assertIn("linux/amd64,linux/arm64", PUBLISH)
+        self.assertIn("git ls-remote --tags origin", PUBLISH)
+        self.assertIn("bump VERSION before publishing another main revision", PUBLISH)
+        self.assertIn('git tag "$RELEASE_TAG" "$VALIDATED_SHA"', PUBLISH)
+        self.assertIn('git push origin "refs/tags/${RELEASE_TAG}"', PUBLISH)
 
 
 if __name__ == "__main__":

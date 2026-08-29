@@ -2,259 +2,296 @@
 
 [![CI](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ExoSpaceLabs/world-sat-monitor/actions/workflows/ci.yml)
 
-WorldSat Monitor is a service-oriented satellite mission display built around an interactive 3D Earth. The browser is deliberately a rendering client: satellite catalog state, orbital-source acquisition, propagation products, interpolation, and persistent configuration live outside the UI.
+**WorldSat Monitor** is an open, self-hosted satellite and constellation situational-awareness platform developed by **ExoSpaceLabs**. It combines public orbital data, backend propagation, persistent satellite/group management, and an interactive 3D Earth display in a service-oriented Docker Compose stack.
 
-Development work is performed on `develop`; `main` remains the stable branch and receives features after the development CI and integration path are stable.
+Current release: **v1.0.0**
 
-## Repository layout
+[insert gif here]
 
-```text
-frontend/       3D web UI, satellite management, API client
-backend/        Shared Python package for API/provider/propagator processes
-database/       PostgreSQL bootstrap schema
-gateway/        Same-origin nginx gateway
-config/         Documented settings JSON example
-docs/           Architecture and rendering documentation
-compose.yaml    Local multi-service deployment
+## What v1 provides
+
+- **Single-satellite display** with current propagated position, altitude, heading, latitude/longitude, illumination state, history, prediction, direction vector, and optional camera follow.
+- **Constellation and group display** for provider-defined constellations and user-defined custom/mission groups.
+- **Context-sensitive Details** showing satellite information in Single mode and aggregate collection information in Group mode.
+- **Satellite Manager** with separate Single and Grouped workflows for catalog search, manual objects, monitoring lifecycle, constellation import, group creation, membership editing, and collection removal.
+- **3D globe visualization** using MapLibre with Dark, Street, and Satellite basemaps.
+- **Space environment** with inertial star background, solar position, UTC Earth rotation, and day/night illumination.
+- **Backend orbital propagation**. The browser renders products; it does not run the orbit propagator.
+- **CelesTrak GP ingestion** plus a deterministic mock provider used by integration tests.
+- **SGP4 propagation** from normalized OMM/GP-compatible orbital element sets.
+- **Constellation-scale current-state queries** that avoid scanning detailed trajectory storage.
+- **Persistent application settings** and PostgreSQL-backed satellite, group, provider, and propagation state.
+- **Source-build and image-based Docker Compose deployment**.
+
+WorldSat Monitor is intended as a lightweight engineering and mission-visualization layer. Public orbital data and SGP4 predictions are useful for tracking, planning, integration, demonstration, and situational awareness, but they are not a replacement for operator navigation products or authoritative flight-dynamics data.
+
+## Quick start
+
+### Published images
+
+For a normal deployment, use the release Compose file. It pulls the WorldSat Monitor frontend/backend images from GitHub Container Registry and uses upstream nginx/PostgreSQL images.
+
+```bash
+docker compose -f compose.images.yaml pull
+docker compose -f compose.images.yaml up -d
 ```
 
-## Runtime services
+Open:
+
+```text
+http://localhost:3000
+```
+
+The release defaults to the version declared in `VERSION`. A deployment can explicitly pin an image version:
+
+```bash
+WORLDSAT_IMAGE_TAG=1.0.0 docker compose -f compose.images.yaml up -d
+```
+
+### Build from source
+
+For development or local modification:
+
+```bash
+docker compose up --build -d
+```
+
+The source Compose stack builds the frontend and shared Python backend image locally.
+
+## User interface
+
+The top-level display controls deliberately separate **viewing** from **management**.
+
+### Single
+
+Shows the active single-satellite list. Selecting an object changes the displayed spacecraft. The list remains a list; detailed information is shown independently in **Details**.
+
+### Group
+
+Shows imported constellations and user-created groups. Selecting a collection displays its available current-state members on the globe.
+
+### Details
+
+Details follows the selected display target.
+
+For a satellite it includes information such as:
+
+- altitude and heading;
+- latitude and longitude;
+- basemap and source state;
+- propagated/interpolated position state;
+- illumination state;
+- follow-satellite control.
+
+For a group it includes information such as:
+
+- total and active members;
+- positions currently ready;
+- display coverage;
+- group type and source;
+- provider/source key;
+- average altitude and altitude range;
+- last synchronization time.
+
+### Manager
+
+The Manager has two workflows:
+
+- **Single**: search provider catalogs, add manual objects, activate/deactivate monitoring, and remove inactive standalone satellites.
+- **Grouped**: search/import provider constellations, create custom/mission groups, expand a collection to inspect or edit members, and remove a collection or its local satellites with guarded destructive actions.
+
+A large constellation remains one collapsed Manager row until expanded, rather than turning the management interface into several thousand consecutive satellite rows.
+
+### Orbital Settings
+
+Single and Group display modes have separate orbital visualization settings. Single mode controls the selected spacecraft trajectory and marker behavior; Group mode controls the collection marker representation.
+
+### Map Settings
+
+Map settings control basemap, space environment, day/night opacity, time scale, theme parameters, and scene reset behavior.
+
+## Runtime architecture
+
+```mermaid
+flowchart LR
+    Browser --> Gateway[nginx gateway]
+    Gateway --> Frontend
+    Gateway --> API[backend API]
+
+    API --> DB[(PostgreSQL)]
+    Provider[orbital-provider] --> DB
+    Propagator[propagator] --> DB
+    CelesTrak --> Provider
+```
+
+The services have deliberately narrow ownership:
 
 | Service | Responsibility |
 | --- | --- |
-| `gateway` | Exposes the application on port 3000 and routes `/api/` to the backend. |
-| `frontend` | Renders Earth/orbits and manages user interaction and satellite lifecycle controls. |
-| `backend` | Queries stored orbital state, interpolates requested positions, exposes satellite CRUD/lifecycle APIs, and persists application settings. |
-| `orbital-provider` | Refreshes active satellites, normalizes provider data, stores immutable orbital element sets, and creates propagation jobs. |
-| `propagator` | Claims propagation jobs, runs SGP4, and stores runs, trajectory samples, and current state. |
-| `db` | Stores satellites, identifiers, provider state, orbital elements, propagation jobs/products, and quality metrics. |
+| `gateway` | Same-origin ingress and API/frontend routing. |
+| `frontend` | 3D visualization and user interaction. |
+| `backend` | Client-facing satellite/group/settings/query API and interpolation of stored state. |
+| `orbital-provider` | Orbital-source acquisition, normalization, deduplication, provider state, and propagation-job creation. |
+| `propagator` | SGP4 execution and storage of propagation runs, trajectory samples, and current state. |
+| `db` | PostgreSQL durable state and propagation-job queue. |
 
-All three Python processes currently use the same backend image/package, but they are independent Compose services with separate entry points and ownership. The backend request process does not fetch provider data or propagate orbits.
-
-## Current vertical slice
-
-The application currently provides:
-
-- PostgreSQL satellite metadata with separate external identifiers such as NORAD and COSPAR;
-- active/inactive satellite monitoring lifecycle without deleting inactive catalog entries;
-- generalized `orbital_element_sets` storage based on OMM/GP semantics rather than mandatory two-line TLE text;
-- a dedicated `orbital-provider` service with CelesTrak GP/JSON ingestion and deterministic mock-provider support;
-- immutable element-set fingerprinting and duplicate suppression;
-- PostgreSQL-backed propagation jobs claimed with `FOR UPDATE ... SKIP LOCKED`;
-- a dedicated `propagator` service using SGP4;
-- `satellite_current_state` for fast current-state access as constellation support grows;
-- propagated ECEF/geographic trajectory samples with source-element traceability;
-- current/arbitrary UTC position lookup with ECEF interpolation;
-- configurable history/prediction track queries with API-side decimation;
-- solid historical, dashed prediction, and independently controlled direction-vector rendering;
-- global `GROUND` / `ORBIT` track placement;
-- MapLibre globe-aware elevated WebGL rendering and Earth occlusion;
-- persistent map/orbit settings;
-- satellite management UI for adding local catalog entries and enabling/disabling monitoring;
-- in-place migration from the pre-#12 TLE-centric database schema;
-- CI for frontend, backend/provider/propagator unit tests, legacy-schema migration, and full Docker Compose integration.
-
-## Deterministic synthetic satellite
-
-`WORLDSAT-01` remains intentionally available as a permanent integration fixture.
-
-```text
-WORLDSAT-01
-NORAD_CAT_ID = 999999999  (WorldSat-reserved synthetic identifier)
-provider = mock
-        ↓
-fixed OMM-compatible element set
-        ↓
-orbital_element_sets
-        ↓
-propagation_jobs
-        ↓
-SGP4 propagator
-        ↓
-propagation_runs + position_samples + satellite_current_state
-        ↓
-backend API
-        ↓
-frontend
-```
-
-The identifier is explicitly synthetic and is not claimed to be an official USSF/NORAD catalog assignment. The mock provider always returns the same valid orbital elements, allowing provider deduplication and the entire downstream system to be tested without network access.
-
-Current `python-sgp4` releases constrain the internal `Satrec.satnum` metadata field to `0..339999`. When an OMM record carries a larger catalog identifier, WorldSat Monitor preserves the real identifier in the source payload/database and uses `0` only as the local SGP4 identity sentinel. Satellite number does not participate in SGP4 orbital dynamics.
+`backend`, `orbital-provider`, and `propagator` currently share the same Python container image, but run as independent services with separate entry points.
 
 ## Orbital data model
 
-A satellite is an internal entity and is not identified by a NORAD number in the primary key. External catalog identities live in `satellite_identifiers`:
+A satellite has an internal WorldSat Monitor database identity. External catalog identifiers are attributes stored separately, including namespaces such as:
 
-```text
-satellites
-    |
-    +-- satellite_identifiers
-    |      NORAD_CAT_ID
-    |      COSPAR
-    |      future provider namespaces
-    |
-    +-- orbital_element_sets
-           source
-           source_format
-           mean_element_theory
-           OMM/GP mean-element fields
-           fingerprint
-           raw_payload
-```
+- `NORAD_CAT_ID`
+- `COSPAR`
+- future provider-specific identifiers
 
-Classic TLE/Alpha-5 remains a possible input representation, but it is not the canonical database model. A legacy TLE row is migrated into an orbital element set with `source_format=TLE` and its original lines retained in `raw_payload`.
+Orbital source data is stored as immutable, normalized **orbital element sets**. The canonical model is OMM/GP compatible and does not require raw two-line TLE columns. TLE remains a supported source representation where appropriate, including migration of legacy data.
 
-## Monitoring lifecycle
-
-`active` means WorldSat Monitor should maintain orbital source data and propagation for that satellite.
-
-```text
-inactive
-  metadata + identifiers retained
-  no scheduled provider acquisition
-  no pending propagation work
-
-active
-  provider refresh enabled
-  newest accepted element set persisted
-  propagation job created when required
-```
-
-Deactivation is non-destructive. Historical element sets and propagation products remain available, while pending jobs are cancelled and workers will not claim new work for the inactive object. Runtime map selection remains separate from monitoring state.
-
-## Provider flow
-
-For each active satellite, `orbital-provider` selects the configured provider (`mock`, `celestrak`, and later additional providers), fetches only when due, normalizes the response into the OMM-compatible model, and fingerprints the orbital content.
+The provider flow is:
 
 ```text
 active satellite
-      ↓
-OrbitalDataProvider
-      ↓
-normalized element set
-      ↓
-deduplicate by satellite + source + fingerprint
-      ↓
-orbital_element_sets
-      ↓
-propagation_jobs
+    -> provider selection
+    -> GP/OMM-compatible normalization
+    -> fingerprint/deduplication
+    -> orbital_element_sets
+    -> propagation_jobs
 ```
 
-CelesTrak acquisition explicitly requests GP JSON. CI disables live CelesTrak access and uses saved fixtures plus the deterministic mock provider, so external service availability cannot make the build randomly red.
-
-## Propagation flow
+The propagation flow is:
 
 ```text
 propagation_jobs
-      ↓
-FOR UPDATE SKIP LOCKED
-      ↓
-SGP4PropagationEngine
-      ↓
-TEME state
-      ↓
-Earth rotation / ECEF
-      ↓
-position_samples
-satellite_current_state
-propagation_runs
+    -> SGP4
+    -> propagation_runs
+    -> position_samples
+    -> satellite_current_state
+    -> backend API
+    -> frontend
 ```
 
-The current engine abstraction is `PropagationEngine`; SGP4 is the first implementation rather than the architecture itself. This leaves room for OEM/state-vector interpolation or other propagation products later.
+Current-state and detailed trajectory workloads are intentionally separated. `satellite_current_state` provides one fast current record per satellite for large group displays, while `position_samples` stores history/prediction products for selected-object trajectory queries.
 
-## API
+## Groups and constellations
 
-Start the stack:
+WorldSat Monitor supports two collection concepts:
 
-```bash
-docker compose up --build
-```
+- **Provider constellations**, imported from supported external catalog group definitions such as CelesTrak groups.
+- **User groups**, created locally for custom or mission-oriented selections.
 
-Open `http://localhost:3000`.
+Group membership is separate from satellite identity. A satellite can participate in multiple collections. Removing membership therefore does not imply deleting the spacecraft record. Destructive collection purges are explicit and guarded.
 
-Useful endpoints:
+Large collection display uses batched current-state access and a single browser canvas overlay for group markers, avoiding thousands of individual DOM marker nodes.
+
+## Basemaps and environment
+
+v1 provides:
+
+- **Dark**: themed Esri Dark Gray raster base/reference layers, with configurable base color and contrast treatment.
+- **Street**: OpenStreetMap standard raster tiles.
+- **Satellite**: Esri World Imagery with OpenFreeMap-derived label/symbol overlays.
+
+The environment layer adds a star field, solar position, UTC-based Earth rotation, and a WebGL day/night illumination pass. Map attribution remains visible for the active source.
+
+See [`docs/basemap-contrast.md`](docs/basemap-contrast.md) and [`docs/orbit-display.md`](docs/orbit-display.md).
+
+## API examples
+
+With the stack running on port 3000:
 
 ```bash
 curl http://localhost:3000/api/v1/health
 curl http://localhost:3000/api/v1/settings
 curl http://localhost:3000/api/v1/satellites
 curl "http://localhost:3000/api/v1/satellites?active=true"
+curl http://localhost:3000/api/v1/groups
 curl http://localhost:3000/api/v1/satellites/999999999/position
 curl "http://localhost:3000/api/v1/satellites/999999999/track?resolution_seconds=60"
 ```
 
-Create an inactive catalog entry:
-
-```bash
-curl -X POST http://localhost:3000/api/v1/satellites \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "EXAMPLE-SAT",
-    "active": false,
-    "identifiers": [
-      {"namespace": "NORAD_CAT_ID", "value": "100001"},
-      {"namespace": "COSPAR", "value": "2026-001A"}
-    ]
-  }'
-```
-
-Lifecycle operations use the internal satellite ID returned by the API:
-
-```text
-POST   /api/v1/satellites/{id}/activate
-POST   /api/v1/satellites/{id}/deactivate
-PATCH  /api/v1/satellites/{id}
-DELETE /api/v1/satellites/{id}
-```
-
-Active satellites must be deactivated before deletion.
+`WORLDSAT-01` / `NORAD_CAT_ID=999999999` is a deliberately synthetic object used to validate the complete provider -> propagation -> API -> frontend path without depending on an external service.
 
 ## Configuration
 
-Important worker environment variables include:
+Important worker settings include:
 
 ```text
 PROVIDER_POLL_SECONDS
 PROVIDER_REFRESH_SECONDS
 CELESTRAK_ENABLED
 CELESTRAK_BASE_URL
-CELESTRAK_TIMEOUT_SECONDS
-PROPAGATOR_POLL_SECONDS
+CELESTRAK_CATALOG_URL
 PROPAGATION_HISTORY_HOURS
 PROPAGATION_HORIZON_DAYS
 PROPAGATION_STEP_SECONDS
+PROPAGATION_NEAR_HORIZON_HOURS
+PROPAGATION_MID_HORIZON_HOURS
+PROPAGATION_MID_STEP_SECONDS
+PROPAGATION_FAR_STEP_SECONDS
+PROPAGATION_SAMPLE_RETENTION_HOURS
+PROPAGATION_CLEANUP_INTERVAL_SECONDS
+PROPAGATION_CLEANUP_BATCH_SIZE
 ```
 
-The default Compose stack enables CelesTrak. CI sets `CELESTRAK_ENABLED=false` and validates the same provider/propagator pipeline through `WORLDSAT-01`.
+Application map/orbit settings are persisted separately by the backend.
 
-## Development and CI
+## Development and validation
 
-Frontend:
+CI runs on `develop`, `main`, and pull requests. The release gate includes:
+
+- frontend lint, build, tests, benchmark, and production-artifact validation;
+- backend/provider/propagator unit tests;
+- SGP4/provider normalization tests;
+- legacy PostgreSQL schema migration;
+- constellation-scale backend and frontend performance checks;
+- full Docker Compose provider + propagator + API integration.
+
+Local frontend checks:
 
 ```bash
 cd frontend
 npm ci
 npm run lint
 npm test
+npm run benchmark:groups
+npm run validate:artifact
 ```
 
-Backend and workers:
+Local backend tests:
 
 ```bash
 python -m pip install -r backend/requirements.txt
 PYTHONPATH=backend python -m unittest discover -s backend/tests -v
 ```
 
-CI runs on pushes to both `main` and `develop` and on pull requests. It covers:
+## Release and container publication
 
-1. frontend lint/build/tests/artifact validation;
-2. backend/provider/propagator compile and unit tests;
-3. deterministic provider normalization and SGP4 reference-vector validation;
-4. an actual PostgreSQL migration from the legacy TLE schema;
-5. full Docker Compose startup and worker health;
-6. mock provider -> element-set -> job -> SGP4 -> DB -> backend position/track integration;
-7. element-set deduplication and `satellite_current_state` creation;
-8. satellite CRUD/activation/deactivation behavior and persistent settings.
+`develop` is the integration branch. It **never publishes release images**.
 
-See [`docs/architecture.md`](docs/architecture.md) for service ownership and data flow, and [`docs/orbit-display.md`](docs/orbit-display.md) for the globe-track rendering pipeline.
+Container publication is triggered only after the `CI` workflow completes successfully for a commit on `main`. That workflow publishes multi-architecture (`linux/amd64`, `linux/arm64`) images for:
+
+```text
+ghcr.io/exospacelabs/world-sat-monitor-frontend
+ghcr.io/exospacelabs/world-sat-monitor-backend
+```
+
+The backend image is reused by the API, orbital-provider, and propagator services.
+
+See [`docs/deployment.md`](docs/deployment.md) for the release/deployment contract.
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) - service, data, provider, propagation, and collection architecture.
+- [`docs/orbit-display.md`](docs/orbit-display.md) - single/group rendering and environment behavior.
+- [`docs/basemap-contrast.md`](docs/basemap-contrast.md) - basemap sources and visualization contrast policy.
+- [`docs/performance.md`](docs/performance.md) - constellation current-state, trajectory-storage, benchmark, and retention policy.
+- [`docs/deployment.md`](docs/deployment.md) - source and GHCR image deployment plus release publication rules.
+
+## Project
+
+- **Project:** WorldSat Monitor
+- **Version:** v1.0.0
+- **Organization:** ExoSpaceLabs
+- **Repository:** https://github.com/ExoSpaceLabs/world-sat-monitor
+- **Contact:** exispacelabs@gmail.com
+- **License:** Apache-2.0

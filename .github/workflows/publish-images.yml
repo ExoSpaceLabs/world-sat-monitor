@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
 
       - name: Read release version
         id: version
@@ -36,6 +37,27 @@ jobs:
           version="$(tr -d '[:space:]' < VERSION)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Enforce immutable release version
+        id: release
+        shell: bash
+        env:
+          VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          existing="$(git ls-remote --tags origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
+          if [[ -n "$existing" && "$existing" != "$VALIDATED_SHA" ]]; then
+            echo "Release ${tag} already points to ${existing}; bump VERSION before publishing another main revision." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ -z "$existing" ]]; then
+            echo "create_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Validate pull-only Compose definition
         run: |
@@ -95,3 +117,14 @@ jobs:
             org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
+
+      - name: Tag validated release commit
+        if: steps.release.outputs.create_tag == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git tag "$RELEASE_TAG" "$VALIDATED_SHA"
+          git push origin "refs/tags/${RELEASE_TAG}"
