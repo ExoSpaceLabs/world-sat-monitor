@@ -38,6 +38,23 @@ type ProgramState = {
   };
 };
 
+type RenderState = {
+  arrayBuffer: WebGLBuffer | null;
+  blend: boolean;
+  blendDstAlpha: number;
+  blendDstRgb: number;
+  blendEquationAlpha: number;
+  blendEquationRgb: number;
+  blendSrcAlpha: number;
+  blendSrcRgb: number;
+  cullFace: boolean;
+  depthMask: boolean;
+  depthTest: boolean;
+  program: WebGLProgram | null;
+  stencilTest: boolean;
+  vertexArray: WebGLVertexArrayObject | null;
+};
+
 function compileShader(
   gl: WebGL2RenderingContext,
   type: number,
@@ -82,6 +99,52 @@ function linkProgram(
     throw new Error(log);
   }
   return program;
+}
+
+function captureRenderState(gl: WebGL2RenderingContext): RenderState {
+  return {
+    arrayBuffer: gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null,
+    blend: gl.isEnabled(gl.BLEND),
+    blendDstAlpha: gl.getParameter(gl.BLEND_DST_ALPHA) as number,
+    blendDstRgb: gl.getParameter(gl.BLEND_DST_RGB) as number,
+    blendEquationAlpha: gl.getParameter(gl.BLEND_EQUATION_ALPHA) as number,
+    blendEquationRgb: gl.getParameter(gl.BLEND_EQUATION_RGB) as number,
+    blendSrcAlpha: gl.getParameter(gl.BLEND_SRC_ALPHA) as number,
+    blendSrcRgb: gl.getParameter(gl.BLEND_SRC_RGB) as number,
+    cullFace: gl.isEnabled(gl.CULL_FACE),
+    depthMask: gl.getParameter(gl.DEPTH_WRITEMASK) as boolean,
+    depthTest: gl.isEnabled(gl.DEPTH_TEST),
+    program: gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null,
+    stencilTest: gl.isEnabled(gl.STENCIL_TEST),
+    vertexArray: gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null,
+  };
+}
+
+function restoreCapability(
+  gl: WebGL2RenderingContext,
+  capability: number,
+  enabled: boolean,
+) {
+  if (enabled) gl.enable(capability);
+  else gl.disable(capability);
+}
+
+function restoreRenderState(gl: WebGL2RenderingContext, state: RenderState) {
+  gl.bindVertexArray(state.vertexArray);
+  gl.bindBuffer(gl.ARRAY_BUFFER, state.arrayBuffer);
+  gl.useProgram(state.program);
+  gl.depthMask(state.depthMask);
+  gl.blendEquationSeparate(state.blendEquationRgb, state.blendEquationAlpha);
+  gl.blendFuncSeparate(
+    state.blendSrcRgb,
+    state.blendDstRgb,
+    state.blendSrcAlpha,
+    state.blendDstAlpha,
+  );
+  restoreCapability(gl, gl.DEPTH_TEST, state.depthTest);
+  restoreCapability(gl, gl.STENCIL_TEST, state.stencilTest);
+  restoreCapability(gl, gl.CULL_FACE, state.cullFace);
+  restoreCapability(gl, gl.BLEND, state.blend);
 }
 
 function createProgram(
@@ -167,7 +230,10 @@ void main() {
 class GlobeIlluminationLayer implements CustomLayerInterface {
   readonly id = LAYER_ID;
   readonly type = "custom" as const;
-  readonly renderingMode = "3d" as const;
+  // The day/night mask is a framebuffer compositor, not scene geometry. Keep
+  // it in MapLibre's normal 2D custom-layer pass so its execution is identical
+  // whether or not another 3D custom layer (such as a selected orbit) exists.
+  readonly renderingMode = "2d" as const;
 
   private readonly programs = new Map<string, ProgramState>();
   private readonly triangleCount: number;
@@ -177,6 +243,7 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
   private pendingMesh: ReturnType<MapSession["maplibre"]["createTileMesh"]> | null;
   private ready = false;
   private state: IlluminationState;
+  private vertexArray: WebGLVertexArrayObject | null = null;
   private vertexBuffer: WebGLBuffer | null = null;
 
   constructor(
@@ -199,17 +266,24 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
     const mesh = this.pendingMesh;
     if (!mesh) throw new Error("Illumination mesh is unavailable");
 
+    this.vertexArray = gl.createVertexArray();
     this.vertexBuffer = gl.createBuffer();
     this.indexBuffer = gl.createBuffer();
-    if (!this.vertexBuffer || !this.indexBuffer) {
+    if (!this.vertexArray || !this.vertexBuffer || !this.indexBuffer) {
       this.destroy(gl);
       throw new Error("Unable to allocate illumination mesh buffers");
     }
 
+    const previousVertexArray = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null;
+    const previousArrayBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null;
+    gl.bindVertexArray(this.vertexArray);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+    gl.bindVertexArray(previousVertexArray);
+    gl.bindBuffer(gl.ARRAY_BUFFER, previousArrayBuffer);
+
     this.pendingMesh = null;
     if (this.state.enabled) map.triggerRepaint();
   }
@@ -224,9 +298,9 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
   }
 
   render(gl: WebGL2RenderingContext, args: CustomRenderMethodInput) {
-    if (!this.state.enabled || !this.vertexBuffer || !this.indexBuffer) return;
+    if (!this.state.enabled || !this.vertexArray || !this.vertexBuffer || !this.indexBuffer) return;
 
-    const previousDepthMask = gl.getParameter(gl.DEPTH_WRITEMASK) as boolean;
+    const previousState = captureRenderState(gl);
     try {
       const shader = this.getProgram(gl, args);
       const projection = args.getProjectionData({
@@ -237,15 +311,15 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
       const sunLongitude = this.state.solarState.longitude * DEG;
       const latitudeRadius = Math.cos(sunLatitude);
 
-      // Illumination is a compositing overlay. It must never write into the
-      // shared MapLibre depth buffer, regardless of whether any orbit layer is
-      // installed later in the frame.
+      // Illumination is a compositing overlay. It must never read from or write
+      // to the shared depth buffer, and it must leave all touched WebGL state
+      // exactly as it found it for whichever layer MapLibre renders next.
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.CULL_FACE);
       gl.enable(gl.BLEND);
-      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
       gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
       gl.useProgram(shader.program);
 
@@ -262,6 +336,7 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
         Math.sin(sunLatitude),
       );
 
+      gl.bindVertexArray(this.vertexArray);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
       gl.enableVertexAttribArray(shader.aPos);
@@ -277,7 +352,7 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
       this.onDebugState?.({ready: false, triangleCount: this.triangleCount});
       console.error("Unable to render globe illumination", error);
     } finally {
-      gl.depthMask(previousDepthMask);
+      restoreRenderState(gl, previousState);
     }
   }
 
@@ -303,8 +378,10 @@ class GlobeIlluminationLayer implements CustomLayerInterface {
   private destroy(gl: WebGL2RenderingContext) {
     if (this.vertexBuffer) gl.deleteBuffer(this.vertexBuffer);
     if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
+    if (this.vertexArray) gl.deleteVertexArray(this.vertexArray);
     for (const shader of this.programs.values()) gl.deleteProgram(shader.program);
     this.programs.clear();
+    this.vertexArray = null;
     this.vertexBuffer = null;
     this.indexBuffer = null;
   }
