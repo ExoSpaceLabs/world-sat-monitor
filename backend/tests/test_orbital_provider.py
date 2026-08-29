@@ -52,6 +52,17 @@ class OrbitalProviderTests(unittest.TestCase):
         self.assertIn("FORMAT=JSON", request.full_url)
         self.assertEqual(element_set.raw_payload["OBJECT_NAME"], "MARIO")
 
+    def test_celestrak_provider_fetches_group_with_one_gp_query(self):
+        body = json.dumps(self.records).encode("utf-8")
+        with patch("app.orbital_provider.urlopen", return_value=BytesIO(body)) as mocked:
+            provider = CelesTrakProvider("https://example.test/gp.php", timeout_seconds=3)
+            result = provider.fetch_group("iridium-NEXT")
+        self.assertEqual(mocked.call_count, 1)
+        request = mocked.call_args.args[0]
+        self.assertIn("GROUP=iridium-NEXT", request.full_url)
+        self.assertIn("FORMAT=JSON", request.full_url)
+        self.assertIn("55123", result)
+
     def test_mock_provider_returns_same_valid_element_set(self):
         provider = MockOrbitalDataProvider()
         first = provider.fetch_latest({"NORAD_CAT_ID": MOCK_NORAD_ID})

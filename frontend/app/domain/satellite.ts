@@ -16,8 +16,8 @@ export type ManagedSatellite = {
   metadata: Record<string, unknown>;
   identifiers: Record<string, string>;
   norad_id: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type SatelliteCreateRequest = {
@@ -42,6 +42,53 @@ export type CatalogSearchResult = {
     active: boolean;
     name: string | null;
   };
+};
+
+export type SatelliteGroupType = "constellation" | "custom" | "mission";
+
+export type SatelliteGroup = {
+  id: number;
+  name: string;
+  group_type: SatelliteGroupType;
+  source: string;
+  source_key: string | null;
+  metadata: Record<string, unknown>;
+  member_count: number;
+  active_member_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SatelliteGroupCreateRequest = {
+  name: string;
+  group_type?: SatelliteGroupType;
+  metadata?: Record<string, unknown>;
+};
+
+export type SatelliteGroupMember = Omit<ManagedSatellite, "created_at" | "updated_at"> & {
+  membership_metadata: Record<string, unknown>;
+  added_at: string;
+};
+
+export type GroupPosition = {
+  satellite: {
+    id: number;
+    name: string;
+    active: boolean;
+    norad_id: string | null;
+    identifiers: Record<string, string>;
+  };
+  state_time: string | null;
+  position: {
+    lat_deg: number;
+    lon_deg: number;
+    altitude_km: number;
+    heading_deg: number | null;
+  } | null;
+  source: {
+    run_id: string;
+    source_element_set_id: number | null;
+  } | null;
 };
 
 export type SatelliteTrackPoint = {

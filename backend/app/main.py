@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Response, status
 
 from .config import settings
 from .db import connect, wait_for_database
+from .groups_api import router as groups_router
 from .migrations import migrate_legacy_schema
 from .orbit import (
     GeodeticState,
@@ -16,6 +17,7 @@ from .orbit import (
     initial_bearing_deg,
     interpolate_ecef,
 )
+from .positions_api import router as positions_router
 from .repository import (
     create_satellite,
     delete_satellite,
@@ -78,9 +80,11 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="WorldSat Monitor API",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
+app.include_router(groups_router)
+app.include_router(positions_router)
 
 
 @app.get("/api/v1/health")
@@ -243,6 +247,7 @@ def satellite_position(
             "run_id": str(run["id"]),
             "generated_at": run["generated_at"].isoformat(),
             "step_seconds": run["step_seconds"],
+            "sampling_policy": run["sampling_policy"],
             "is_mock": run["is_mock"],
             "source_element_set_id": run["source_element_set_id"],
         },
@@ -299,6 +304,7 @@ def satellite_track(
             "run_id": str(run["id"]),
             "generated_at": run["generated_at"].isoformat(),
             "raw_step_seconds": run["step_seconds"],
+            "sampling_policy": run["sampling_policy"],
             "is_mock": run["is_mock"],
             "source_element_set_id": run["source_element_set_id"],
         },

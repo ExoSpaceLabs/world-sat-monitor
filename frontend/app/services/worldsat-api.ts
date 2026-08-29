@@ -1,18 +1,18 @@
 import type {
   CatalogSearchResult,
+  GroupPosition,
   ManagedSatellite,
   Satellite,
   SatelliteCreateRequest,
+  SatelliteGroup,
+  SatelliteGroupCreateRequest,
+  SatelliteGroupMember,
   SatelliteTrackPoint,
 } from "../domain/satellite";
-import type {AppSettings} from "../domain/settings";
+import type {AppSettings, GroupOrbitDisplaySettings} from "../domain/settings";
 
-// Keep this transport module free of runtime imports so its API functions remain
-// directly executable under Node's type-stripping tests. These values mirror the
-// versioned frontend/backend defaults and are used only as a compatibility floor
-// when an older settings payload briefly appears during an upgrade.
 const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 5,
+  version: 7,
   map: {
     basemap: "dark",
     themed_base_color: "#041018",
@@ -34,17 +34,21 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
       refresh_seconds: 30,
     },
   },
+  group_orbit: {
+    marker_placement: "orbit",
+    show_satellite_names: false,
+    direction_vector_enabled: false,
+    position_update_ms: 2000,
+    prediction_hours: 3,
+    step_seconds: 120,
+    refresh_seconds: 60,
+  },
 };
 
 type PositionResponse = {
   satellite: {id: number; norad_id: string | null; name: string; active: boolean};
   at: string;
-  position: {
-    lat_deg: number;
-    lon_deg: number;
-    altitude_km: number;
-    heading_deg: number;
-  };
+  position: {lat_deg: number; lon_deg: number; altitude_km: number; heading_deg: number};
   interpolated: boolean;
   source: {is_mock: boolean; step_seconds: number; source_element_set_id: number | null};
 };
@@ -52,34 +56,25 @@ type PositionResponse = {
 type TrackResponse = {
   resolution_seconds: number;
   source: {is_mock: boolean; source_element_set_id: number | null};
-  points: Array<{
-    time: string;
-    lat_deg: number;
-    lon_deg: number;
-    altitude_km: number;
-    segment: "history" | "prediction";
-  }>;
+  points: Array<{time: string; lat_deg: number; lon_deg: number; altitude_km: number; segment: "history" | "prediction"}>;
 };
 
-type SatelliteListResponse = {
-  satellites: ManagedSatellite[];
+type SatelliteListResponse = {satellites: ManagedSatellite[]};
+type CatalogSearchResponse = {query: string; provider: string; results: CatalogSearchResult[]};
+type GroupListResponse = {groups: SatelliteGroup[]};
+type GroupMembersResponse = {members: SatelliteGroupMember[]};
+type GroupPositionsResponse = {group: SatelliteGroup; generated_at: string; positions: GroupPosition[]};
+type GroupDisplayResponse = {
+  group: SatelliteGroup;
+  display: {requested_until: string; prediction_hours: number; step_seconds: number};
 };
-
-type CatalogSearchResponse = {
-  query: string;
-  provider: string;
-  results: CatalogSearchResult[];
-};
+type GroupPurgeResponse = {deleted_satellites: number};
 
 type AppSettingsWire = {
   version?: number;
-  map?: Partial<AppSettings["map"]> & {
-    themed_water_color?: string;
-    themed_land_color?: string;
-  };
-  orbit?: Partial<Omit<AppSettings["orbit"], "path">> & {
-    path?: Partial<AppSettings["orbit"]["path"]>;
-  };
+  map?: Partial<AppSettings["map"]> & {themed_water_color?: string; themed_land_color?: string};
+  orbit?: Partial<Omit<AppSettings["orbit"], "path">> & {path?: Partial<AppSettings["orbit"]["path"]>};
+  group_orbit?: Partial<AppSettings["group_orbit"]>;
 };
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -100,12 +95,11 @@ function normalizeAppSettings(payload: AppSettingsWire): AppSettings {
   const map = payload.map ?? {};
   const orbit = payload.orbit ?? {};
   const path = orbit.path ?? {};
+  const groupOrbit = payload.group_orbit ?? {};
   const baseColorCandidate = map.themed_base_color ?? map.themed_water_color;
   const baseColor = typeof baseColorCandidate === "string" && /^#[0-9a-f]{6}$/i.test(baseColorCandidate)
     ? baseColorCandidate
     : DEFAULT_APP_SETTINGS.map.themed_base_color;
-  // Contrast is intentionally no longer user-configurable. Keep the persisted
-  // wire field for compatibility, but normalize rendering back to the stable default.
   const contrast = DEFAULT_APP_SETTINGS.map.themed_contrast;
   const basemap = map.basemap === "dark" || map.basemap === "street" || map.basemap === "satellite"
     ? map.basemap
@@ -134,6 +128,17 @@ function normalizeAppSettings(payload: AppSettingsWire): AppSettings {
         refresh_seconds: typeof path.refresh_seconds === "number" && Number.isFinite(path.refresh_seconds) ? path.refresh_seconds : DEFAULT_APP_SETTINGS.orbit.path.refresh_seconds,
       },
     },
+    group_orbit: {
+      marker_placement: groupOrbit.marker_placement === "nadir" || groupOrbit.marker_placement === "orbit"
+        ? groupOrbit.marker_placement
+        : DEFAULT_APP_SETTINGS.group_orbit.marker_placement,
+      show_satellite_names: typeof groupOrbit.show_satellite_names === "boolean" ? groupOrbit.show_satellite_names : DEFAULT_APP_SETTINGS.group_orbit.show_satellite_names,
+      direction_vector_enabled: typeof groupOrbit.direction_vector_enabled === "boolean" ? groupOrbit.direction_vector_enabled : DEFAULT_APP_SETTINGS.group_orbit.direction_vector_enabled,
+      position_update_ms: typeof groupOrbit.position_update_ms === "number" && Number.isFinite(groupOrbit.position_update_ms) ? groupOrbit.position_update_ms : DEFAULT_APP_SETTINGS.group_orbit.position_update_ms,
+      prediction_hours: typeof groupOrbit.prediction_hours === "number" && Number.isFinite(groupOrbit.prediction_hours) ? groupOrbit.prediction_hours : DEFAULT_APP_SETTINGS.group_orbit.prediction_hours,
+      step_seconds: typeof groupOrbit.step_seconds === "number" && Number.isFinite(groupOrbit.step_seconds) ? groupOrbit.step_seconds : DEFAULT_APP_SETTINGS.group_orbit.step_seconds,
+      refresh_seconds: typeof groupOrbit.refresh_seconds === "number" && Number.isFinite(groupOrbit.refresh_seconds) ? groupOrbit.refresh_seconds : DEFAULT_APP_SETTINGS.group_orbit.refresh_seconds,
+    },
   };
 }
 
@@ -142,68 +147,90 @@ export async function getAppSettings(): Promise<AppSettings> {
 }
 
 export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
-  const payload = await requestJson<AppSettingsWire>("/api/v1/settings", {
-    method: "PUT",
-    body: JSON.stringify(settings),
-  });
+  const payload = await requestJson<AppSettingsWire>("/api/v1/settings", {method: "PUT", body: JSON.stringify(settings)});
   return normalizeAppSettings(payload);
 }
 
 export async function listManagedSatellites(active?: boolean): Promise<ManagedSatellite[]> {
   const suffix = active === undefined ? "" : `?active=${active}`;
-  const payload = await requestJson<SatelliteListResponse>(`/api/v1/satellites${suffix}`);
-  return payload.satellites;
+  return (await requestJson<SatelliteListResponse>(`/api/v1/satellites${suffix}`)).satellites;
 }
 
-export async function searchSatelliteCatalog(
-  query: string,
-  provider = "celestrak",
-): Promise<CatalogSearchResult[]> {
+export async function searchSatelliteCatalog(query: string, provider = "celestrak"): Promise<CatalogSearchResult[]> {
   const params = new URLSearchParams({q: query, provider});
-  const payload = await requestJson<CatalogSearchResponse>(`/api/v1/catalog/search?${params.toString()}`);
-  return payload.results;
+  return (await requestJson<CatalogSearchResponse>(`/api/v1/catalog/search?${params.toString()}`)).results;
 }
 
 export function createManagedSatellite(value: SatelliteCreateRequest): Promise<ManagedSatellite> {
-  return requestJson<ManagedSatellite>("/api/v1/satellites", {
-    method: "POST",
-    body: JSON.stringify(value),
-  });
+  return requestJson<ManagedSatellite>("/api/v1/satellites", {method: "POST", body: JSON.stringify(value)});
 }
 
-export function updateManagedSatellite(
-  satelliteId: number,
-  value: Partial<Omit<SatelliteCreateRequest, "active">>,
-): Promise<ManagedSatellite> {
-  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}`, {
-    method: "PATCH",
-    body: JSON.stringify(value),
-  });
+export function updateManagedSatellite(satelliteId: number, value: Partial<Omit<SatelliteCreateRequest, "active">>): Promise<ManagedSatellite> {
+  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}`, {method: "PATCH", body: JSON.stringify(value)});
 }
 
 export function activateManagedSatellite(satelliteId: number): Promise<ManagedSatellite> {
-  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}/activate`, {
-    method: "POST",
-  });
+  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}/activate`, {method: "POST"});
 }
 
 export function deactivateManagedSatellite(satelliteId: number): Promise<ManagedSatellite> {
-  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}/deactivate`, {
-    method: "POST",
-  });
+  return requestJson<ManagedSatellite>(`/api/v1/satellites/${satelliteId}/deactivate`, {method: "POST"});
 }
 
 export function deleteManagedSatellite(satelliteId: number): Promise<void> {
   return requestJson<void>(`/api/v1/satellites/${satelliteId}`, {method: "DELETE"});
 }
 
-export async function getSatellitePosition(
-  noradId: number | string,
-  at: Date,
-): Promise<{satellite: Satellite; isMock: boolean; interpolated: boolean}> {
-  const payload = await requestJson<PositionResponse>(
-    `/api/v1/satellites/${encodeURIComponent(String(noradId))}/position?at=${encodeURIComponent(at.toISOString())}`,
-  );
+export async function listSatelliteGroups(): Promise<SatelliteGroup[]> {
+  return (await requestJson<GroupListResponse>("/api/v1/groups")).groups;
+}
+
+export function createSatelliteGroup(value: SatelliteGroupCreateRequest): Promise<SatelliteGroup> {
+  return requestJson<SatelliteGroup>("/api/v1/groups", {method: "POST", body: JSON.stringify(value)});
+}
+
+export function updateSatelliteGroup(groupId: number, value: Partial<SatelliteGroupCreateRequest>): Promise<SatelliteGroup> {
+  return requestJson<SatelliteGroup>(`/api/v1/groups/${groupId}`, {method: "PATCH", body: JSON.stringify(value)});
+}
+
+export function deleteSatelliteGroup(groupId: number): Promise<void> {
+  return requestJson<void>(`/api/v1/groups/${groupId}`, {method: "DELETE"});
+}
+
+export function purgeSatelliteGroup(groupId: number): Promise<GroupPurgeResponse> {
+  return requestJson<GroupPurgeResponse>(`/api/v1/groups/${groupId}/satellites`, {method: "DELETE"});
+}
+
+export async function listSatelliteGroupMembers(groupId: number): Promise<SatelliteGroupMember[]> {
+  return (await requestJson<GroupMembersResponse>(`/api/v1/groups/${groupId}/members`)).members;
+}
+
+export function addSatelliteGroupMember(groupId: number, satelliteId: number): Promise<SatelliteGroupMember> {
+  return requestJson<SatelliteGroupMember>(`/api/v1/groups/${groupId}/members`, {method: "POST", body: JSON.stringify({satellite_id: satelliteId})});
+}
+
+export function removeSatelliteGroupMember(groupId: number, satelliteId: number): Promise<void> {
+  return requestJson<void>(`/api/v1/groups/${groupId}/members/${satelliteId}`, {method: "DELETE"});
+}
+
+export async function getSatelliteGroupPositions(groupId: number, at: Date): Promise<GroupPosition[]> {
+  const params = new URLSearchParams({active_only: "false", at: at.toISOString()});
+  return (await requestJson<GroupPositionsResponse>(`/api/v1/groups/${groupId}/positions?${params.toString()}`)).positions;
+}
+
+export function requestSatelliteGroupDisplay(groupId: number, settings: GroupOrbitDisplaySettings): Promise<GroupDisplayResponse> {
+  return requestJson<GroupDisplayResponse>(`/api/v1/groups/${groupId}/display`, {
+    method: "POST",
+    body: JSON.stringify({prediction_hours: settings.prediction_hours, step_seconds: settings.step_seconds, lease_seconds: 1800}),
+  });
+}
+
+export function releaseSatelliteGroupDisplay(groupId: number): Promise<void> {
+  return requestJson<void>(`/api/v1/groups/${groupId}/display`, {method: "DELETE"});
+}
+
+export async function getSatellitePosition(noradId: number | string, at: Date): Promise<{satellite: Satellite; isMock: boolean; interpolated: boolean}> {
+  const payload = await requestJson<PositionResponse>(`/api/v1/satellites/${encodeURIComponent(String(noradId))}/position?at=${encodeURIComponent(at.toISOString())}`);
   return {
     satellite: {
       name: payload.satellite.name,
@@ -225,14 +252,8 @@ export async function getSatelliteTrack(
   resolutionSeconds: number,
   center: Date,
 ): Promise<{points: SatelliteTrackPoint[]; resolutionSeconds: number; isMock: boolean}> {
-  const params = new URLSearchParams({
-    start: start.toISOString(),
-    end: end.toISOString(),
-    resolution_seconds: String(resolutionSeconds),
-  });
-  const payload = await requestJson<TrackResponse>(
-    `/api/v1/satellites/${encodeURIComponent(String(noradId))}/track?${params.toString()}`,
-  );
+  const params = new URLSearchParams({start: start.toISOString(), end: end.toISOString(), resolution_seconds: String(resolutionSeconds)});
+  const payload = await requestJson<TrackResponse>(`/api/v1/satellites/${encodeURIComponent(String(noradId))}/track?${params.toString()}`);
   const centerMs = center.getTime();
   return {
     resolutionSeconds: payload.resolution_seconds,

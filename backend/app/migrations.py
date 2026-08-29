@@ -104,6 +104,9 @@ CURRENT_SCHEMA_SQL = r"""
 ALTER TABLE propagation_jobs
     ADD COLUMN IF NOT EXISTS history_hours INTEGER NOT NULL DEFAULT 48
         CHECK (history_hours >= 0);
+ALTER TABLE propagation_jobs
+    ADD COLUMN IF NOT EXISTS horizon_hours INTEGER
+        CHECK (horizon_hours IS NULL OR horizon_hours > 0);
 
 ALTER TABLE propagation_jobs
     ALTER COLUMN step_seconds SET DEFAULT 60;
@@ -114,6 +117,14 @@ ALTER TABLE propagation_jobs
 ALTER TABLE propagation_jobs
     ADD CONSTRAINT propagation_jobs_status_check
     CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'));
+
+ALTER TABLE propagation_runs
+    ADD COLUMN IF NOT EXISTS sampling_policy JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE INDEX IF NOT EXISTS ix_propagation_runs_completed_satellite_generated
+    ON propagation_runs (satellite_id, generated_at DESC)
+    INCLUDE (start_time, end_time, step_seconds, source_element_set_id, is_mock)
+    WHERE status = 'completed';
 
 CREATE TABLE IF NOT EXISTS provider_fetch_state (
     satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
@@ -142,6 +153,49 @@ CREATE TABLE IF NOT EXISTS satellite_current_state (
 CREATE INDEX IF NOT EXISTS ix_satellite_current_state_time
     ON satellite_current_state (state_time);
 
+CREATE TABLE IF NOT EXISTS satellite_groups (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    group_type TEXT NOT NULL DEFAULT 'custom'
+        CHECK (group_type IN ('constellation', 'custom', 'mission')),
+    source TEXT NOT NULL DEFAULT 'user',
+    source_key TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_requested_until TIMESTAMPTZ;
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_prediction_hours INTEGER NOT NULL DEFAULT 3
+        CHECK (display_prediction_hours > 0 AND display_prediction_hours <= 336);
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_step_seconds INTEGER NOT NULL DEFAULT 120
+        CHECK (display_step_seconds >= 10 AND display_step_seconds <= 3600);
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_refreshed_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS ix_satellite_groups_type_name
+    ON satellite_groups (group_type, name);
+CREATE INDEX IF NOT EXISTS ix_satellite_groups_display_requested
+    ON satellite_groups (display_requested_until)
+    WHERE display_requested_until IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_satellite_groups_source_key
+    ON satellite_groups (source, source_key)
+    WHERE source_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS satellite_group_members (
+    group_id BIGINT NOT NULL REFERENCES satellite_groups(id) ON DELETE CASCADE,
+    satellite_id BIGINT NOT NULL REFERENCES satellites(id) ON DELETE CASCADE,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (group_id, satellite_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_satellite_group_members_satellite
+    ON satellite_group_members (satellite_id, group_id);
+
 WITH ranked_active_jobs AS (
     SELECT id,
            ROW_NUMBER() OVER (
@@ -166,7 +220,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_propagation_jobs_active_element
 
 
 def migrate_schema() -> bool:
-    """Apply legacy conversion and additive worker schema updates.
+    """Apply legacy conversion and additive worker/application schema updates.
 
     Returns True only when the pre-#12 TLE schema was converted.
     """

@@ -1,240 +1,307 @@
-# WorldSat Monitor architecture
+# WorldSat Monitor v1 architecture
 
-WorldSat Monitor separates catalog management, external orbital-data acquisition, propagation, query APIs, and visualization. The boundary is intentional: the UI never becomes an orbit propagator, the user-facing backend never becomes a scheduled provider worker, and orbital workers never depend on browser state.
+WorldSat Monitor separates orbital acquisition, propagation, persistent state, query APIs, and visualization. The browser is deliberately a rendering and interaction client: it does not fetch provider data directly and it does not run SGP4.
 
 ## Runtime topology
-
-Current topology:
 
 ```mermaid
 flowchart LR
     U[Browser] --> G[Gateway / nginx]
     G --> F[Frontend]
     G --> B[Backend API]
+
     B --> DB[(PostgreSQL)]
-    B --> CFG[(Mounted settings.json)]
-    C[CelesTrak GP] --> P[orbital-provider]
+    B --> CFG[(settings.json volume)]
+
+    C[CelesTrak GP/catalog] --> P[orbital-provider]
     P --> DB
     W[propagator] --> DB
 ```
 
-Planned extensions add more provider adapters and the independent quality evaluator:
+The Docker Compose services are:
 
-```mermaid
-flowchart LR
-    C[CelesTrak] --> P[orbital-provider]
-    S[Space-Track] --> P
-    O[Future operator/OEM sources] --> P
-    P --> DB[(PostgreSQL)]
-    W[propagator] --> DB
-    Q[quality-worker] --> DB
-    B[backend-api] --> DB
-    U[frontend] --> B
-```
+| Service | Responsibility |
+| --- | --- |
+| `gateway` | Same-origin ingress. Routes frontend and `/api/` traffic. |
+| `frontend` | MapLibre globe, single/group visualization, panels, manager, and user interaction. |
+| `backend` | Client-facing satellite/group/settings/query API and interpolation of stored orbital state. |
+| `orbital-provider` | Provider polling, catalog/orbital acquisition, normalization, deduplication, provider state, and propagation-job creation. |
+| `propagator` | Claims propagation jobs, executes SGP4, stores runs/trajectory/current state, and performs trajectory retention. |
+| `db` | PostgreSQL persistent state and propagation-job queue. |
 
-One PostgreSQL service remains the initial durable store. Service separation does not require distributed databases or a message broker at this stage. PostgreSQL is also the propagation-job queue, with workers claiming rows through `FOR UPDATE ... SKIP LOCKED`.
+The API, provider, and propagator currently use the same Python package/container image, but they are independent processes with separate entry points and runtime ownership.
 
-The `backend`, `orbital-provider`, and `propagator` containers currently share the same Python image/package but use separate entry points and runtime responsibilities.
+## Service boundaries
 
-## Service ownership
+These boundaries are intentional:
 
-| Component | Writes | Reads | Responsibility |
-| --- | --- | --- | --- |
-| `frontend` | none directly | backend API | visualization and interaction |
-| `backend` | catalog lifecycle + settings | stored propagation products | client-facing API and interpolation |
-| `orbital-provider` | provider state, orbital elements, propagation jobs | active satellites/identifiers | external acquisition and normalization |
-| `propagator` | job state, runs, samples, current state | queued jobs + orbital elements | orbital computation |
-| `db` | durable state | n/a | shared persistent store |
-| `gateway` | none | frontend/backend | ingress |
+- the browser does not propagate orbits;
+- the backend request process does not call CelesTrak;
+- the provider does not generate trajectory samples;
+- the propagator does not serve browser requests;
+- PostgreSQL owns durable state and also coordinates propagation work;
+- external-provider failures do not make the user-facing API unavailable.
 
-The backend never calls CelesTrak and never executes SGP4 in a request path. The provider never creates position samples. The propagator never serves browser requests.
+This keeps the v1 stack small while preserving clear seams for future provider, propagation, telemetry, and mission-system adapters.
 
-## Satellite identity and lifecycle
+## Satellite identity
 
-A WorldSat Monitor satellite has an internal database ID. External identities are attributes, not primary keys.
+A satellite has an internal WorldSat Monitor database ID. External identities are attributes rather than primary keys.
 
 ```mermaid
 flowchart LR
     SAT[satellites] --> ID[satellite_identifiers]
-    ID --> N[NORAD_CAT_ID]
-    ID --> C[COSPAR]
-    ID --> X[Future provider IDs]
+    ID --> NORAD[NORAD_CAT_ID]
+    ID --> COSPAR[COSPAR]
+    ID --> FUTURE[future provider namespaces]
 ```
 
-Monitoring state is persisted independently from runtime map selection:
+This allows a spacecraft to carry several identifiers without coupling the database model to one catalog provider.
+
+## Monitoring lifecycle
+
+Monitoring state is independent from map selection.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Inactive: add satellite
-    Inactive --> Active: activate
-    Active --> Inactive: deactivate
-    Inactive --> [*]: delete
+    [*] --> Inactive: add/import object
+    Inactive --> Active: activate monitoring
+    Active --> Inactive: deactivate monitoring
+    Inactive --> [*]: delete local object
 ```
 
-Inactive means metadata and history are retained, the provider does not schedule acquisition, and pending propagation work is cancelled. Active means the provider keeps source data current and ensures propagation work exists when a new usable element set is accepted. Deactivation never deletes orbital history.
+`active=true` means the provider and propagator should maintain useful orbital state for that object. Deactivation is non-destructive: metadata and historical records remain, pending propagation work is cancelled, and new provider work is not scheduled until reactivation.
 
-## Orbital source model
+A satellite may be displayed without changing its database identity, and display selection does not redefine monitoring state.
 
-The pre-#12 schema treated a two-line TLE record as the domain object. The canonical model is now an orbital element set with OMM/GP-compatible fields:
+## Groups and constellations
 
-```mermaid
-flowchart TD
-    T[TLE / Alpha-5] --> N[Normalized OrbitalElementSet]
-    J[GP JSON / CSV] --> N
-    O[CCSDS OMM XML/KVN] --> N
-    N --> DB[(orbital_element_sets)]
-    DB --> PROP[PropagationEngine]
-```
-
-`orbital_element_sets` stores source provenance, source format, mean-element theory, SGP4-relevant mean elements, provider fingerprint, and the original provider payload. TLE lines may exist inside `raw_payload` for a migrated or TLE-sourced record, but `line1`/`line2` are not required database columns.
-
-## Provider pipeline
-
-The provider service processes active satellites only.
+v1 has a first-class collection model:
 
 ```mermaid
 flowchart LR
-    CAT[(active satellites)] --> SEL[provider selection]
-    SEL --> MOCK[Mock provider]
-    SEL --> CEL[CelesTrak provider]
-    MOCK --> N[normalize OMM/GP fields]
-    CEL --> N
-    N --> FP[fingerprint]
-    FP --> E[(orbital_element_sets)]
+    SAT[satellites] --> M[satellite_group_members]
+    G[satellite_groups] --> M
+    PG[provider catalog groups] --> IMP[import/sync]
+    IMP --> G
+    IMP --> SAT
+```
+
+Collections may be:
+
+- provider-backed constellations;
+- user-created custom groups;
+- user-created mission-oriented groups.
+
+Membership is separate from satellite existence. The same satellite can belong to more than one group. Removing one membership therefore does not delete the satellite.
+
+The Manager reflects this ownership model:
+
+- **Single** manages standalone/catalog objects and monitoring state;
+- **Grouped** imports provider constellations and manages collections/memberships;
+- large constellations remain collapsed until explicitly expanded;
+- destructive collection purges are explicit and blocked while members are active.
+
+## Orbital source model
+
+The canonical orbital record is a normalized, immutable orbital element set rather than mandatory raw TLE lines.
+
+```mermaid
+flowchart TD
+    GP[CelesTrak GP JSON] --> N[Normalized orbital element set]
+    TLE[TLE / Alpha-5 source] --> N
+    OMM[CCSDS OMM-compatible source] --> N
+    N --> E[(orbital_element_sets)]
     E --> J[(propagation_jobs)]
 ```
 
-Provider responsibilities are:
+`orbital_element_sets` stores:
 
-- select the configured source;
-- determine whether a refresh is due;
-- fetch external data or deterministic mock data;
-- validate and normalize OMM/GP fields;
-- retain the original payload;
-- fingerprint normalized orbital content;
-- insert a new immutable element set only when content changed;
-- ensure exactly one active propagation job exists for a source element set;
-- retain per-satellite/provider fetch status and errors.
+- source/provider provenance;
+- source format and mean-element theory;
+- SGP4-relevant OMM/GP fields;
+- provider fingerprint for deduplication;
+- original provider payload;
+- immutable association with the satellite.
 
-Provider failures are isolated from the backend. A failed CelesTrak request records provider state but does not make the API unavailable.
+TLE remains a possible source representation and legacy rows can be migrated, but line 1/line 2 are not the canonical database schema.
 
-## Deterministic mock provider
+## Provider pipeline
 
-`WORLDSAT-01` is a permanent synthetic integration target rather than a temporary fake-position generator.
+For each active satellite, `orbital-provider`:
 
-```text
-satellites / WORLDSAT-01
-NORAD_CAT_ID = 999999999
-provider_preference = mock
-        ↓
-MockOrbitalDataProvider
-        ↓
-fixed valid OMM-compatible elements
-        ↓
-normal element-set persistence and fingerprinting
-        ↓
-normal propagation job
-        ↓
-normal SGP4 worker
-```
+1. chooses the configured provider;
+2. checks whether acquisition is due;
+3. fetches external or deterministic mock data;
+4. validates and normalizes the response;
+5. fingerprints normalized orbital content;
+6. inserts a new element set only when orbital content changed;
+7. creates/ensures propagation work for the accepted element set;
+8. records provider status/errors independently of the API process.
 
-`999999999` is reserved only inside WorldSat Monitor and is not claimed to be an official USSF/NORAD catalog assignment. The provider always returns the same orbital data, so repeated polling validates deduplication and does not create redundant element sets.
-
-Current `python-sgp4` releases constrain the internal `Satrec.satnum` metadata field to `0..339999`, while OMM/catalog identifiers can exceed that range. The propagation adapter therefore preserves the real identifier in the OMM/raw database record but substitutes local sentinel `0` only when initializing `Satrec` with an out-of-range catalog number. This does not change orbital dynamics because satellite number is identity metadata, not an SGP4 state parameter.
+CelesTrak GP/JSON is the public provider implemented in v1. A deterministic mock provider drives integration tests without network dependency.
 
 ## Propagation pipeline
 
 ```mermaid
 flowchart LR
-    J[(propagation_jobs)] --> CLAIM[FOR UPDATE SKIP LOCKED]
-    CLAIM --> E[(orbital_element_sets)]
+    J[(propagation_jobs)] --> C[FOR UPDATE SKIP LOCKED]
+    C --> E[(orbital_element_sets)]
     E --> S[SGP4PropagationEngine]
     S --> R[(propagation_runs)]
     S --> P[(position_samples)]
-    S --> C[(satellite_current_state)]
-    P --> API[backend API]
+    S --> CS[(satellite_current_state)]
 ```
 
-The `PropagationEngine` abstraction owns orbit calculation. `SGP4PropagationEngine` is the first implementation, initialized from normalized OMM-compatible fields.
+PostgreSQL is used as the propagation-job queue. Workers claim rows with `FOR UPDATE ... SKIP LOCKED`, allowing concurrent workers without duplicate ownership of the same pending job.
 
-A claimed job transitions from `pending` to `running`. The propagator:
+A propagation run:
 
-1. reloads its source element set;
+1. reloads the source element set;
 2. verifies the satellite is still active;
-3. constructs the configured history/future time window;
-4. initializes SGP4 once for the element set;
-5. propagates samples across the window;
-6. writes `position_samples` and the traceable `propagation_run`;
-7. upserts `satellite_current_state` for the generated current timestamp;
-8. commits the run and job as completed atomically.
+3. creates the configured history/prediction time window;
+4. initializes SGP4 from normalized mean elements;
+5. propagates the tiered sampling grid;
+6. stores trajectory samples and run provenance;
+7. updates the one-row current-state product;
+8. marks the job complete atomically with its products.
 
-Failures mark only the claimed job failed. Deactivation before or during work marks the job cancelled rather than producing new monitoring data for an inactive satellite.
+The `PropagationEngine` abstraction keeps SGP4 as the first engine rather than making it the architectural boundary. Future OEM/state-vector products can therefore be introduced without moving propagation into the API or browser.
+
+## Current state versus trajectory state
+
+WorldSat Monitor intentionally stores two different orbital products:
+
+### `satellite_current_state`
+
+One row per satellite, optimized for questions such as:
+
+> Where are all members of this constellation now?
+
+Group display and batched current-position requests use this path and do not scan the trajectory table.
+
+### `position_samples`
+
+Time-series history/prediction for detailed selected-object queries. Track APIs operate on a selected propagation run and decimate by requested time resolution.
+
+This split is central to constellation scaling. Rendering 5,000 current positions should not require searching millions of historical/predicted rows.
+
+See [performance.md](performance.md).
+
+## Sampling and retention
+
+The default propagation product uses tiered sampling:
+
+| Region | Default cadence |
+| --- | ---: |
+| history through +24 h | 60 s base cadence |
+| +24 h through +72 h | 300 s |
+| beyond +72 h | 900 s |
+
+The exact policy is persisted with each propagation run. The backend interpolates stored ECEF samples for arbitrary timestamps, so non-uniform storage cadence does not become a frontend contract.
+
+Superseded trajectory samples are periodically removed in bounded batches while run provenance and quality records remain available. The current completed run/current-state reference for active objects is protected from cleanup.
 
 ## Coordinate handling
 
-SGP4 produces TEME position/velocity. The current worker applies a Vallado-style GMST rotation, using UTC as the UT1 approximation for visualization, to obtain ECEF coordinates. The existing geographic conversion is currently spherical-Earth based and can later be upgraded independently of the SGP4 provider/worker boundaries.
+SGP4 produces TEME position/velocity. v1 applies a Vallado-style GMST rotation with UTC used as the UT1 approximation for visualization, producing ECEF coordinates.
 
-The API interpolates requested times in Cartesian ECEF coordinates rather than interpolating longitude, avoiding discontinuities at the ±180° meridian.
+Position lookup interpolates in Cartesian ECEF space rather than directly interpolating longitude. This avoids the ±180° dateline discontinuity.
 
-## Current-state versus trajectory storage
+The current geographic conversion uses a spherical Earth approximation. That choice is isolated from provider normalization and the propagation-engine interface and can be upgraded independently.
 
-`position_samples` is the trajectory/history/prediction product used for detailed range queries.
+## Frontend rendering architecture
 
-`satellite_current_state` is a separate one-row-per-satellite product intended for fast current-position queries once many satellites and constellations are rendered together.
+The frontend has two deliberately different rendering workloads.
 
-This avoids forcing future constellation views to search large trajectory tables simply to answer “where is everything now?”. Partitioning/retention and large-constellation tuning remain part of the dedicated scaling issue.
+### Single display
 
-## Legacy schema migration
+A selected satellite uses:
 
-When any Python service starts against the previous TLE-centric schema, the migration layer serializes changes using a PostgreSQL advisory transaction lock and converts the old model before applying additive worker schema changes:
+- a MapLibre marker projected at surface/orbital altitude;
+- finite camera-to-satellite Earth occlusion;
+- a custom WebGL orbit layer for history, prediction, and direction vector;
+- optional follow-camera behavior;
+- context-sensitive Details.
 
-```text
-satellites.norad_id -> satellite_identifiers[NORAD_CAT_ID]
-tle_sets -> orbital_element_sets (source_format=TLE, raw_payload={line1,line2})
-propagation_runs.source_tle_id -> source_element_set_id
-propagation_jobs.tle_id -> element_set_id
-prediction_error_daily.reference_tle_id -> reference_element_set_id
-```
+### Group display
 
-The current additive migration also introduces `provider_fetch_state`, `satellite_current_state`, propagation history-window configuration, cancelled job state, and active-job deduplication.
+A constellation/group uses:
 
-CI executes the legacy migration against a real PostgreSQL fixture and verifies data/reference preservation.
+- one batched current-position API response;
+- one browser canvas overlay for all group markers rather than thousands of DOM markers;
+- the same globe projection/occlusion helpers used by detailed satellite rendering;
+- optional direction vectors and names according to Group orbital settings;
+- aggregate collection Details.
 
-## Backend API ownership
+Clicking a group member can transition back to detailed single-satellite display.
 
-The backend owns client-facing application operations: satellite CRUD, activate/deactivate lifecycle transitions, position/track queries and decimation, settings, and future group/quality queries.
+### Environment
 
-Position and track compatibility endpoints currently resolve satellites by `NORAD_CAT_ID`. Management endpoints use the internal satellite ID, keeping domain identity independent from catalog identifiers.
+The environment consists of:
 
-The backend can interpolate stored ECEF samples to satisfy an arbitrary query timestamp, but it does not run an orbital propagator to answer requests.
+- inertial star/sun background;
+- UTC/time-scale Earth rotation;
+- a MapLibre custom WebGL day/night illumination layer;
+- configurable night-shadow opacity.
 
-## Frontend ownership
+The illumination layer participates in the globe 3D render pass but deliberately disables depth testing while drawing the surface-darkening blend. This makes environment behavior independent from whether a single-satellite 3D orbit layer is currently mounted.
 
-The frontend owns visualization and user interaction. The satellite panel includes local catalog management: list active and inactive satellites, add metadata/identifiers manually, activate/deactivate monitoring, and delete inactive entries. Runtime display selection remains separate from persisted monitoring state.
+## Basemaps
 
-`GROUND` mode uses surface placement and horizon clipping. `ORBIT` mode preserves actual altitude/depth so trajectory segments disappear only when Earth physically occludes them. Satellite marker occlusion uses a finite camera-to-satellite ray/sphere test.
+All modes use MapLibre globe projection.
 
-## Worker health
+- **Dark**: themed Esri Dark Gray raster base/reference layers.
+- **Street**: OpenStreetMap standard raster tiles.
+- **Satellite**: Esri World Imagery with OpenFreeMap-derived label/symbol overlays.
 
-`orbital-provider` and `propagator` each expose a small internal HTTP health endpoint on their own container port. Health records service identity and recent cycle success/failure independently of the FastAPI backend. Compose and CI use these endpoints directly.
+Contrast behavior for satellite/orbit graphics is selected according to the active basemap. See [basemap-contrast.md](basemap-contrast.md).
 
-## Prediction quality
+## Settings
 
-Prediction-quality records reference generalized orbital element sets rather than TLE rows. A later GP/OMM set remains an estimate, not ground truth. `reference_kind` and element-set provenance allow future OEM/operator/GNSS references without changing the basic quality model. The future `quality-worker` remains separate from both acquisition and propagation.
+Map and orbital display settings are persisted by the backend. The UI separates:
+
+- map/environment settings;
+- Single orbital settings;
+- Group orbital settings.
+
+Reset actions restore the corresponding default settings rather than replacing unrelated application state.
+
+## Deployment architecture
+
+Two Compose entry points are maintained:
+
+- `compose.yaml`: builds project images from source;
+- `compose.images.yaml`: pulls published project images and performs no local project build.
+
+Release images are published only after successful CI on `main`. `develop` is validation-only and never publishes container images.
+
+See [deployment.md](deployment.md).
 
 ## CI contract
 
-`develop` and `main` both run CI. The development gate includes:
+Both `develop` and `main` run the same validation pipeline:
 
-- frontend lint/build/tests/artifact validation;
-- backend/provider/propagator compile and unit tests;
-- provider fixture parsing and malformed/failure tests;
-- SGP4 validation against the published Vanguard reference vector;
-- propagation of the large synthetic WorldSat catalog identifier through the SGP4 compatibility adapter;
-- real PostgreSQL migration from the legacy TLE schema;
-- full Compose startup and worker health;
-- deterministic mock provider -> normalized element -> propagation job -> SGP4 -> run/samples/current-state -> backend API integration;
-- element-set deduplication checks;
-- satellite lifecycle checks proving inactive satellites are ignored and deactivation leaves no active propagation job.
+- frontend lint/build/tests;
+- production artifact validation;
+- group marker-preparation benchmark;
+- backend/provider/propagator tests;
+- real PostgreSQL legacy migration;
+- constellation-scale backend benchmark;
+- complete Docker Compose provider -> propagation -> API integration.
 
-Features remain on `develop` until this integration path is stable, then merge to `main`.
+`main` has one additional consequence: a successful `CI` workflow run is the only trigger for the GHCR image publication workflow.
+
+## v1 extension points
+
+The v1 boundaries intentionally leave room for:
+
+- additional GP/OMM/OEM/state-vector providers;
+- higher-precision orbit products;
+- ground stations and pass prediction;
+- AOI/swath/observation planning;
+- operator/private telemetry adapters;
+- simulator/SIL/HIL data sources;
+- mission events and operations timelines.
+
+Those features can be added without turning the frontend into an orbital backend or coupling public catalog acquisition to user-facing request latency.

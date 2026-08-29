@@ -34,6 +34,10 @@ class Settings:
         "CELESTRAK_CATALOG_URL",
         "https://celestrak.org/satcat/records.php",
     )
+    celestrak_groups_url: str = os.getenv(
+        "CELESTRAK_GROUPS_URL",
+        "https://celestrak.org/NORAD/elements/",
+    )
     celestrak_timeout_seconds: float = float(os.getenv("CELESTRAK_TIMEOUT_SECONDS", "15"))
     provider_health_port: int = int(os.getenv("PROVIDER_HEALTH_PORT", "8010"))
 
@@ -42,6 +46,13 @@ class Settings:
     propagation_history_hours: int = int(os.getenv("PROPAGATION_HISTORY_HOURS", "48"))
     propagation_horizon_days: int = int(os.getenv("PROPAGATION_HORIZON_DAYS", "14"))
     propagation_step_seconds: int = int(os.getenv("PROPAGATION_STEP_SECONDS", "60"))
+    propagation_near_horizon_hours: int = int(os.getenv("PROPAGATION_NEAR_HORIZON_HOURS", "24"))
+    propagation_mid_horizon_hours: int = int(os.getenv("PROPAGATION_MID_HORIZON_HOURS", "72"))
+    propagation_mid_step_seconds: int = int(os.getenv("PROPAGATION_MID_STEP_SECONDS", "300"))
+    propagation_far_step_seconds: int = int(os.getenv("PROPAGATION_FAR_STEP_SECONDS", "900"))
+    propagation_sample_retention_hours: int = int(os.getenv("PROPAGATION_SAMPLE_RETENTION_HOURS", "24"))
+    propagation_cleanup_interval_seconds: int = int(os.getenv("PROPAGATION_CLEANUP_INTERVAL_SECONDS", "300"))
+    propagation_cleanup_batch_size: int = int(os.getenv("PROPAGATION_CLEANUP_BATCH_SIZE", "250000"))
 
 
 settings = Settings()

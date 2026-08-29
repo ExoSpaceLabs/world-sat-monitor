@@ -16,6 +16,7 @@ export type PersistentMapSettings = {
 };
 
 export type OrbitTrackMode = "ground" | "orbit";
+export type GroupMarkerPlacement = "orbit" | "nadir";
 
 export type OrbitPathSettings = {
   enabled: boolean;
@@ -32,14 +33,25 @@ export type OrbitDisplaySettings = {
   path: OrbitPathSettings;
 };
 
+export type GroupOrbitDisplaySettings = {
+  marker_placement: GroupMarkerPlacement;
+  show_satellite_names: boolean;
+  direction_vector_enabled: boolean;
+  position_update_ms: number;
+  prediction_hours: number;
+  step_seconds: number;
+  refresh_seconds: number;
+};
+
 export type AppSettings = {
   version: number;
   map: PersistentMapSettings;
   orbit: OrbitDisplaySettings;
+  group_orbit: GroupOrbitDisplaySettings;
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  version: 5,
+  version: 7,
   map: {
     basemap: "dark",
     themed_base_color: DEFAULT_THEMED_MAP_STYLE.baseColor,
@@ -60,5 +72,14 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
       resolution_seconds: 60,
       refresh_seconds: 30,
     },
+  },
+  group_orbit: {
+    marker_placement: "orbit",
+    show_satellite_names: false,
+    direction_vector_enabled: false,
+    position_update_ms: 2000,
+    prediction_hours: 3,
+    step_seconds: 120,
+    refresh_seconds: 60,
   },
 };

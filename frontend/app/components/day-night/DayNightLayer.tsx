@@ -167,7 +167,7 @@ void main() {
 class GlobeIlluminationLayer implements CustomLayerInterface {
   readonly id = LAYER_ID;
   readonly type = "custom" as const;
-  readonly renderingMode = "2d" as const;
+  readonly renderingMode = "3d" as const;
 
   private readonly programs = new Map<string, ProgramState>();
   private readonly triangleCount: number;
