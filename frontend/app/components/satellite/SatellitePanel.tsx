@@ -235,13 +235,8 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
   }, [expandedId, groups]);
 
   useEffect(() => {
-    setMemberCatalogResults([]);
-    setMemberCatalogSearched(false);
     const query = candidateQuery.trim();
-    if (!expanded || expanded.source !== "user" || query.length < 2 || candidateQueryMatches.length > 0) {
-      setMemberCatalogLoading(false);
-      return;
-    }
+    if (!expanded || expanded.source !== "user" || query.length < 2 || candidateQueryMatches.length > 0) return;
 
     let cancelled = false;
     const timer = window.setTimeout(() => {
@@ -464,6 +459,13 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
     setMemberCatalogSearched(false);
   };
 
+  const handleCandidateQueryChange = (value: string) => {
+    setCandidateQuery(value);
+    setMemberCatalogResults([]);
+    setMemberCatalogLoading(false);
+    setMemberCatalogSearched(false);
+  };
+
   const toggleExpanded = async (group: SatelliteGroup) => {
     if (expandedId === group.id) {
       setExpandedId(null); setMembers([]); resetMemberPicker(); return;
@@ -594,7 +596,7 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
               {isExpanded && <div className="manager-group-members">
                 {group.source === "user" && <section className="group-member-picker" aria-label="Add satellite to group">
                   <div className="group-member-search">
-                    <input value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} placeholder="Filter by satellite name or NORAD" aria-label="Filter satellites by name or NORAD"/>
+                    <input value={candidateQuery} onChange={(event) => handleCandidateQueryChange(event.target.value)} placeholder="Filter by satellite name or NORAD" aria-label="Filter satellites by name or NORAD"/>
                     <select value={candidateActivity} onChange={(event) => setCandidateActivity(event.target.value as CandidateActivityFilter)} aria-label="Filter by active state"><option value="all">ANY STATE</option><option value="active">ACTIVE</option><option value="inactive">INACTIVE</option></select>
                     <select value={candidateConstellation} onChange={(event) => setCandidateConstellation(event.target.value as CandidateConstellationFilter)} aria-label="Filter by constellation membership"><option value="all">ANY MEMBERSHIP</option><option value="constellation">IN CONSTELLATION</option><option value="not-constellation">NOT IN CONSTELLATION</option></select>
                   </div>
