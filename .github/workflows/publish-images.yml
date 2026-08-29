@@ -50,12 +50,13 @@ jobs:
           existing="$(git ls-remote --tags origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
           replace_tag=false
 
-          # v1.0.0 was published before the final release corrections. Permit one
-          # explicit replacement from that exact commit, then return to immutable
-          # semantic-version tags for every subsequent main revision.
-          legacy_v1_sha="38203ea04539bcd67acec6c68631b3dedad6d85a"
+          # v1.0.0 required two post-publication corrections. Permit replacement
+          # only from those exact superseded release commits. Once the tag moves
+          # to the corrected shadow-rendering revision, normal immutability resumes.
+          legacy_v1_initial_sha="38203ea04539bcd67acec6c68631b3dedad6d85a"
+          legacy_v1_corrected_sha="3c7b5da41caf408b24378b896b652732674b59d2"
           if [[ -n "$existing" && "$existing" != "$VALIDATED_SHA" ]]; then
-            if [[ "$VERSION" == "1.0.0" && "$existing" == "$legacy_v1_sha" ]]; then
+            if [[ "$VERSION" == "1.0.0" && ( "$existing" == "$legacy_v1_initial_sha" || "$existing" == "$legacy_v1_corrected_sha" ) ]]; then
               replace_tag=true
               echo "Replacing superseded ${tag} at ${existing} with validated ${VALIDATED_SHA}."
             else
