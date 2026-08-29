@@ -13,8 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WorldSat Monitor",
-  description: "Interactive 3D Earth and satellite mission monitor.",
+  title: "WorldSat Monitor · ExoSpaceLabs",
+  applicationName: "WorldSat Monitor",
+  description: "ExoSpaceLabs interactive satellite and constellation mission monitor.",
+  creator: "ExoSpaceLabs",
+  publisher: "ExoSpaceLabs",
   other: {
     "codex-preview": "development",
   },
