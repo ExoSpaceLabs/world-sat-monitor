@@ -13,7 +13,7 @@ Current release: **v1.0.0**
 - **Single-satellite display** with current propagated position, altitude, heading, latitude/longitude, illumination state, history, prediction, direction vector, and optional camera follow.
 - **Constellation and group display** for provider-defined constellations and user-defined custom/mission groups.
 - **Context-sensitive Details** showing satellite information in Single mode and aggregate collection information in Group mode.
-- **Satellite Manager** with separate Single and Grouped workflows for catalog search, manual objects, monitoring lifecycle, constellation import, group creation, membership editing, and collection removal.
+- **Satellite Manager** with separate Single and Grouped workflows for catalog search, manual objects, monitoring lifecycle, constellation import, group creation, searchable membership editing, and collection removal.
 - **3D globe visualization** using MapLibre with Dark, Street, and Satellite basemaps.
 - **Space environment** with inertial star background, solar position, UTC Earth rotation, and day/night illumination.
 - **Backend orbital propagation**. The browser renders products; it does not run the orbit propagator.
@@ -100,11 +100,13 @@ The Manager has two workflows:
 - **Single**: search provider catalogs, add manual objects, activate/deactivate monitoring, and remove inactive standalone satellites.
 - **Grouped**: search/import provider constellations, create custom/mission groups, expand a collection to inspect or edit members, and remove a collection or its local satellites with guarded destructive actions.
 
+Custom-group membership uses a searchable picker rather than a full catalog dropdown. Local candidates can be filtered by satellite name or NORAD identifier, active/inactive state, and whether they belong to a constellation. If a name or NORAD search has no local catalog match, the Manager falls back to CelesTrak and can import the result directly into the selected custom group.
+
 A large constellation remains one collapsed Manager row until expanded, rather than turning the management interface into several thousand consecutive satellite rows.
 
 ### Orbital Settings
 
-Single and Group display modes have separate orbital visualization settings. Single mode controls the selected spacecraft trajectory and marker behavior; Group mode controls the collection marker representation.
+Single and Group display modes have separate orbital visualization settings. Single mode controls the selected spacecraft trajectory and marker behavior; Group mode controls the collection marker representation. Direction vectors use the same visual language in both modes.
 
 ### Map Settings
 
@@ -293,5 +295,5 @@ See [`docs/deployment.md`](docs/deployment.md) for the release/deployment contra
 - **Version:** v1.0.0
 - **Organization:** ExoSpaceLabs
 - **Repository:** https://github.com/ExoSpaceLabs/world-sat-monitor
-- **Contact:** exispacelabs@gmail.com
+- **Contact:** exospacelabs@gmail.com
 - **License:** Apache-2.0
