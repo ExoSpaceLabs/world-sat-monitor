@@ -48,11 +48,24 @@ jobs:
           set -euo pipefail
           tag="v${VERSION}"
           existing="$(git ls-remote --tags origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
+          replace_tag=false
+
+          # v1.0.0 was published before the final release corrections. Permit one
+          # explicit replacement from that exact commit, then return to immutable
+          # semantic-version tags for every subsequent main revision.
+          legacy_v1_sha="38203ea04539bcd67acec6c68631b3dedad6d85a"
           if [[ -n "$existing" && "$existing" != "$VALIDATED_SHA" ]]; then
-            echo "Release ${tag} already points to ${existing}; bump VERSION before publishing another main revision." >&2
-            exit 1
+            if [[ "$VERSION" == "1.0.0" && "$existing" == "$legacy_v1_sha" ]]; then
+              replace_tag=true
+              echo "Replacing superseded ${tag} at ${existing} with validated ${VALIDATED_SHA}."
+            else
+              echo "Release ${tag} already points to ${existing}; bump VERSION before publishing another main revision." >&2
+              exit 1
+            fi
           fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "replace_tag=$replace_tag" >> "$GITHUB_OUTPUT"
           if [[ -z "$existing" ]]; then
             echo "create_tag=true" >> "$GITHUB_OUTPUT"
           else
@@ -119,12 +132,18 @@ jobs:
           cache-to: type=gha,mode=max,scope=backend
 
       - name: Tag validated release commit
-        if: steps.release.outputs.create_tag == 'true'
+        if: steps.release.outputs.create_tag == 'true' || steps.release.outputs.replace_tag == 'true'
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          REPLACE_TAG: ${{ steps.release.outputs.replace_tag }}
           VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          git tag "$RELEASE_TAG" "$VALIDATED_SHA"
-          git push origin "refs/tags/${RELEASE_TAG}"
+          if [[ "$REPLACE_TAG" == "true" ]]; then
+            git tag -f "$RELEASE_TAG" "$VALIDATED_SHA"
+            git push --force origin "refs/tags/${RELEASE_TAG}"
+          else
+            git tag "$RELEASE_TAG" "$VALIDATED_SHA"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
