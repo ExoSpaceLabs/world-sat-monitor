@@ -85,9 +85,9 @@ export function OrbitSettingsPanel({
                 <i className={singleSettings.direction_vector_enabled ? "enabled" : ""}/>
               </button>
               <div className="track-mode-control" role="group" aria-label="Object and orbit placement">
-                <span><b>OBJECT + TRACK PLACEMENT</b><small>GROUND = SATELLITE AND TRACK AT NADIR · ORBIT = BOTH AT PHYSICAL ALTITUDE</small></span>
+                <span><b>OBJECT + TRACK PLACEMENT</b><small>NADIR = SATELLITE AND TRACK PROJECTED ON EARTH · ORBIT = BOTH AT PHYSICAL ALTITUDE</small></span>
                 <div>
-                  <button className={singleSettings.path.mode === "ground" ? "active" : ""} onClick={() => setTrackMode("ground")}>GROUND</button>
+                  <button className={singleSettings.path.mode === "ground" ? "active" : ""} onClick={() => setTrackMode("ground")}>NADIR</button>
                   <button className={singleSettings.path.mode === "orbit" ? "active" : ""} onClick={() => setTrackMode("orbit")}>ORBIT</button>
                 </div>
               </div>
@@ -111,10 +111,10 @@ export function OrbitSettingsPanel({
             <h3>GROUP RENDERING</h3>
             <div className="scene-options">
               <div className="track-mode-control" role="group" aria-label="Group satellite placement">
-                <span><b>MARKER PLACEMENT</b><small>ORBIT = PHYSICAL ALTITUDE · NADIR = PROJECT MEMBERS ON EARTH</small></span>
+                <span><b>MARKER PLACEMENT</b><small>NADIR = PROJECT MEMBERS ON EARTH · ORBIT = PHYSICAL ALTITUDE</small></span>
                 <div>
-                  <button className={groupSettings.marker_placement === "orbit" ? "active" : ""} onClick={() => setGroupPlacement("orbit")}>ORBIT</button>
                   <button className={groupSettings.marker_placement === "nadir" ? "active" : ""} onClick={() => setGroupPlacement("nadir")}>NADIR</button>
+                  <button className={groupSettings.marker_placement === "orbit" ? "active" : ""} onClick={() => setGroupPlacement("orbit")}>ORBIT</button>
                 </div>
               </div>
               <button className="scene-toggle" role="switch" aria-checked={groupSettings.show_satellite_names} onClick={() => updateGroup({show_satellite_names: !groupSettings.show_satellite_names})}>
