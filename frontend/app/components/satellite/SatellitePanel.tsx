@@ -65,6 +65,10 @@ type SatelliteManagerProps = {
 };
 
 type ManagerTab = "single" | "grouped";
+type CandidateActivityFilter = "all" | "active" | "inactive";
+type CandidateConstellationFilter = "all" | "constellation" | "not-constellation";
+
+const MEMBER_RESULT_LIMIT = 75;
 
 function signedDegrees(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(3)}°`;
@@ -76,13 +80,33 @@ function formatTimestamp(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 
+function matchesCandidateState(
+  satellite: ManagedSatellite,
+  activity: CandidateActivityFilter,
+  constellation: CandidateConstellationFilter,
+  constellationIds: Set<number>,
+) {
+  if (activity === "active" && !satellite.active) return false;
+  if (activity === "inactive" && satellite.active) return false;
+  const isConstellationMember = constellationIds.has(satellite.id);
+  if (constellation === "constellation" && !isConstellationMember) return false;
+  if (constellation === "not-constellation" && isConstellationMember) return false;
+  return true;
+}
+
+function matchesCandidateQuery(satellite: ManagedSatellite, query: string) {
+  if (!query) return true;
+  const values = [satellite.name, satellite.norad_id ?? "", ...Object.values(satellite.identifiers)];
+  return values.some((value) => String(value).toLowerCase().includes(query));
+}
+
 export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerProps) {
   const [tab, setTab] = useState<ManagerTab>("single");
   const [satellites, setSatellites] = useState<ManagedSatellite[]>([]);
   const [groupedSatelliteIds, setGroupedSatelliteIds] = useState<Set<number>>(new Set());
+  const [constellationSatelliteIds, setConstellationSatelliteIds] = useState<Set<number>>(new Set());
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [members, setMembers] = useState<SatelliteGroupMember[]>([]);
-  const [candidateId, setCandidateId] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [busyGroupId, setBusyGroupId] = useState<number | null>(null);
@@ -105,6 +129,13 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
   const [groupName, setGroupName] = useState("");
   const [groupType, setGroupType] = useState<SatelliteGroupType>("custom");
 
+  const [candidateQuery, setCandidateQuery] = useState("");
+  const [candidateActivity, setCandidateActivity] = useState<CandidateActivityFilter>("all");
+  const [candidateConstellation, setCandidateConstellation] = useState<CandidateConstellationFilter>("all");
+  const [memberCatalogResults, setMemberCatalogResults] = useState<CatalogSearchResult[]>([]);
+  const [memberCatalogLoading, setMemberCatalogLoading] = useState(false);
+  const [memberCatalogSearched, setMemberCatalogSearched] = useState(false);
+
   const standaloneSatellites = useMemo(
     () => satellites.filter((item) => !groupedSatelliteIds.has(item.id)),
     [groupedSatelliteIds, satellites],
@@ -114,6 +145,31 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
   const candidates = useMemo(
     () => satellites.filter((item) => !expandedMemberIds.has(item.id)),
     [expandedMemberIds, satellites],
+  );
+  const normalizedCandidateQuery = candidateQuery.trim().toLowerCase();
+  const candidateQueryMatches = useMemo(
+    () => candidates.filter((item) => matchesCandidateQuery(item, normalizedCandidateQuery)),
+    [candidates, normalizedCandidateQuery],
+  );
+  const candidateMatches = useMemo(
+    () => candidateQueryMatches
+      .filter((item) => matchesCandidateState(item, candidateActivity, candidateConstellation, constellationSatelliteIds))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    [candidateActivity, candidateConstellation, candidateQueryMatches, constellationSatelliteIds],
+  );
+  const visibleCandidates = candidateMatches.slice(0, MEMBER_RESULT_LIMIT);
+  const visibleMemberCatalogResults = useMemo(
+    () => memberCatalogResults.filter((result) => {
+      if (result.local.present && result.local.satellite_id !== null) {
+        if (expandedMemberIds.has(result.local.satellite_id)) return false;
+        const local = satellites.find((item) => item.id === result.local.satellite_id);
+        return local ? matchesCandidateState(local, candidateActivity, candidateConstellation, constellationSatelliteIds) : false;
+      }
+      if (candidateActivity === "active") return false;
+      if (candidateConstellation === "constellation") return false;
+      return true;
+    }),
+    [candidateActivity, candidateConstellation, constellationSatelliteIds, expandedMemberIds, memberCatalogResults, satellites],
   );
 
   const notifyChanged = () => {
@@ -141,7 +197,18 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
     const loadMembershipIndex = async () => {
       try {
         const memberLists = await Promise.all(groups.map((group) => listSatelliteGroupMembers(group.id)));
-        if (!cancelled) setGroupedSatelliteIds(new Set(memberLists.flat().map((member) => member.id)));
+        if (cancelled) return;
+        const grouped = new Set<number>();
+        const constellation = new Set<number>();
+        memberLists.forEach((list, index) => {
+          const group = groups[index];
+          list.forEach((member) => {
+            grouped.add(member.id);
+            if (group.group_type === "constellation") constellation.add(member.id);
+          });
+        });
+        setGroupedSatelliteIds(grouped);
+        setConstellationSatelliteIds(constellation);
       } catch (caught) {
         if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not index grouped satellites");
       }
@@ -166,6 +233,41 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
       .catch((caught) => { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not load group members"); });
     return () => { cancelled = true; };
   }, [expandedId, groups]);
+
+  useEffect(() => {
+    setMemberCatalogResults([]);
+    setMemberCatalogSearched(false);
+    const query = candidateQuery.trim();
+    if (!expanded || expanded.source !== "user" || query.length < 2 || candidateQueryMatches.length > 0) {
+      setMemberCatalogLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setMemberCatalogLoading(true);
+      void searchSatelliteCatalog(query)
+        .then((results) => {
+          if (!cancelled) {
+            setMemberCatalogResults(results);
+            setMemberCatalogSearched(true);
+          }
+        })
+        .catch((caught) => {
+          if (!cancelled) {
+            setMemberCatalogResults([]);
+            setMemberCatalogSearched(true);
+            setError(caught instanceof Error ? caught.message : "CelesTrak member search failed");
+          }
+        })
+        .finally(() => { if (!cancelled) setMemberCatalogLoading(false); });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [candidateQuery, candidateQueryMatches.length, expanded]);
 
   const replaceOrAppend = (item: ManagedSatellite) => {
     setSatellites((current) => {
@@ -210,6 +312,7 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
       setSatellites((current) => current.filter((satellite) => satellite.id !== item.id));
       setMembers((current) => current.filter((member) => member.id !== item.id));
       setGroupedSatelliteIds((current) => { const next = new Set(current); next.delete(item.id); return next; });
+      setConstellationSatelliteIds((current) => { const next = new Set(current); next.delete(item.id); return next; });
       setCatalogResults((current) => current.map((result) => result.local.satellite_id === item.id
         ? {...result, local: {present: false, satellite_id: null, active: false, name: null}}
         : result));
@@ -352,25 +455,61 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
     finally { setBusyGroupId(null); }
   };
 
+  const resetMemberPicker = () => {
+    setCandidateQuery("");
+    setCandidateActivity("all");
+    setCandidateConstellation("all");
+    setMemberCatalogResults([]);
+    setMemberCatalogLoading(false);
+    setMemberCatalogSearched(false);
+  };
+
   const toggleExpanded = async (group: SatelliteGroup) => {
     if (expandedId === group.id) {
-      setExpandedId(null); setMembers([]); setCandidateId(""); return;
+      setExpandedId(null); setMembers([]); resetMemberPicker(); return;
     }
-    setExpandedId(group.id); setMembers([]); setCandidateId(""); setError(null);
+    setExpandedId(group.id); setMembers([]); resetMemberPicker(); setError(null);
     try { setMembers(await listSatelliteGroupMembers(group.id)); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not load group members"); }
   };
 
-  const addMember = async () => {
-    if (!expanded || expanded.source !== "user" || !candidateId || busyGroupId !== null) return;
+  const appendMember = (added: SatelliteGroupMember) => {
+    setMembers((current) => [...current.filter((member) => member.id !== added.id), added].sort((left, right) => left.name.localeCompare(right.name)));
+    setGroupedSatelliteIds((current) => new Set(current).add(added.id));
+  };
+
+  const addLocalMember = async (satelliteId: number) => {
+    if (!expanded || expanded.source !== "user" || busyGroupId !== null) return;
     setBusyGroupId(expanded.id); setError(null);
     try {
-      const added = await addSatelliteGroupMember(expanded.id, Number(candidateId));
-      setCandidateId("");
-      setMembers((current) => [...current.filter((member) => member.id !== added.id), added].sort((left, right) => left.name.localeCompare(right.name)));
-      setGroupedSatelliteIds((current) => new Set(current).add(added.id));
+      appendMember(await addSatelliteGroupMember(expanded.id, satelliteId));
       notifyChanged();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not add group member"); }
+    finally { setBusyGroupId(null); }
+  };
+
+  const addCatalogMember = async (result: CatalogSearchResult) => {
+    if (!expanded || expanded.source !== "user" || busyGroupId !== null) return;
+    if (result.local.present && result.local.satellite_id !== null) {
+      await addLocalMember(result.local.satellite_id);
+      return;
+    }
+
+    setBusyGroupId(expanded.id); setError(null);
+    try {
+      const created = await createManagedSatellite({
+        name: result.name,
+        active: false,
+        object_type: result.object_type ?? "payload",
+        provider_preference: result.provider,
+        metadata: {catalog_source: result.provider, provider_object_id: result.provider_object_id, ...result.metadata},
+        identifiers: Object.entries(result.identifiers).map(([namespace, value]) => ({namespace, value})),
+      });
+      replaceOrAppend(created);
+      appendMember(await addSatelliteGroupMember(expanded.id, created.id));
+      setMemberCatalogResults((current) => current.filter((item) => item.provider_object_id !== result.provider_object_id));
+      notifyChanged();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not import and add catalog member"); }
     finally { setBusyGroupId(null); }
   };
 
@@ -453,7 +592,25 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
                 <button className="manager-purge" type="button" disabled={busyGroupId !== null || group.active_member_count > 0} onClick={() => void purgeGroup(group)} title={group.active_member_count > 0 ? "Stop active members before deleting all satellites" : "Delete all member satellites and the collection"}>DELETE SATS</button>
               </div>
               {isExpanded && <div className="manager-group-members">
-                {group.source === "user" && <div className="group-add-member"><select value={candidateId} onChange={(event) => setCandidateId(event.target.value)} aria-label="Satellite to add to group"><option value="">ADD SATELLITE…</option>{candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} · NORAD {candidate.norad_id ?? "—"}</option>)}</select><button type="button" onClick={() => void addMember()} disabled={busyGroupId !== null || !candidateId}>ADD</button></div>}
+                {group.source === "user" && <section className="group-member-picker" aria-label="Add satellite to group">
+                  <div className="group-member-search">
+                    <input value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} placeholder="Filter by satellite name or NORAD" aria-label="Filter satellites by name or NORAD"/>
+                    <select value={candidateActivity} onChange={(event) => setCandidateActivity(event.target.value as CandidateActivityFilter)} aria-label="Filter by active state"><option value="all">ANY STATE</option><option value="active">ACTIVE</option><option value="inactive">INACTIVE</option></select>
+                    <select value={candidateConstellation} onChange={(event) => setCandidateConstellation(event.target.value as CandidateConstellationFilter)} aria-label="Filter by constellation membership"><option value="all">ANY MEMBERSHIP</option><option value="constellation">IN CONSTELLATION</option><option value="not-constellation">NOT IN CONSTELLATION</option></select>
+                  </div>
+                  <div className="group-member-search-status">
+                    <span>{candidateMatches.length} LOCAL MATCH{candidateMatches.length === 1 ? "" : "ES"}{candidateMatches.length > MEMBER_RESULT_LIMIT ? ` · SHOWING ${MEMBER_RESULT_LIMIT}` : ""}</span>
+                    {normalizedCandidateQuery.length >= 2 && candidateQueryMatches.length === 0 && <span>CELESTRAK FALLBACK</span>}
+                  </div>
+                  <div className="group-member-candidates">
+                    {visibleCandidates.map((candidate) => <div className="group-member-candidate" key={candidate.id}><span className={candidate.active ? "active" : "inactive"}/><div><strong>{candidate.name}</strong><small>NORAD {candidate.norad_id ?? "—"} · {constellationSatelliteIds.has(candidate.id) ? "CONSTELLATION" : "LOCAL"}</small></div><button type="button" disabled={busyGroupId !== null} onClick={() => void addLocalMember(candidate.id)}>ADD</button></div>)}
+                    {candidateMatches.length === 0 && candidateQueryMatches.length > 0 && <div className="group-member-search-empty">NO LOCAL SATELLITES MATCH THE SELECTED FILTERS</div>}
+                    {memberCatalogLoading && <div className="group-member-search-empty">SEARCHING CELESTRAK…</div>}
+                    {!memberCatalogLoading && visibleMemberCatalogResults.map((result) => <div className="group-member-candidate external" key={`${result.provider}:${result.provider_object_id}`}><span className="external"/><div><strong>{result.name}</strong><small>NORAD {result.identifiers.NORAD_CAT_ID ?? "—"} · {result.local.present ? "LOCAL CATALOG" : "CELESTRAK"}</small></div><button type="button" disabled={busyGroupId !== null} onClick={() => void addCatalogMember(result)}>{result.local.present ? "ADD" : "IMPORT + ADD"}</button></div>)}
+                    {!memberCatalogLoading && memberCatalogSearched && visibleMemberCatalogResults.length === 0 && <div className="group-member-search-empty">NO LOCAL OR CELESTRAK MATCHES</div>}
+                    {!normalizedCandidateQuery && candidateMatches.length > MEMBER_RESULT_LIMIT && <div className="group-member-search-empty">TYPE A NAME OR NORAD TO NARROW THE LOCAL CATALOG</div>}
+                  </div>
+                </section>}
                 {members.length === 0 && <div className="sat-manager-empty">NO MEMBERS</div>}
                 {members.map((member) => <div className="manager-group-member" key={member.id}><span className={member.active ? "active" : "inactive"}/><div><strong>{member.name}</strong><small>NORAD {member.norad_id ?? "—"}</small></div><button type="button" onClick={() => void toggleActive(member)} disabled={busyId !== null}>{member.active ? "STOP" : "MONITOR"}</button>{group.source === "user" ? <button type="button" disabled={busyGroupId !== null} onClick={() => void removeMember(member)}>REMOVE</button> : <button className="sat-delete" type="button" disabled={member.active || busyId !== null} onClick={() => void removeSatellite(member, true)}>DELETE</button>}</div>)}
               </div>}
