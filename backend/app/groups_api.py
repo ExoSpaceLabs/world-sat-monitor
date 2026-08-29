@@ -151,6 +151,41 @@ def remove_group(group_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.delete("/{group_id}/satellites")
+def remove_group_satellites(group_id: int):
+    """Delete every local satellite in a collection, then remove the collection itself.
+
+    This operation is intentionally explicit and refuses to run while any member
+    is active. Satellite foreign keys cascade memberships, orbital data and
+    propagation state. Shared satellites are therefore deleted from other groups
+    too, which is why the UI presents this as a destructive purge operation.
+    """
+    with connect() as connection:
+        group = _load_group(connection, group_id)
+        active_members = int(group["active_member_count"])
+        if active_members > 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"deactivate {active_members} active group member(s) before deleting collection satellites",
+            )
+        deleted = connection.execute(
+            """
+            DELETE FROM satellites
+            WHERE id IN (
+                SELECT satellite_id
+                FROM satellite_group_members
+                WHERE group_id = %s
+            )
+            RETURNING id
+            """,
+            (group_id,),
+        ).fetchall()
+        if not delete_group(connection, group_id):
+            raise HTTPException(status_code=404, detail="satellite group not found")
+        connection.commit()
+    return {"deleted_satellites": len(deleted)}
+
+
 @router.get("/{group_id}/members")
 def group_members(group_id: int):
     with connect() as connection:

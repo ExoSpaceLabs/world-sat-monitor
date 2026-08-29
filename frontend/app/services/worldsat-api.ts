@@ -68,6 +68,7 @@ type GroupDisplayResponse = {
   group: SatelliteGroup;
   display: {requested_until: string; prediction_hours: number; step_seconds: number};
 };
+type GroupPurgeResponse = {deleted_satellites: number};
 
 type AppSettingsWire = {
   version?: number;
@@ -196,6 +197,10 @@ export function deleteSatelliteGroup(groupId: number): Promise<void> {
   return requestJson<void>(`/api/v1/groups/${groupId}`, {method: "DELETE"});
 }
 
+export function purgeSatelliteGroup(groupId: number): Promise<GroupPurgeResponse> {
+  return requestJson<GroupPurgeResponse>(`/api/v1/groups/${groupId}/satellites`, {method: "DELETE"});
+}
+
 export async function listSatelliteGroupMembers(groupId: number): Promise<SatelliteGroupMember[]> {
   return (await requestJson<GroupMembersResponse>(`/api/v1/groups/${groupId}/members`)).members;
 }
@@ -216,11 +221,7 @@ export async function getSatelliteGroupPositions(groupId: number, at: Date): Pro
 export function requestSatelliteGroupDisplay(groupId: number, settings: GroupOrbitDisplaySettings): Promise<GroupDisplayResponse> {
   return requestJson<GroupDisplayResponse>(`/api/v1/groups/${groupId}/display`, {
     method: "POST",
-    body: JSON.stringify({
-      prediction_hours: settings.prediction_hours,
-      step_seconds: settings.step_seconds,
-      lease_seconds: 1800,
-    }),
+    body: JSON.stringify({prediction_hours: settings.prediction_hours, step_seconds: settings.step_seconds, lease_seconds: 1800}),
   });
 }
 

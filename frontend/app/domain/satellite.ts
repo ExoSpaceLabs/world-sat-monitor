@@ -16,8 +16,8 @@ export type ManagedSatellite = {
   metadata: Record<string, unknown>;
   identifiers: Record<string, string>;
   norad_id: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type SatelliteCreateRequest = {

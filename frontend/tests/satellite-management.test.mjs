@@ -14,6 +14,7 @@ import {
   listManagedSatellites,
   listSatelliteGroupMembers,
   listSatelliteGroups,
+  purgeSatelliteGroup,
   releaseSatelliteGroupDisplay,
   removeSatelliteGroupMember,
   requestSatelliteGroupDisplay,
@@ -71,6 +72,18 @@ test("create and lifecycle calls use explicit API operations", async () => {
   assert.deepEqual(calls.map((call) => [call.method, call.url]), [["POST", "/api/v1/satellites"], ["POST", "/api/v1/satellites/9/activate"], ["POST", "/api/v1/satellites/9/deactivate"], ["DELETE", "/api/v1/satellites/9"]]);
 });
 
+test("collection satellite purge uses one explicit destructive endpoint", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({url: String(url), method: init?.method ?? "GET"});
+    return response(200, {deleted_satellites: 9842});
+  };
+  try { assert.equal((await purgeSatelliteGroup(44)).deleted_satellites, 9842); }
+  finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual(calls, [{url: "/api/v1/groups/44/satellites", method: "DELETE"}]);
+});
+
 test("group CRUD, display lease and batched simulated positions use group endpoints", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
@@ -117,6 +130,9 @@ test("single and group display are mutually exclusive in the monitor", async () 
   assert.match(monitor, /displayTarget\.kind === "group" \? groupPositions : \[\]/);
   assert.match(monitor, /requestSatelliteGroupDisplay/);
   assert.match(monitor, /releaseSatelliteGroupDisplay/);
+  assert.match(monitor, /display-mode-switch/);
+  assert.match(monitor, /handleSingleMode/);
+  assert.match(monitor, /handleGroupMode/);
   assert.doesNotMatch(monitor, /visibleGroupIds/);
   assert.match(panel, /DISPLAYING/);
   assert.match(panel, /onDisplayGroup/);
@@ -142,14 +158,26 @@ test("object and group display policies are separate and coherent", async () => 
   assert.match(groupLayer, /placement === "orbit" \? point\.altitude : 0/);
 });
 
-test("displayed objects are selectable and satellite manager lives in top controls", async () => {
-  const panel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+test("display lists stay simple while details and management are separated", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  const groupPanel = await readFile(new URL("../app/components/groups/GroupPanel.tsx", import.meta.url), "utf8");
   const monitor = await readFile(new URL("../app/components/world-sat-monitor/WorldSatMonitor.tsx", import.meta.url), "utf8");
-  assert.match(panel, /DISPLAYED OBJECTS/);
-  assert.match(panel, /onSelect\(noradId\)/);
-  assert.match(monitor, />OBJECTS</);
-  assert.match(monitor, />SATELLITES</);
-  assert.match(monitor, /GROUP SETTINGS/);
-  assert.match(monitor, /OBJECT SETTINGS/);
+
+  assert.match(satellitePanel, /ACTIVE OBJECTS/);
+  assert.match(satellitePanel, /DISPLAY DETAILS/);
+  assert.match(satellitePanel, /sat-manager-tabs/);
+  assert.match(satellitePanel, />SINGLE</);
+  assert.match(satellitePanel, />GROUPED</);
+  assert.match(satellitePanel, /DELETE SATS/);
+  assert.doesNotMatch(satellitePanel, /sat-object-details/);
+  assert.match(groupPanel, /DISPLAY COLLECTIONS/);
+  assert.doesNotMatch(groupPanel, /createSatelliteGroup/);
+  assert.doesNotMatch(groupPanel, /listSatelliteGroupMembers/);
+  assert.match(monitor, />SINGLE</);
+  assert.match(monitor, />GROUP</);
+  assert.match(monitor, />DETAILS</);
+  assert.match(monitor, />MANAGER</);
+  assert.match(monitor, />ORBITAL SETTINGS</);
+  assert.match(monitor, /<DetailsPanel/);
   assert.match(monitor, /<SatelliteManager/);
 });

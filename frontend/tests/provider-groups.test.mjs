@@ -8,7 +8,6 @@ import {
   searchProviderCatalogGroups,
 } from "../app/services/catalog-groups-api.ts";
 
-
 function response(status, payload) {
   return {
     ok: status >= 200 && status < 300,
@@ -19,47 +18,18 @@ function response(status, payload) {
   };
 }
 
-
 test("provider group catalog and search stay behind the application gateway", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => {
     calls.push({url, method: init?.method ?? "GET"});
     if (url === "/api/v1/catalog/groups") {
-      return response(200, {
-        provider: "celestrak",
-        groups: [{
-          provider: "celestrak",
-          key: "kuiper",
-          name: "Kuiper",
-          group_type: "constellation",
-          available: true,
-          local: {present: false, group_id: null, member_count: 0, active_member_count: 0},
-        }],
-      });
+      return response(200, {provider: "celestrak", groups: [{provider: "celestrak", key: "kuiper", name: "Kuiper", group_type: "constellation", available: true, local: {present: false, group_id: null, member_count: 0, active_member_count: 0}}]});
     }
     if (url === "/api/v1/catalog/groups/search?q=galileo") {
-      return response(200, {
-        query: "galileo",
-        provider: "celestrak",
-        groups: [{
-          provider: "celestrak",
-          key: "galileo",
-          name: "Galileo",
-          group_type: "constellation",
-          available: true,
-          local: {present: false, group_id: null, member_count: 0, active_member_count: 0},
-        }],
-      });
+      return response(200, {query: "galileo", provider: "celestrak", groups: [{provider: "celestrak", key: "galileo", name: "Galileo", group_type: "constellation", available: true, local: {present: false, group_id: null, member_count: 0, active_member_count: 0}}]});
     }
-    return response(200, {
-      provider: "celestrak",
-      key: "kuiper",
-      group: {id: 9, name: "Kuiper", member_count: 210, active_member_count: 0},
-      catalog_members: 210,
-      created_satellites: 210,
-      removed_memberships: 0,
-    });
+    return response(200, {provider: "celestrak", key: "kuiper", group: {id: 9, name: "Kuiper", member_count: 210, active_member_count: 0}, catalog_members: 210, created_satellites: 210, removed_memberships: 0});
   };
 
   try {
@@ -68,9 +38,7 @@ test("provider group catalog and search stay behind the application gateway", as
     const imported = await importProviderCatalogGroup(groups[0].key);
     assert.equal(found[0].key, "galileo");
     assert.equal(imported.group.member_count, 210);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  } finally { globalThis.fetch = originalFetch; }
 
   assert.deepEqual(calls, [
     {url: "/api/v1/catalog/groups", method: "GET"},
@@ -79,15 +47,17 @@ test("provider group catalog and search stay behind the application gateway", as
   ]);
 });
 
-
-test("group panel keeps quick imports and exposes searchable provider groups", async () => {
+test("constellation discovery and import live in manager, not the display-only group list", async () => {
+  const manager = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
   const panel = await readFile(new URL("../app/components/groups/GroupPanel.tsx", import.meta.url), "utf8");
 
-  assert.match(panel, /QUICK IMPORT/);
-  assert.match(panel, /SEARCH CELESTRAK GROUP CATALOG/);
-  assert.match(panel, /searchProviderCatalogGroups/);
-  assert.match(panel, /IMPORTS CREATE MISSING MEMBERS INACTIVE/);
-  assert.match(panel, /importProviderCatalogGroup\(group\.key\)/);
-  assert.match(panel, /group\.local\.present \? "SYNC" : "IMPORT"/);
-  assert.doesNotMatch(panel, /activateManagedSatellite/);
+  assert.match(manager, /CELESTRAK CATALOG/);
+  assert.match(manager, /searchProviderCatalogGroups/);
+  assert.match(manager, /importProviderCatalogGroup\(group\.key\)/);
+  assert.match(manager, /group\.local\.present \? "SYNC" : "IMPORT"/);
+  assert.match(manager, /GROUPED/);
+  assert.doesNotMatch(panel, /searchProviderCatalogGroups/);
+  assert.doesNotMatch(panel, /importProviderCatalogGroup/);
+  assert.doesNotMatch(panel, /createSatelliteGroup/);
+  assert.match(panel, /SEARCH, IMPORT, CREATION AND MEMBERSHIP EDITING LIVE IN MANAGER/);
 });

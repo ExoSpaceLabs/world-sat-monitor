@@ -18,12 +18,22 @@ class GroupContractTests(unittest.TestCase):
         self.assertIn('@router.post("", status_code=status.HTTP_201_CREATED)', API)
         self.assertIn('@router.patch("/{group_id}")', API)
         self.assertIn('@router.delete("/{group_id}"', API)
+        self.assertIn('@router.delete("/{group_id}/satellites")', API)
         self.assertIn('@router.get("/{group_id}/members")', API)
         self.assertIn('@router.post("/{group_id}/members"', API)
         self.assertIn('@router.delete("/{group_id}/members/{satellite_id}"', API)
         self.assertIn('@router.post("/{group_id}/display")', API)
         self.assertIn('@router.delete("/{group_id}/display"', API)
         self.assertIn('@router.get("/{group_id}/positions")', API)
+
+    def test_collection_satellite_purge_is_set_based_and_blocks_active_members(self):
+        section = API.split("def remove_group_satellites", 1)[1].split("def group_members", 1)[0]
+        self.assertIn('group["active_member_count"]', section)
+        self.assertIn("HTTP_409_CONFLICT", section)
+        self.assertIn("DELETE FROM satellites", section)
+        self.assertIn("satellite_group_members", section)
+        self.assertIn("RETURNING id", section)
+        self.assertIn("delete_group(connection, group_id)", section)
 
     def test_group_current_positions_use_current_state_not_trajectory_fanout(self):
         section = REPOSITORY.split("def get_group_current_positions", 1)[1].split("def get_group_positions_at", 1)[0]
