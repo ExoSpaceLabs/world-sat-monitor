@@ -56,8 +56,9 @@ jobs:
           legacy_v1_initial_sha="38203ea04539bcd67acec6c68631b3dedad6d85a"
           legacy_v1_corrected_sha="3c7b5da41caf408b24378b896b652732674b59d2"
           legacy_v1_shadow_sha="e0952ae91a0c3e28e996ce61f309750a8979bc35"
+          legacy_v1_compositor_sha="2d4016885c59891e469e7728c984e253ea94f8b8"
           if [[ -n "$existing" && "$existing" != "$VALIDATED_SHA" ]]; then
-            if [[ "$VERSION" == "1.0.0" && ( "$existing" == "$legacy_v1_initial_sha" || "$existing" == "$legacy_v1_corrected_sha" || "$existing" == "$legacy_v1_shadow_sha" ) ]]; then
+            if [[ "$VERSION" == "1.0.0" && ( "$existing" == "$legacy_v1_initial_sha" || "$existing" == "$legacy_v1_corrected_sha" || "$existing" == "$legacy_v1_shadow_sha" || "$existing" == "$legacy_v1_compositor_sha" ) ]]; then
               replace_tag=true
               echo "Replacing superseded ${tag} at ${existing} with validated ${VALIDATED_SHA}."
             else
