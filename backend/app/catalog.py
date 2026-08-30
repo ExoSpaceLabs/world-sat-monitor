@@ -139,7 +139,7 @@ class CelesTrakGroupCatalog:
             self.index_url,
             headers={
                 "Accept": "text/html",
-                "User-Agent": "WorldSatMonitor/0.6 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
+                "User-Agent": "WorldSatMonitor/1.0 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
             },
         )
         try:
@@ -188,7 +188,7 @@ def normalize_satcat_record(record: Mapping[str, Any], provider: str = "celestra
     norad = str(record.get("NORAD_CAT_ID") or "").strip()
     cospar = str(record.get("OBJECT_ID") or "").strip()
     if not name or not norad:
-        raise CatalogError("SATCAT record is missing OBJECT_NAME or NORAD_CAT_ID")
+        raise CatalogError("CelesTrak record is missing OBJECT_NAME or NORAD_CAT_ID")
     identifiers = {"NORAD_CAT_ID": norad}
     if cospar:
         identifiers["COSPAR"] = cospar
@@ -213,29 +213,69 @@ def normalize_satcat_record(record: Mapping[str, Any], provider: str = "celestra
     )
 
 
+def _direct_gp_url(base_url: str) -> str | None:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or ""
+    if host.lower() not in {"celestrak.org", "www.celestrak.org"}:
+        return None
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or host
+    return f"{scheme}://{netloc}/NORAD/elements/gp.php"
+
+
+def _gp_params(params: Mapping[str, str]) -> dict[str, str]:
+    for key in ("CATNR", "INTDES", "GROUP", "NAME", "SPECIAL"):
+        value = params.get(key)
+        if value:
+            return {key: value, "FORMAT": "JSON"}
+    raise CatalogError("CelesTrak GP request has no supported query selector")
+
+
 class CelesTrakCatalog:
     name = "celestrak"
 
     def __init__(self, base_url: str, timeout_seconds: float = 15.0):
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
+        self.gp_url = _direct_gp_url(base_url)
 
-    def _load(self, params: dict[str, str]) -> list[Mapping[str, Any]]:
+    def _request(self, base_url: str, params: Mapping[str, str], label: str) -> list[Mapping[str, Any]]:
         request = Request(
-            f"{self.base_url}?{urlencode(params)}",
+            f"{base_url}?{urlencode(params)}",
             headers={
                 "Accept": "application/json",
-                "User-Agent": "WorldSatMonitor/0.6 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
+                "User-Agent": "WorldSatMonitor/1.0 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
             },
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = json.load(response)
         except Exception as error:
-            raise CatalogError(f"CelesTrak SATCAT request failed: {error}") from error
+            raise CatalogError(f"CelesTrak {label} request failed: {error}") from error
         if not isinstance(payload, list):
-            raise CatalogError("CelesTrak SATCAT returned an invalid JSON payload")
+            raise CatalogError(f"CelesTrak {label} returned an invalid JSON payload")
         return [record for record in payload if isinstance(record, Mapping)]
+
+    def _load(self, params: dict[str, str]) -> list[Mapping[str, Any]]:
+        # The GP endpoint is the same direct machine API used for orbit-element
+        # retrieval and supports CATNR/INTDES/NAME/GROUP JSON queries. Prefer it
+        # for interactive catalog lookup so SATCAT slowness does not block the UI.
+        # SATCAT remains a fallback and provides richer metadata when GP is down.
+        gp_error: CatalogError | None = None
+        if self.gp_url and self.gp_url != self.base_url:
+            try:
+                return self._request(self.gp_url, _gp_params(params), "GP")
+            except CatalogError as error:
+                gp_error = error
+
+        try:
+            return self._request(self.base_url, params, "SATCAT")
+        except CatalogError as satcat_error:
+            if gp_error is None:
+                raise
+            raise CatalogError(
+                "CelesTrak catalog is temporarily unavailable: direct GP and SATCAT requests both failed"
+            ) from satcat_error
 
     def search(self, query: str, limit: int = 25) -> list[CatalogObject]:
         clean = query.strip()
