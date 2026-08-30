@@ -77,16 +77,27 @@ type AppSettingsWire = {
   group_orbit?: Partial<AppSettings["group_orbit"]>;
 };
 
+async function responseErrorMessage(response: Response): Promise<string> {
+  const body = await response.text();
+  if (body) {
+    try {
+      const parsed = JSON.parse(body) as {detail?: unknown};
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) return parsed.detail.trim();
+    } catch {
+      return body;
+    }
+    return body;
+  }
+  return `${response.status} ${response.statusText}`.trim();
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
     ...init,
     headers: {"Content-Type": "application/json", ...(init?.headers ?? {})},
   });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${detail}`);
-  }
+  if (!response.ok) throw new Error(await responseErrorMessage(response));
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
