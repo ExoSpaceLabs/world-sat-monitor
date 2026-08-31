@@ -29,7 +29,42 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
+      - name: Detect release-impacting changes
+        id: impact
+        shell: bash
+        env:
+          VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          parent="$(git rev-parse "${VALIDATED_SHA}^1" 2>/dev/null || true)"
+          if [[ -z "$parent" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          publish=false
+          while IFS= read -r path; do
+            case "$path" in
+              frontend/*|database/*|gateway/*|compose.yaml|compose.images.yaml|VERSION)
+                publish=true
+                break
+                ;;
+              backend/*)
+                case "$path" in
+                  backend/tests/*) ;;
+                  *) publish=true; break ;;
+                esac
+                ;;
+            esac
+          done < <(git diff --name-only "$parent" "$VALIDATED_SHA")
+
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [[ "$publish" == "false" ]]; then
+            echo "No runtime/release inputs changed; skipping image publication and release tagging."
+          fi
+
       - name: Read release version
+        if: steps.impact.outputs.publish == 'true'
         id: version
         shell: bash
         run: |
@@ -39,6 +74,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Enforce immutable release version
+        if: steps.impact.outputs.publish == 'true'
         id: release
         shell: bash
         env:
@@ -48,27 +84,13 @@ jobs:
           set -euo pipefail
           tag="v${VERSION}"
           existing="$(git ls-remote --tags origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
-          replace_tag=false
 
-          # v1.0.0 is still being stabilized. Permit replacement only from the
-          # exact superseded v1 release commits listed here. Once the tag moves
-          # away from these SHAs, normal release immutability resumes.
-          legacy_v1_initial_sha="38203ea04539bcd67acec6c68631b3dedad6d85a"
-          legacy_v1_corrected_sha="3c7b5da41caf408b24378b896b652732674b59d2"
-          legacy_v1_shadow_sha="e0952ae91a0c3e28e996ce61f309750a8979bc35"
-          legacy_v1_compositor_sha="2d4016885c59891e469e7728c984e253ea94f8b8"
           if [[ -n "$existing" && "$existing" != "$VALIDATED_SHA" ]]; then
-            if [[ "$VERSION" == "1.0.0" && ( "$existing" == "$legacy_v1_initial_sha" || "$existing" == "$legacy_v1_corrected_sha" || "$existing" == "$legacy_v1_shadow_sha" || "$existing" == "$legacy_v1_compositor_sha" ) ]]; then
-              replace_tag=true
-              echo "Replacing superseded ${tag} at ${existing} with validated ${VALIDATED_SHA}."
-            else
-              echo "Release ${tag} already points to ${existing}; bump VERSION before publishing another main revision." >&2
-              exit 1
-            fi
+            echo "Release ${tag} already points to ${existing}; bump VERSION before publishing another main revision." >&2
+            exit 1
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "replace_tag=$replace_tag" >> "$GITHUB_OUTPUT"
           if [[ -z "$existing" ]]; then
             echo "create_tag=true" >> "$GITHUB_OUTPUT"
           else
@@ -76,6 +98,7 @@ jobs:
           fi
 
       - name: Validate pull-only Compose definition
+        if: steps.impact.outputs.publish == 'true'
         run: |
           docker compose -f compose.images.yaml config --quiet
           if docker compose -f compose.images.yaml config | grep -qE '^[[:space:]]+build:'; then
@@ -84,12 +107,15 @@ jobs:
           fi
 
       - name: Set up QEMU
+        if: steps.impact.outputs.publish == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
+        if: steps.impact.outputs.publish == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: steps.impact.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -97,6 +123,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish frontend
+        if: steps.impact.outputs.publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
@@ -116,6 +143,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend
 
       - name: Build and publish backend
+        if: steps.impact.outputs.publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -135,18 +163,12 @@ jobs:
           cache-to: type=gha,mode=max,scope=backend
 
       - name: Tag validated release commit
-        if: steps.release.outputs.create_tag == 'true' || steps.release.outputs.replace_tag == 'true'
+        if: steps.impact.outputs.publish == 'true' && steps.release.outputs.create_tag == 'true'
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          REPLACE_TAG: ${{ steps.release.outputs.replace_tag }}
           VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          if [[ "$REPLACE_TAG" == "true" ]]; then
-            git tag -f "$RELEASE_TAG" "$VALIDATED_SHA"
-            git push --force origin "refs/tags/${RELEASE_TAG}"
-          else
-            git tag "$RELEASE_TAG" "$VALIDATED_SHA"
-            git push origin "refs/tags/${RELEASE_TAG}"
-          fi
+          git tag "$RELEASE_TAG" "$VALIDATED_SHA"
+          git push origin "refs/tags/${RELEASE_TAG}"

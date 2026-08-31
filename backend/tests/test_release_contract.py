@@ -23,7 +23,7 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("ghcr.io/exospacelabs/world-sat-monitor-backend", IMAGE_COMPOSE)
         self.assertEqual(IMAGE_COMPOSE.count("world-sat-monitor-backend:${WORLDSAT_IMAGE_TAG"), 3)
 
-    def test_image_publication_is_main_only_ci_gated_and_immutable_after_v1_correction(self):
+    def test_image_publication_is_main_only_ci_gated_and_version_immutable(self):
         self.assertIn("workflow_run:", PUBLISH)
         self.assertIn("workflows: [CI]", PUBLISH)
         self.assertIn("branches: [main]", PUBLISH)
@@ -34,12 +34,14 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("contents: write", PUBLISH)
         self.assertIn("packages: write", PUBLISH)
         self.assertIn("linux/amd64,linux/arm64", PUBLISH)
+        self.assertIn("Detect release-impacting changes", PUBLISH)
+        self.assertIn("No runtime/release inputs changed; skipping image publication and release tagging.", PUBLISH)
+        self.assertIn("backend/tests/*", PUBLISH)
         self.assertIn("git ls-remote --tags origin", PUBLISH)
         self.assertIn("bump VERSION before publishing another main revision", PUBLISH)
-        self.assertIn("38203ea04539bcd67acec6c68631b3dedad6d85a", PUBLISH)
-        self.assertIn('replace_tag=true', PUBLISH)
-        self.assertIn('git tag -f "$RELEASE_TAG" "$VALIDATED_SHA"', PUBLISH)
-        self.assertIn('git push --force origin "refs/tags/${RELEASE_TAG}"', PUBLISH)
+        self.assertNotIn("legacy_v1", PUBLISH)
+        self.assertNotIn("git tag -f", PUBLISH)
+        self.assertNotIn("git push --force", PUBLISH)
         self.assertIn('git tag "$RELEASE_TAG" "$VALIDATED_SHA"', PUBLISH)
         self.assertIn('git push origin "refs/tags/${RELEASE_TAG}"', PUBLISH)
 
