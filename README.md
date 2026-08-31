@@ -6,7 +6,7 @@
 
 Current release: **v1.0.0**
 
-[insert gif here]
+![demo](docs/demo.gif)
 
 ## What v1 provides
 
