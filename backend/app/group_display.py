@@ -57,7 +57,9 @@ def list_requested_groups(connection, now: datetime | None = None) -> list[dict[
             """
             SELECT id, name, source, source_key,
                    display_requested_until, display_prediction_hours,
-                   display_step_seconds, display_provider_refreshed_at
+                   display_step_seconds, display_provider_refreshed_at,
+                   display_provider_failures, display_provider_retry_at,
+                   display_provider_last_error
             FROM satellite_groups
             WHERE display_requested_until IS NOT NULL
               AND display_requested_until > %s
@@ -72,8 +74,30 @@ def mark_group_provider_refreshed(connection, group_id: int, at: datetime) -> No
     connection.execute(
         """
         UPDATE satellite_groups
-        SET display_provider_refreshed_at = %s
+        SET display_provider_refreshed_at = %s,
+            display_provider_failures = 0,
+            display_provider_retry_at = NULL,
+            display_provider_last_error = NULL
         WHERE id = %s
         """,
         (at, group_id),
+    )
+
+
+def mark_group_provider_failed(
+    connection,
+    group_id: int,
+    *,
+    error: str,
+    retry_at: datetime,
+) -> None:
+    connection.execute(
+        """
+        UPDATE satellite_groups
+        SET display_provider_failures = display_provider_failures + 1,
+            display_provider_retry_at = %s,
+            display_provider_last_error = %s
+        WHERE id = %s
+        """,
+        (retry_at, error[:2000], group_id),
     )

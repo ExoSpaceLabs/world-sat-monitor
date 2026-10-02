@@ -17,7 +17,11 @@ from .catalog import (
 )
 from .config import settings
 from .db import connect, wait_for_database
-from .group_display import list_requested_groups, mark_group_provider_refreshed
+from .group_display import (
+    list_requested_groups,
+    mark_group_provider_failed,
+    mark_group_provider_refreshed,
+)
 from .migrations import migrate_schema
 from .orbital_provider import (
     CelesTrakProvider,
@@ -121,7 +125,8 @@ def _process_requested_group(
     )
     if is_celestrak_group:
         last_refresh = group.get("display_provider_refreshed_at")
-        if _is_due(last_refresh, now):
+        group_retry_state = {"next_retry_at": group.get("display_provider_retry_at")}
+        if _is_due(last_refresh, now) and not retry_blocked(group_retry_state, now):
             if not settings.celestrak_enabled:
                 raise ProviderError("CelesTrak provider is disabled")
             provider = CelesTrakProvider(
@@ -130,8 +135,27 @@ def _process_requested_group(
                 request_attempts=settings.celestrak_request_attempts,
                 retry_delay_seconds=settings.celestrak_retry_delay_seconds,
             )
-            provider_sets = provider.fetch_group(str(group["source_key"]))
-            metrics["display_fetches"] += 1
+            try:
+                provider_sets = provider.fetch_group(str(group["source_key"]))
+                metrics["display_fetches"] += 1
+            except Exception as error:
+                failures = int(group.get("display_provider_failures") or 0)
+                delay_seconds = retry_delay_seconds(
+                    failures,
+                    base_seconds=settings.provider_retry_base_seconds,
+                    max_seconds=settings.provider_retry_max_seconds,
+                )
+                with connect() as connection:
+                    mark_group_provider_failed(
+                        connection,
+                        group_id,
+                        error=str(error),
+                        retry_at=now + timedelta(seconds=delay_seconds),
+                    )
+                    connection.commit()
+                raise
+        elif _is_due(last_refresh, now):
+            metrics["backoff_skips"] += 1
 
     with connect() as connection:
         for member in members:
@@ -341,7 +365,7 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
         try:
             return 200, _catalog_group_search_payload(text, limit)
         except CatalogError as error:
-            return 502, {"detail": str(error)}
+            return 503, {"detail": str(error)}
 
     if path != "/catalog/search":
         return None

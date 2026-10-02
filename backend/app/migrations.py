@@ -186,6 +186,13 @@ ALTER TABLE satellite_groups
         CHECK (display_step_seconds >= 10 AND display_step_seconds <= 3600);
 ALTER TABLE satellite_groups
     ADD COLUMN IF NOT EXISTS display_provider_refreshed_at TIMESTAMPTZ;
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_failures INTEGER NOT NULL DEFAULT 0
+        CHECK (display_provider_failures >= 0);
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_retry_at TIMESTAMPTZ;
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_last_error TEXT;
 
 CREATE INDEX IF NOT EXISTS ix_satellite_groups_type_name
     ON satellite_groups (group_type, name);
