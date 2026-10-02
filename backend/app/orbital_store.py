@@ -108,6 +108,12 @@ def record_provider_fetch(
     attempted_at: datetime | None = None,
 ) -> None:
     attempted_at = (attempted_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    last_success_at = attempted_at if success else None
+    last_error = None if success else error
+    failure_count = 0 if success else 1
+    retry_at = None if success else next_retry_at
+    last_error_at = None if success else attempted_at
+
     connection.execute(
         """
         INSERT INTO provider_fetch_state (
@@ -115,38 +121,40 @@ def record_provider_fetch(
             last_error, latest_element_set_id, consecutive_failures,
             next_retry_at, last_error_at
         )
-        VALUES (
-            %s, %s, %s, CASE WHEN %s THEN %s ELSE NULL END,
-            %s, %s, CASE WHEN %s THEN 0 ELSE 1 END,
-            CASE WHEN %s THEN NULL ELSE %s END,
-            CASE WHEN %s THEN NULL ELSE %s END
-        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (satellite_id, provider)
         DO UPDATE SET
             last_attempt_at = EXCLUDED.last_attempt_at,
-            last_success_at = CASE
-                WHEN %s THEN EXCLUDED.last_attempt_at
-                ELSE provider_fetch_state.last_success_at
-            END,
-            last_error = CASE WHEN %s THEN NULL ELSE EXCLUDED.last_error END,
+            last_success_at = COALESCE(
+                EXCLUDED.last_success_at,
+                provider_fetch_state.last_success_at
+            ),
+            last_error = EXCLUDED.last_error,
             latest_element_set_id = COALESCE(
                 EXCLUDED.latest_element_set_id,
                 provider_fetch_state.latest_element_set_id
             ),
             consecutive_failures = CASE
-                WHEN %s THEN 0
+                WHEN EXCLUDED.last_success_at IS NOT NULL THEN 0
                 ELSE provider_fetch_state.consecutive_failures + 1
             END,
-            next_retry_at = CASE WHEN %s THEN NULL ELSE EXCLUDED.next_retry_at END,
+            next_retry_at = EXCLUDED.next_retry_at,
             last_error_at = CASE
-                WHEN %s THEN provider_fetch_state.last_error_at
+                WHEN EXCLUDED.last_success_at IS NOT NULL
+                    THEN provider_fetch_state.last_error_at
                 ELSE EXCLUDED.last_error_at
             END
         """,
         (
-            satellite_id, provider, attempted_at, success, attempted_at,
-            error, element_set_id, success, success, next_retry_at,
-            success, attempted_at, success, success, success, success, success,
+            satellite_id,
+            provider,
+            attempted_at,
+            last_success_at,
+            last_error,
+            element_set_id,
+            failure_count,
+            retry_at,
+            last_error_at,
         ),
     )
 
