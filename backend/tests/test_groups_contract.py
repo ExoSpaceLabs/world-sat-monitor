@@ -80,6 +80,8 @@ class GroupOrbitalQualityContractTests(unittest.TestCase):
         self.assertIn("jsonb_agg", section)
         self.assertIn("LIMIT %s", section)
         self.assertNotIn("position_samples", section)
+        self.assertIn("provider_priority", section)
+        self.assertIn("array_position(m.provider_priority, oes.source)", section)
 
     def test_group_status_response_has_quality_and_attention_sections(self):
         section = API.split("def group_orbital_status", 1)[1].split('@router.patch("/{group_id}")', 1)[0]
