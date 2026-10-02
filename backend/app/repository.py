@@ -16,6 +16,8 @@ SATELLITE_SELECT = """
 """
 GROUP_SELECT = """
     SELECT g.id, g.name, g.group_type, g.source, g.source_key, g.metadata,
+           g.display_provider_refreshed_at, g.display_provider_failures,
+           g.display_provider_retry_at, g.display_provider_last_error,
            g.created_at, g.updated_at,
            COUNT(gm.satellite_id)::int AS member_count,
            COUNT(gm.satellite_id) FILTER (WHERE s.active)::int AS active_member_count

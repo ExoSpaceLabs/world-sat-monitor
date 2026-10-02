@@ -76,3 +76,20 @@ can still be monitored or added to custom groups because the satellite already e
 locally. If neither CelesTrak nor the local catalog has a match, the catalog endpoint
 returns HTTP 503 to distinguish provider unavailability from an application gateway
 failure.
+
+
+## Group orbital-quality summary
+
+The group Details view uses `GET /api/v1/groups/{group_id}/orbital-status`.
+The backend aggregates source quality in PostgreSQL and returns a constant-size
+summary instead of returning one status object per group member.
+
+The response includes element-set and current-state coverage, fresh/aging/stale/
+unknown counts, provider-health counts, provider distribution, epoch range, provider
+success range, and a bounded list of the ten members requiring the most attention.
+Backoff/degraded members rank ahead of stale, unknown, and aging source data.
+
+This endpoint intentionally does not read `position_samples`. Constellation-scale
+status comes from group membership, orbital-element metadata, provider fetch state,
+and the one-row-per-satellite current-state table. The constellation benchmark also
+measures this path at 100, 1,000, and 5,000 members.

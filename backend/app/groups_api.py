@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
+from .config import settings
 from .db import connect
 from .group_display import release_group_display, request_group_display
 from .group_models import (
@@ -14,6 +15,8 @@ from .group_models import (
     SatelliteGroupUpdate,
 )
 from .orbit import CartesianState, ecef_to_geodetic_spherical, initial_bearing_deg, interpolate_ecef
+from .orbital_store import get_group_orbital_source_summary
+from .provider_resilience import provider_health
 from .repository import (
     add_group_member,
     create_group,
@@ -101,6 +104,35 @@ def _load_group(connection, group_id: int) -> dict[str, Any]:
     return group
 
 
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _coverage_payload(count: int, total: int) -> dict[str, int | float]:
+    percentage = 0.0 if total <= 0 else round(100.0 * count / total, 1)
+    return {"count": count, "percent": percentage}
+
+
+def _group_provider_payload(group: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+    source = str(group.get("source") or "").strip().lower()
+    if not source or source == "user":
+        return None
+    state = {
+        "last_success_at": group.get("display_provider_refreshed_at"),
+        "consecutive_failures": int(group.get("display_provider_failures") or 0),
+        "next_retry_at": group.get("display_provider_retry_at"),
+        "last_error": group.get("display_provider_last_error"),
+    }
+    return {
+        "name": source,
+        "health": provider_health(state, now),
+        "last_success_at": _iso(state["last_success_at"]),
+        "next_retry_at": _iso(state["next_retry_at"]),
+        "last_error": state["last_error"],
+        "consecutive_failures": state["consecutive_failures"],
+    }
+
+
 def _require_user_managed(group: dict[str, Any]) -> None:
     if group["source"] != "user":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="provider-managed group cannot be changed through the custom group API")
@@ -126,6 +158,62 @@ def group_details(group_id: int):
     with connect() as connection:
         row = _load_group(connection, group_id)
     return _group_payload(row)
+
+
+@router.get("/{group_id}/orbital-status")
+def group_orbital_status(group_id: int):
+    now = datetime.now(timezone.utc)
+    with connect() as connection:
+        group = _load_group(connection, group_id)
+        summary = get_group_orbital_source_summary(
+            connection,
+            group_id,
+            now=now,
+            refresh_seconds=settings.provider_refresh_seconds,
+            attention_limit=10,
+        )
+
+    total = int(summary["member_count"])
+    element_sets = int(summary["element_set_members"])
+    current_state = int(summary["current_state_members"])
+    current_latest = int(summary["current_on_latest_elements"])
+
+    return {
+        "group": _group_payload(group),
+        "generated_at": now.isoformat(),
+        "refresh_interval_seconds": settings.provider_refresh_seconds,
+        "group_provider": _group_provider_payload(group, now),
+        "members": {
+            "total": total,
+            "active": int(summary["active_member_count"]),
+        },
+        "coverage": {
+            "element_sets": _coverage_payload(element_sets, total),
+            "current_state": _coverage_payload(current_state, total),
+            "current_on_latest_elements": _coverage_payload(current_latest, total),
+        },
+        "freshness": {
+            "fresh": int(summary["freshness_fresh"]),
+            "aging": int(summary["freshness_aging"]),
+            "stale": int(summary["freshness_stale"]),
+            "unknown": int(summary["freshness_unknown"]),
+            "oldest_epoch": _iso(summary["oldest_element_epoch"]),
+            "newest_epoch": _iso(summary["newest_element_epoch"]),
+        },
+        "provider_health": {
+            "healthy": int(summary["health_healthy"]),
+            "degraded": int(summary["health_degraded"]),
+            "backoff": int(summary["health_backoff"]),
+            "unknown": int(summary["health_unknown"]),
+            "providers": dict(summary["providers"] or {}),
+            "oldest_success_at": _iso(summary["oldest_provider_success_at"]),
+            "newest_success_at": _iso(summary["newest_provider_success_at"]),
+        },
+        "attention": {
+            "total": int(summary["attention_total"]),
+            "members": list(summary["attention"] or []),
+        },
+    }
 
 
 @router.patch("/{group_id}")
