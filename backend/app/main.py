@@ -152,6 +152,9 @@ def satellite_orbital_status(satellite_id: int):
     provider_state = status_payload["provider_state"]
     propagation_run = status_payload["propagation_run"]
     current_state = status_payload["current_state"]
+    provider_priority = list(status_payload["provider_priority"])
+    selected_provider = status_payload["provider"]
+    selected_index = provider_priority.index(selected_provider) if selected_provider in provider_priority else None
     age_seconds, freshness = source_freshness(
         element_set["epoch"] if element_set is not None else None,
         now,
@@ -168,7 +171,10 @@ def satellite_orbital_status(satellite_id: int):
             "active": bool(status_payload["satellite"]["active"]),
         },
         "provider": {
-            "name": status_payload["provider"],
+            "name": selected_provider,
+            "priority": provider_priority,
+            "selected_index": selected_index,
+            "fallback_active": selected_index is None or selected_index > 0,
             "health": provider_health(provider_state, now),
             "refresh_interval_seconds": settings.provider_refresh_seconds,
             "last_attempt_at": iso(provider_state["last_attempt_at"]) if provider_state else None,
