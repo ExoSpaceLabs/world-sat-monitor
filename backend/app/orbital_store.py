@@ -6,6 +6,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from .orbital_provider import NormalizedElementSet
+from .provider_policy import provider_priority_for
 
 
 def get_latest_element_set(connection, satellite_id: int, source: str | None = None):
@@ -22,6 +23,45 @@ def get_latest_element_set(connection, satellite_id: int, source: str | None = N
         params,
     ).fetchone()
 
+
+
+def get_latest_element_set_by_priority(
+    connection,
+    satellite_id: int,
+    providers: tuple[str, ...] | list[str],
+    *,
+    include_unlisted: bool = False,
+):
+    ordered = list(providers)
+    if not ordered:
+        return get_latest_element_set(connection, satellite_id)
+
+    if include_unlisted:
+        return connection.execute(
+            """
+            SELECT *
+            FROM orbital_element_sets
+            WHERE satellite_id = %s
+            ORDER BY
+                COALESCE(array_position(%s::text[], source), cardinality(%s::text[]) + 1),
+                fetched_at DESC,
+                id DESC
+            LIMIT 1
+            """,
+            (satellite_id, ordered, ordered),
+        ).fetchone()
+
+    return connection.execute(
+        """
+        SELECT *
+        FROM orbital_element_sets
+        WHERE satellite_id = %s
+          AND source = ANY(%s::text[])
+        ORDER BY array_position(%s::text[], source), fetched_at DESC, id DESC
+        LIMIT 1
+        """,
+        (satellite_id, ordered, ordered),
+    ).fetchone()
 
 def get_provider_fetch_state(connection, satellite_id: int, provider: str):
     return connection.execute(
@@ -162,7 +202,7 @@ def record_provider_fetch(
 def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] | None:
     satellite = connection.execute(
         """
-        SELECT id, name, active, provider_preference, metadata
+        SELECT id, name, active, provider_preference, provider_priority, metadata
         FROM satellites
         WHERE id = %s
         """,
@@ -171,15 +211,14 @@ def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] |
     if satellite is None:
         return None
 
-    metadata = dict(satellite.get("metadata") or {})
-    preferred_provider = str(satellite.get("provider_preference") or "").strip().lower()
-    if not preferred_provider:
-        preferred_provider = "mock" if metadata.get("mock") is True else "celestrak"
-
-    latest = get_latest_element_set(connection, satellite_id, source=preferred_provider)
-    if latest is None:
-        latest = get_latest_element_set(connection, satellite_id)
-    provider_name = str(latest["source"]) if latest is not None else preferred_provider
+    provider_priority = provider_priority_for(satellite)
+    latest = get_latest_element_set_by_priority(
+        connection,
+        satellite_id,
+        provider_priority,
+        include_unlisted=True,
+    )
+    provider_name = str(latest["source"]) if latest is not None else provider_priority[0]
     provider_state = get_provider_fetch_state(connection, satellite_id, provider_name)
 
     run = None
@@ -209,6 +248,7 @@ def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] |
     return {
         "satellite": satellite,
         "provider": provider_name,
+        "provider_priority": provider_priority,
         "element_set": latest,
         "provider_state": provider_state,
         "propagation_run": run,
