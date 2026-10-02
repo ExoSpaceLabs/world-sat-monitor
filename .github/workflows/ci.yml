@@ -128,6 +128,11 @@ jobs:
           PYTHONPATH: backend
           DATABASE_URL: postgresql://worldsat:worldsat@localhost:5432/worldsat
         run: python backend/tests/integration_legacy_migration.py
+      - name: Verify provider-group import policy
+        env:
+          PYTHONPATH: backend
+          DATABASE_URL: postgresql://worldsat:worldsat@localhost:5432/worldsat
+        run: python backend/tests/integration_provider_group_import.py
 
   compose:
     name: Compose provider + propagator integration
