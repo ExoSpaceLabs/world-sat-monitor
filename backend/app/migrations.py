@@ -101,6 +101,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_orbital_element_sets_source_fingerprint
 """
 
 CURRENT_SCHEMA_SQL = r"""
+ALTER TABLE satellites
+    ADD COLUMN IF NOT EXISTS provider_priority TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+
+UPDATE satellites
+SET provider_priority = ARRAY[
+    LOWER(BTRIM(
+        CASE
+            WHEN metadata->>'mock' = 'true' THEN 'mock'
+            WHEN NULLIF(provider_preference, '') IS NOT NULL THEN provider_preference
+            ELSE 'celestrak'
+        END
+    ))
+]
+WHERE cardinality(provider_priority) = 0;
+
+UPDATE satellites
+SET provider_preference = provider_priority[1]
+WHERE provider_preference IS NULL
+  AND cardinality(provider_priority) > 0;
+
+ALTER TABLE satellites
+    ALTER COLUMN provider_priority SET DEFAULT ARRAY['celestrak']::TEXT[];
+
 ALTER TABLE propagation_jobs
     ADD COLUMN IF NOT EXISTS history_hours INTEGER NOT NULL DEFAULT 48
         CHECK (history_hours >= 0);
