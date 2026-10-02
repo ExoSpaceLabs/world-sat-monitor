@@ -394,7 +394,7 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
         )
         results = catalog.search(text, limit=limit)
     except CatalogError as error:
-        return 502, {"detail": str(error)}
+        return 503, {"detail": str(error)}
 
     payloads = []
     with connect() as connection:
