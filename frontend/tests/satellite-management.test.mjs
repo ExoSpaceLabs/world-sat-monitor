@@ -257,3 +257,9 @@ test("group orbital quality is aggregated in details", async () => {
   assert.match(satellitePanel, /ATTENTION ·/);
   assert.match(satellitePanel, /setInterval\(refresh, 60000\)/);
 });
+
+
+test("provider priority follows catalog source for imported satellites", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  assert.match(satellitePanel, /provider_preference: result\.provider,[\s\S]*provider_priority: \[result\.provider\]/);
+});
