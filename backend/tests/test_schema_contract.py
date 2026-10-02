@@ -19,6 +19,11 @@ class SchemaContractTests(unittest.TestCase):
         satellites_block = SCHEMA.split("CREATE TABLE IF NOT EXISTS satellites", 1)[1].split(");", 1)[0]
         self.assertNotIn("norad_id", satellites_block)
 
+    def test_satellites_have_ordered_provider_priority(self):
+        satellites_block = SCHEMA.split("CREATE TABLE IF NOT EXISTS satellites", 1)[1].split(");", 1)[0]
+        self.assertIn("provider_priority TEXT[]", satellites_block)
+        self.assertIn("DEFAULT ARRAY['celestrak']::TEXT[]", satellites_block)
+
     def test_groups_are_reusable_many_to_many_entities(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS satellite_groups", SCHEMA)
         self.assertIn("CREATE TABLE IF NOT EXISTS satellite_group_members", SCHEMA)
