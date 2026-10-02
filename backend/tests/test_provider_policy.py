@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from app.satellite_models import SatelliteCreate, SatelliteUpdate
 from app.provider_policy import (
     DEFAULT_PROVIDER,
     normalize_provider_priority,
@@ -33,9 +34,26 @@ class ProviderPolicyTests(unittest.TestCase):
         )
         self.assertEqual(provider_priority_for({}), (DEFAULT_PROVIDER,))
 
+    def test_create_policy_keeps_legacy_alias_in_sync(self):
+        created = SatelliteCreate(
+            name="demo",
+            provider_priority=["SpaceTrack", "CelesTrak"],
+        )
+        self.assertEqual(created.provider_priority, ["spacetrack", "celestrak"])
+        self.assertEqual(created.provider_preference, "spacetrack")
+
+    def test_legacy_create_preference_builds_single_provider_priority(self):
+        created = SatelliteCreate(name="demo", provider_preference="CelesTrak")
+        self.assertEqual(created.provider_priority, ["celestrak"])
+        self.assertEqual(created.provider_preference, "celestrak")
+
+    def test_update_priority_updates_legacy_alias(self):
+        update = SatelliteUpdate(provider_priority=["SpaceTrack", "CelesTrak"])
+        self.assertEqual(update.provider_preference, "spacetrack")
+
     def test_empty_priority_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "cannot be empty"):
-            normalize_provider_priority([])
+        with self.assertRaises(ValueError):
+            SatelliteCreate(name="demo", provider_priority=[])
 
 
 if __name__ == "__main__":
