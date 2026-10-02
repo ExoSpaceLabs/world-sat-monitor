@@ -225,6 +225,47 @@ jobs:
              WHERE s.name='WORLDSAT-01' AND scs.source_element_set_id IS NOT NULL;"             | grep '^1$'
 
           mock_id="$(docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT id FROM satellites WHERE name='WORLDSAT-01' LIMIT 1;")"
+          curl --fail --silent "http://localhost:3000/api/v1/providers" | python -c 'import json,sys; d=json.load(sys.stdin); names={p["name"] for p in d["providers"]}; assert {"mock","celestrak"} <= names'
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT provider_priority[1] FROM satellites WHERE id=${mock_id};" | grep '^mock          curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"freshness":"stale"'
+          curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"source":"mock"'
+          curl --fail --silent -X POST http://localhost:3000/api/v1/positions/current             -H 'Content-Type: application/json'             -d "{\"satellite_ids\":[${mock_id}]}" | grep '"WORLDSAT-01"'
+
+          quality_group="$(curl --fail --silent -X POST http://localhost:3000/api/v1/groups             -H 'Content-Type: application/json'             -d '{"name":"CI-ORBITAL-QUALITY","group_type":"mission"}')"
+          quality_group_id="$(printf '%s' "$quality_group" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          curl --fail --silent -X POST "http://localhost:3000/api/v1/groups/${quality_group_id}/members"             -H 'Content-Type: application/json'             -d "{\"satellite_id\":${mock_id}}" >/dev/null
+          curl --fail --silent "http://localhost:3000/api/v1/groups/${quality_group_id}/orbital-status" | python -c 'import json,sys; d=json.load(sys.stdin); assert d["members"]["total"] == 1; assert d["provider_health"]["healthy"] == 1; assert d["freshness"]["stale"] == 1; assert d["coverage"]["element_sets"]["count"] == 1; assert d["coverage"]["current_state"]["count"] == 1; assert d["coverage"]["current_on_latest_elements"]["count"] == 1; assert len(d["attention"]["members"]) <= 10'
+          curl --fail --silent -o /dev/null -X DELETE "http://localhost:3000/api/v1/groups/${quality_group_id}"
+
+          created="$(curl --fail --silent -X POST http://localhost:3000/api/v1/satellites             -H 'Content-Type: application/json'             -d '{"name":"CI-INACTIVE","active":false,"identifiers":[{"namespace":"NORAD_CAT_ID","value":"100001"},{"namespace":"COSPAR","value":"2026-001A"}]}')"
+          satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          printf '%s' "$created" | grep '"active":false'
+          printf '%s' "$created" | grep '"NORAD_CAT_ID":"100001"'
+
+          sleep 2
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc \
+            "SELECT count(*) FROM provider_fetch_state WHERE satellite_id=${satellite_id};" \
+            | grep '^0$'
+
+          curl --fail --silent "http://localhost:3000/api/v1/satellites?active=false" | grep 'CI-INACTIVE'
+          curl --fail --silent -X PATCH "http://localhost:3000/api/v1/satellites/${satellite_id}"             -H 'Content-Type: application/json'             -d '{"name":"CI-INACTIVE-RENAMED"}' | grep 'CI-INACTIVE-RENAMED'
+          curl --fail --silent -X POST "http://localhost:3000/api/v1/satellites/${satellite_id}/activate" | grep '"active":true'
+          curl --fail --silent "http://localhost:3000/api/v1/satellites?active=true" | grep 'CI-INACTIVE-RENAMED'
+          curl --fail --silent -X POST "http://localhost:3000/api/v1/satellites/${satellite_id}/deactivate" | grep '"active":false'
+
+          sleep 2
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM propagation_jobs
+             WHERE satellite_id=${satellite_id} AND status IN ('pending','running');"             | grep '^0$'
+
+          curl --fail --silent -o /dev/null -w '%{http_code}' -X DELETE             "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^204$'
+          curl --silent -o /dev/null -w '%{http_code}'             "http://localhost:3000/api/v1/satellites/${satellite_id}" | grep '^404$'
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v
+
+          curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | python -c 'import json,sys; d=json.load(sys.stdin); p=d["provider"]; assert p["priority"] == ["mock"]; assert len(p["candidates"]) == 1; assert p["candidates"][0]["name"] == "mock"; assert p["candidates"][0]["selected"] is True'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"health":"healthy"'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"freshness":"stale"'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"source":"mock"'
