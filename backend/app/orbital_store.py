@@ -104,14 +104,23 @@ def record_provider_fetch(
     success: bool,
     element_set_id: int | None = None,
     error: str | None = None,
+    next_retry_at: datetime | None = None,
+    attempted_at: datetime | None = None,
 ) -> None:
+    attempted_at = (attempted_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     connection.execute(
         """
         INSERT INTO provider_fetch_state (
             satellite_id, provider, last_attempt_at, last_success_at,
-            last_error, latest_element_set_id
+            last_error, latest_element_set_id, consecutive_failures,
+            next_retry_at, last_error_at
         )
-        VALUES (%s, %s, NOW(), CASE WHEN %s THEN NOW() ELSE NULL END, %s, %s)
+        VALUES (
+            %s, %s, %s, CASE WHEN %s THEN %s ELSE NULL END,
+            %s, %s, CASE WHEN %s THEN 0 ELSE 1 END,
+            CASE WHEN %s THEN NULL ELSE %s END,
+            CASE WHEN %s THEN NULL ELSE %s END
+        )
         ON CONFLICT (satellite_id, provider)
         DO UPDATE SET
             last_attempt_at = EXCLUDED.last_attempt_at,
@@ -119,14 +128,84 @@ def record_provider_fetch(
                 WHEN %s THEN EXCLUDED.last_attempt_at
                 ELSE provider_fetch_state.last_success_at
             END,
-            last_error = EXCLUDED.last_error,
+            last_error = CASE WHEN %s THEN NULL ELSE EXCLUDED.last_error END,
             latest_element_set_id = COALESCE(
                 EXCLUDED.latest_element_set_id,
                 provider_fetch_state.latest_element_set_id
-            )
+            ),
+            consecutive_failures = CASE
+                WHEN %s THEN 0
+                ELSE provider_fetch_state.consecutive_failures + 1
+            END,
+            next_retry_at = CASE WHEN %s THEN NULL ELSE EXCLUDED.next_retry_at END,
+            last_error_at = CASE
+                WHEN %s THEN provider_fetch_state.last_error_at
+                ELSE EXCLUDED.last_error_at
+            END
         """,
-        (satellite_id, provider, success, error, element_set_id, success),
+        (
+            satellite_id, provider, attempted_at, success, attempted_at,
+            error, element_set_id, success, success, next_retry_at,
+            success, attempted_at, success, success, success, success, success,
+        ),
     )
+
+
+def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] | None:
+    satellite = connection.execute(
+        """
+        SELECT id, name, active, provider_preference, metadata
+        FROM satellites
+        WHERE id = %s
+        """,
+        (satellite_id,),
+    ).fetchone()
+    if satellite is None:
+        return None
+
+    metadata = dict(satellite.get("metadata") or {})
+    preferred_provider = str(satellite.get("provider_preference") or "").strip().lower()
+    if not preferred_provider:
+        preferred_provider = "mock" if metadata.get("mock") is True else "celestrak"
+
+    latest = get_latest_element_set(connection, satellite_id, source=preferred_provider)
+    if latest is None:
+        latest = get_latest_element_set(connection, satellite_id)
+    provider_name = str(latest["source"]) if latest is not None else preferred_provider
+    provider_state = get_provider_fetch_state(connection, satellite_id, provider_name)
+
+    run = None
+    if latest is not None:
+        run = connection.execute(
+            """
+            SELECT id, generated_at, start_time, end_time, status, is_mock
+            FROM propagation_runs
+            WHERE satellite_id = %s
+              AND source_element_set_id = %s
+              AND status = 'completed'
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            (satellite_id, int(latest["id"])),
+        ).fetchone()
+
+    current_state = connection.execute(
+        """
+        SELECT state_time, updated_at, source_run_id, source_element_set_id
+        FROM satellite_current_state
+        WHERE satellite_id = %s
+        """,
+        (satellite_id,),
+    ).fetchone()
+
+    return {
+        "satellite": satellite,
+        "provider": provider_name,
+        "element_set": latest,
+        "provider_state": provider_state,
+        "propagation_run": run,
+        "current_state": current_state,
+    }
 
 
 def ensure_propagation_job(

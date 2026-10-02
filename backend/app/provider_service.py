@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import math
 import re
@@ -34,6 +34,7 @@ from .orbital_store import (
     record_provider_fetch,
 )
 from .provider_group_store import get_provider_group, sync_provider_group
+from .provider_resilience import retry_blocked, retry_delay_seconds
 from .repository import list_group_members, list_satellites
 from .seed import ensure_mock_data
 from .worker_health import WorkerHealth, start_health_server
@@ -52,6 +53,8 @@ def _provider_for(satellite: dict[str, Any]) -> OrbitalDataProvider:
         return CelesTrakProvider(
             settings.celestrak_base_url,
             timeout_seconds=settings.celestrak_timeout_seconds,
+            request_attempts=settings.celestrak_request_attempts,
+            retry_delay_seconds=settings.celestrak_retry_delay_seconds,
         )
     raise ProviderError(f"unsupported orbital provider preference: {preference}")
 
@@ -124,6 +127,8 @@ def _process_requested_group(
             provider = CelesTrakProvider(
                 settings.celestrak_base_url,
                 timeout_seconds=settings.celestrak_timeout_seconds,
+                request_attempts=settings.celestrak_request_attempts,
+                retry_delay_seconds=settings.celestrak_retry_delay_seconds,
             )
             provider_sets = provider.fetch_group(str(group["source_key"]))
             metrics["display_fetches"] += 1
@@ -185,6 +190,7 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         "display_groups": 0,
         "display_fetches": 0,
         "display_jobs_created": 0,
+        "backoff_skips": 0,
         "errors": 0,
     }
 
@@ -227,6 +233,13 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
                     connection.commit()
                     continue
 
+                if retry_blocked(state, now):
+                    metrics["backoff_skips"] += 1
+                    if latest is not None and _ensure_job(connection, satellite_id, int(latest["id"])):
+                        metrics["jobs_created"] += 1
+                    connection.commit()
+                    continue
+
             element_set = provider.fetch_latest(satellite["identifiers"])
             metrics["fetched"] += 1
             with connect() as connection:
@@ -252,12 +265,21 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
             LOGGER.warning("provider refresh failed for satellite %s: %s", satellite_id, error)
             try:
                 with connect() as connection:
+                    state = get_provider_fetch_state(connection, satellite_id, provider_name)
+                    failures = int(state["consecutive_failures"]) if state is not None else 0
+                    delay_seconds = retry_delay_seconds(
+                        failures,
+                        base_seconds=settings.provider_retry_base_seconds,
+                        max_seconds=settings.provider_retry_max_seconds,
+                    )
                     record_provider_fetch(
                         connection,
                         satellite_id,
                         provider_name,
                         success=False,
                         error=str(error)[:2000],
+                        next_retry_at=now + timedelta(seconds=delay_seconds),
+                        attempted_at=now,
                     )
                     connection.commit()
             except Exception:
@@ -341,6 +363,10 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
         catalog = CelesTrakCatalog(
             settings.celestrak_catalog_url,
             timeout_seconds=settings.celestrak_timeout_seconds,
+            request_attempts=settings.celestrak_request_attempts,
+            retry_delay_seconds=settings.celestrak_retry_delay_seconds,
+            cache_seconds=settings.celestrak_catalog_cache_seconds,
+            stale_seconds=settings.celestrak_catalog_stale_seconds,
         )
         results = catalog.search(text, limit=limit)
     except CatalogError as error:
@@ -404,6 +430,10 @@ def _catalog_post_route(path: str, query: dict[str, list[str]]):
         catalog = CelesTrakCatalog(
             settings.celestrak_catalog_url,
             timeout_seconds=settings.celestrak_timeout_seconds,
+            request_attempts=settings.celestrak_request_attempts,
+            retry_delay_seconds=settings.celestrak_retry_delay_seconds,
+            cache_seconds=settings.celestrak_catalog_cache_seconds,
+            stale_seconds=settings.celestrak_catalog_stale_seconds,
         )
         members = catalog.group(definition.key)
         if not members:

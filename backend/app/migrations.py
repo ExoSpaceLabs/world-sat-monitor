@@ -133,8 +133,19 @@ CREATE TABLE IF NOT EXISTS provider_fetch_state (
     last_success_at TIMESTAMPTZ,
     last_error TEXT,
     latest_element_set_id BIGINT REFERENCES orbital_element_sets(id) ON DELETE SET NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+    next_retry_at TIMESTAMPTZ,
+    last_error_at TIMESTAMPTZ,
     PRIMARY KEY (satellite_id, provider)
 );
+
+ALTER TABLE provider_fetch_state
+    ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0
+        CHECK (consecutive_failures >= 0);
+ALTER TABLE provider_fetch_state
+    ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE provider_fetch_state
+    ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS satellite_current_state (
     satellite_id BIGINT PRIMARY KEY REFERENCES satellites(id) ON DELETE CASCADE,
