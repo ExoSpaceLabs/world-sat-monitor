@@ -59,10 +59,7 @@ class CatalogTests(unittest.TestCase):
     def test_celestrak_host_prefers_direct_gp_for_interactive_search(self):
         body = json.dumps([FIXTURE[0]]).encode()
         with patch("app.catalog.urlopen", return_value=BytesIO(body)) as mocked:
-            result = CelesTrakCatalog(
-                "https://celestrak.org/satcat/records.php",
-                request_attempts=1,
-            ).search("ISS")
+            result = CelesTrakCatalog("https://celestrak.org/satcat/records.php").search("ISS")
         url = mocked.call_args.args[0].full_url
         self.assertIn("/NORAD/elements/gp.php?", url)
         self.assertIn("NAME=ISS", url)
@@ -77,7 +74,10 @@ class CatalogTests(unittest.TestCase):
             "app.catalog.urlopen",
             side_effect=[OSError("gp timeout"), BytesIO(body)],
         ) as mocked:
-            result = CelesTrakCatalog("https://celestrak.org/satcat/records.php").search("ISS")
+            result = CelesTrakCatalog(
+                "https://celestrak.org/satcat/records.php",
+                request_attempts=1,
+            ).search("ISS")
         self.assertEqual(mocked.call_count, 2)
         self.assertIn("/NORAD/elements/gp.php?", mocked.call_args_list[0].args[0].full_url)
         satcat_url = mocked.call_args_list[1].args[0].full_url
