@@ -49,6 +49,7 @@ def _member_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"], "name": row["name"], "active": row["active"],
         "object_type": row["object_type"], "provider_preference": row["provider_preference"],
+        "provider_priority": list(row.get("provider_priority") or []),
         "metadata": row["metadata"], "identifiers": row["identifiers"], "norad_id": row.get("norad_id"),
         "membership_metadata": row["membership_metadata"], "added_at": row["added_at"],
     }
