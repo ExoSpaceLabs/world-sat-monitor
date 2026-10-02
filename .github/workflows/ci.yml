@@ -224,11 +224,7 @@ jobs:
 
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"health":"healthy"'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"freshness"'
-
-          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM information_schema.columns
-             WHERE table_schema='public'
-               AND table_name='provider_fetch_state'
-               AND column_name IN ('consecutive_failures','next_retry_at','last_error_at');"             | grep '^3
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_fetch_state' AND column_name IN ('consecutive_failures','next_retry_at','last_error_at');" | grep '^3
           satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
           printf '%s' "$created" | grep '"active":false'
           printf '%s' "$created" | grep '"NORAD_CAT_ID":"100001"'
@@ -257,11 +253,7 @@ jobs:
         if: always()
         run: docker compose down -v
 
-
-          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT count(*) FROM information_schema.columns
-             WHERE table_schema='public'
-               AND table_name='satellite_groups'
-               AND column_name IN ('display_provider_failures','display_provider_retry_at','display_provider_last_error');"             | grep '^3
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='satellite_groups' AND column_name IN ('display_provider_failures','display_provider_retry_at','display_provider_last_error');" | grep '^3
           satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
           printf '%s' "$created" | grep '"active":false'
           printf '%s' "$created" | grep '"NORAD_CAT_ID":"100001"'
