@@ -767,7 +767,8 @@ export function DetailsPanel({basemap, followSatellite, satellite, satelliteId, 
       </>}
       <div className="details-section-title">ORBITAL SOURCE</div>
       {selectedOrbitalStatus ? <>
-        <div className="data-row"><span>PROVIDER</span><b>{selectedOrbitalStatus.provider.name.toUpperCase()}</b></div>
+        <div className="data-row"><span>PROVIDER</span><b className={selectedOrbitalStatus.provider.fallback_active ? "quality-state aging" : undefined}>{selectedOrbitalStatus.provider.name.toUpperCase()}{selectedOrbitalStatus.provider.fallback_active ? " · FALLBACK" : ""}</b></div>
+        <div className="data-row"><span>PROVIDER POLICY</span><b>{selectedOrbitalStatus.provider.priority.map((name) => name.toUpperCase()).join(" → ")}</b></div>
         <div className="data-row"><span>PROVIDER HEALTH</span><b className={`quality-state ${selectedOrbitalStatus.provider.health}`}>{selectedOrbitalStatus.provider.health.toUpperCase()}</b></div>
         <div className="data-row"><span>SOURCE FRESHNESS</span><b className={`quality-state ${selectedOrbitalStatus.element_set?.freshness ?? "unknown"}`}>{(selectedOrbitalStatus.element_set?.freshness ?? "unknown").toUpperCase()}</b></div>
         <div className="data-row"><span>SOURCE AGE</span><b>{formatAgeSeconds(selectedOrbitalStatus.element_set?.age_seconds)}</b></div>
