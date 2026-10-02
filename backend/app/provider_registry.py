@@ -10,8 +10,29 @@ from .orbital_provider import (
 from .provider_policy import normalize_provider_name
 
 
+def provider_descriptors() -> tuple[dict[str, object], ...]:
+    return (
+        {
+            "name": "mock",
+            "enabled": True,
+            "kind": "synthetic",
+            "supports_single_fetch": True,
+            "supports_group_fetch": False,
+            "supports_catalog": False,
+        },
+        {
+            "name": "celestrak",
+            "enabled": settings.celestrak_enabled,
+            "kind": "external",
+            "supports_single_fetch": True,
+            "supports_group_fetch": True,
+            "supports_catalog": True,
+        },
+    )
+
+
 def registered_provider_names() -> tuple[str, ...]:
-    return ("mock", "celestrak")
+    return tuple(str(descriptor["name"]) for descriptor in provider_descriptors())
 
 
 def build_orbital_provider(name: str) -> OrbitalDataProvider:
