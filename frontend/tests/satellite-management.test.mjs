@@ -234,3 +234,11 @@ test("orbital source quality is visible in single-object details", async () => {
   assert.match(satellitePanel, /setInterval\(refresh, 30000\)/);
   assert.match(monitor, /satelliteId=\{displayedManagedSatellite\?\.id \?\? null\}/);
 });
+
+
+test("local catalog fallback is visible when CelesTrak is unavailable", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  assert.match(satellitePanel, /catalog_fallback === "local"/);
+  assert.match(satellitePanel, /CELESTRAK UNAVAILABLE · SHOWING LOCAL CATALOG MATCHES/);
+  assert.match(satellitePanel, /sat-catalog-notice/);
+});

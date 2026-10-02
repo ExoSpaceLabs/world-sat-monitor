@@ -348,6 +348,70 @@ def _catalog_group_search_payload(text: str, limit: int) -> dict[str, Any]:
     return {"query": text, "provider": "celestrak", "groups": groups}
 
 
+def _local_catalog_results(text: str, limit: int) -> list[dict[str, Any]]:
+    needle = text.strip().casefold()
+    if not needle:
+        return []
+
+    with connect() as connection:
+        satellites = list_satellites(connection)
+
+    ranked: list[tuple[int, str, int, dict[str, Any]]] = []
+    for satellite in satellites:
+        identifiers = {
+            str(namespace): str(value)
+            for namespace, value in dict(satellite.get("identifiers") or {}).items()
+        }
+        name = str(satellite.get("name") or "")
+        searchable = [name, *identifiers.values()]
+        normalized = [value.casefold() for value in searchable if value]
+        if not any(needle in value for value in normalized):
+            continue
+
+        exact = any(needle == value for value in normalized)
+        prefix = any(value.startswith(needle) for value in normalized)
+        rank = 0 if exact else 1 if prefix else 2
+        satellite_id = int(satellite["id"])
+        metadata = dict(satellite.get("metadata") or {})
+        metadata.update({
+            "catalog_fallback": "local",
+            "provider_status": "unavailable",
+        })
+        provider = str(satellite.get("provider_preference") or "local").strip().lower() or "local"
+        provider_object_id = identifiers.get("NORAD_CAT_ID") or f"local:{satellite_id}"
+        payload = {
+            "provider": provider,
+            "provider_object_id": provider_object_id,
+            "name": name,
+            "object_type": satellite.get("object_type"),
+            "identifiers": identifiers,
+            "metadata": metadata,
+            "local": {
+                "present": True,
+                "satellite_id": satellite_id,
+                "active": bool(satellite.get("active")),
+                "name": name,
+            },
+        }
+        ranked.append((rank, name.casefold(), satellite_id, payload))
+
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in ranked[:limit]]
+
+
+def _local_catalog_fallback(text: str, provider: str, limit: int, detail: str):
+    results = _local_catalog_results(text, limit)
+    if not results:
+        return 503, {"detail": detail}
+    return 200, {
+        "query": text,
+        "provider": provider,
+        "degraded": True,
+        "notice": "CelesTrak is unavailable; showing matching objects from the local catalog.",
+        "results": results,
+    }
+
+
 def _catalog_route(path: str, query: dict[str, list[str]]):
     if path == "/catalog/groups":
         return 200, _catalog_groups_payload()
@@ -381,7 +445,12 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
     if provider != "celestrak":
         return 422, {"detail": f"unsupported catalog provider: {provider}"}
     if not settings.celestrak_enabled:
-        return 503, {"detail": "CelesTrak provider is disabled"}
+        return _local_catalog_fallback(
+            text,
+            provider,
+            limit,
+            "CelesTrak provider is disabled and no matching local objects were found",
+        )
 
     try:
         catalog = CelesTrakCatalog(
@@ -394,7 +463,7 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
         )
         results = catalog.search(text, limit=limit)
     except CatalogError as error:
-        return 503, {"detail": str(error)}
+        return _local_catalog_fallback(text, provider, limit, str(error))
 
     payloads = []
     with connect() as connection:
@@ -463,7 +532,7 @@ def _catalog_post_route(path: str, query: dict[str, list[str]]):
         if not members:
             return 502, {"detail": f"CelesTrak group {definition.name} returned no members"}
     except CatalogError as error:
-        return 502, {"detail": str(error)}
+        return 503, {"detail": str(error)}
 
     try:
         with connect() as connection:

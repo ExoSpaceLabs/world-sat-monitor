@@ -134,6 +134,7 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogResults, setCatalogResults] = useState<CatalogSearchResult[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
 
   const [providerGroups, setProviderGroups] = useState<CatalogGroupDefinition[]>([]);
   const [groupSearch, setGroupSearch] = useState("");
@@ -354,9 +355,15 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
     event.preventDefault();
     const query = catalogQuery.trim();
     if (query.length < 2) return;
-    setCatalogLoading(true); setError(null);
-    try { setCatalogResults(await searchSatelliteCatalog(query)); }
-    catch (caught) { setCatalogResults([]); setError(caught instanceof Error ? caught.message : "Catalog search failed"); }
+    setCatalogLoading(true); setCatalogNotice(null); setError(null);
+    try {
+      const results = await searchSatelliteCatalog(query);
+      setCatalogResults(results);
+      setCatalogNotice(results.some((result) => result.metadata.catalog_fallback === "local")
+        ? "CELESTRAK UNAVAILABLE · SHOWING LOCAL CATALOG MATCHES"
+        : null);
+    }
+    catch (caught) { setCatalogResults([]); setCatalogNotice(null); setError(caught instanceof Error ? caught.message : "Catalog search failed"); }
     finally { setCatalogLoading(false); }
   };
 
@@ -562,6 +569,7 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
           <input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder="Search name, NORAD or COSPAR" aria-label="Search satellite catalog" minLength={2}/>
           <button type="submit" disabled={catalogLoading || busyId !== null}>{catalogLoading ? "SEARCHING…" : "SEARCH CELESTRAK"}</button>
         </form>
+        {catalogNotice && <div className="sat-catalog-notice">{catalogNotice}</div>}
         {catalogResults.length > 0 && <div className="sat-catalog-results">{catalogResults.map((result) => <div className="sat-catalog-result" key={`${result.provider}:${result.provider_object_id}`}>
           <div><strong>{result.name}</strong><small>NORAD {result.identifiers.NORAD_CAT_ID ?? "—"}{result.identifiers.COSPAR ? ` · ${result.identifiers.COSPAR}` : ""}</small></div>
           {result.local.present ? (result.local.active ? <span className="active">MONITORING</span> : <button type="button" disabled={busyId !== null} onClick={() => void addCatalogResult(result, true)}>MONITOR</button>) : <div className="sat-catalog-actions"><button type="button" disabled={busyId !== null} onClick={() => void addCatalogResult(result, false)}>ADD</button><button type="button" disabled={busyId !== null} onClick={() => void addCatalogResult(result, true)}>ADD & MONITOR</button></div>}

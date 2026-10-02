@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import unittest
+from unittest.mock import patch
 
 from app.provider_resilience import provider_health, retry_blocked, retry_delay_seconds, source_freshness
+from app.provider_service import _local_catalog_results
 
 
 class ProviderResilienceTests(unittest.TestCase):
@@ -35,6 +37,38 @@ class ProviderResilienceTests(unittest.TestCase):
         self.assertEqual(state, "aging")
         _, state = source_freshness(now - timedelta(hours=30), now, 7200)
         self.assertEqual(state, "stale")
+
+    def test_local_catalog_fallback_matches_name_and_identifiers(self):
+        satellites = [
+            {
+                "id": 7,
+                "name": "ION-SCV21",
+                "active": True,
+                "object_type": "payload",
+                "provider_preference": "celestrak",
+                "metadata": {},
+                "identifiers": {"NORAD_CAT_ID": "56228", "COSPAR": "2023-054X"},
+            },
+            {
+                "id": 8,
+                "name": "OTHER",
+                "active": False,
+                "object_type": "payload",
+                "provider_preference": None,
+                "metadata": {},
+                "identifiers": {"NORAD_CAT_ID": "99999"},
+            },
+        ]
+        with patch("app.provider_service.connect") as connect:
+            connection = connect.return_value.__enter__.return_value
+            with patch("app.provider_service.list_satellites", return_value=satellites):
+                by_name = _local_catalog_results("ion", 25)
+                by_norad = _local_catalog_results("56228", 25)
+
+        self.assertEqual([item["name"] for item in by_name], ["ION-SCV21"])
+        self.assertEqual([item["name"] for item in by_norad], ["ION-SCV21"])
+        self.assertTrue(by_name[0]["local"]["present"])
+        self.assertEqual(by_name[0]["metadata"]["catalog_fallback"], "local")
 
 
 if __name__ == "__main__":

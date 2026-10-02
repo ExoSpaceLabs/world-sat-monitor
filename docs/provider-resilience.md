@@ -62,3 +62,17 @@ Freshness labels are operational hints relative to the configured refresh interv
 - `unknown`: no accepted element set exists.
 
 These labels describe source age. They are not navigation-accuracy guarantees.
+
+
+## Local catalog fallback
+
+Interactive satellite discovery normally queries CelesTrak after checking the in-memory
+catalog cache. If CelesTrak is unavailable and no usable cached response exists,
+WorldSat Monitor searches its persistent local satellite catalog by name, NORAD ID,
+COSPAR ID, and other stored identifiers.
+
+Local fallback results are marked with `metadata.catalog_fallback = "local"`. They
+can still be monitored or added to custom groups because the satellite already exists
+locally. If neither CelesTrak nor the local catalog has a match, the catalog endpoint
+returns HTTP 503 to distinguish provider unavailability from an application gateway
+failure.
