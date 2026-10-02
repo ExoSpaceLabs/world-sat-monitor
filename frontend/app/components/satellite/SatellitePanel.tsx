@@ -398,6 +398,7 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
         active,
         object_type: result.object_type ?? "payload",
         provider_preference: result.provider,
+        provider_priority: [result.provider],
         metadata: {catalog_source: result.provider, provider_object_id: result.provider_object_id, ...result.metadata},
         identifiers: Object.entries(result.identifiers).map(([namespace, value]) => ({namespace, value})),
       });
@@ -544,6 +545,7 @@ export function SatelliteManager({groups, onClose, onChanged}: SatelliteManagerP
         active: false,
         object_type: result.object_type ?? "payload",
         provider_preference: result.provider,
+        provider_priority: [result.provider],
         metadata: {catalog_source: result.provider, provider_object_id: result.provider_object_id, ...result.metadata},
         identifiers: Object.entries(result.identifiers).map(([namespace, value]) => ({namespace, value})),
       });
