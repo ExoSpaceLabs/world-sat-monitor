@@ -93,3 +93,40 @@ This endpoint intentionally does not read `position_samples`. Constellation-scal
 status comes from group membership, orbital-element metadata, provider fetch state,
 and the one-row-per-satellite current-state table. The constellation benchmark also
 measures this path at 100, 1,000, and 5,000 members.
+
+
+## Provider priority and failover
+
+Each satellite now carries an ordered `provider_priority` list. The legacy
+`provider_preference` field remains available during the v1.1 transition and is
+kept synchronized with the first priority entry.
+
+Examples:
+
+```json
+{"provider_priority": ["celestrak"]}
+```
+
+and, once another provider is configured:
+
+```json
+{"provider_priority": ["spacetrack", "celestrak"]}
+```
+
+The orbital-provider worker evaluates the list in order. A provider in backoff, a
+disabled provider, an unsupported provider, or a provider request failure does not
+prevent the worker from trying the next configured source. Provider health and retry
+state remain independent for each provider.
+
+If no live provider succeeds, the worker can continue scheduling propagation from
+the best stored element set selected according to the same priority order. This is a
+degraded operational fallback, not a successful provider refresh.
+
+The synthetic WorldSat object is always forced to the `mock` provider regardless of
+stored external-provider fields. This prevents a test identifier from ever being sent
+to an external orbital-data service.
+
+Provider construction is centralized in `provider_registry.py`. Adding a new orbital
+provider therefore requires registering its factory and implementing the
+`OrbitalDataProvider` contract rather than adding provider-name branches throughout
+the worker.
