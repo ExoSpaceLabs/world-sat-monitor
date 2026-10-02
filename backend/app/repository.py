@@ -87,7 +87,16 @@ def create_satellite(connection, value: Any) -> dict[str, Any]:
 
 
 def update_satellite(connection, satellite_id: int, changes: dict[str, Any]) -> dict[str, Any] | None:
+    changes = dict(changes)
     identifiers = changes.pop("identifiers", None) if "identifiers" in changes else None
+    if "provider_priority" in changes:
+        priority = list(changes["provider_priority"] or [])
+        if priority:
+            changes["provider_preference"] = priority[0]
+    elif "provider_preference" in changes:
+        preference = changes["provider_preference"] or "celestrak"
+        changes["provider_preference"] = preference
+        changes["provider_priority"] = [preference]
     assignments: list[str] = []
     params: list[Any] = []
     column_map = {"name": "name", "object_type": "object_type", "provider_preference": "provider_preference", "provider_priority": "provider_priority", "metadata": "metadata"}
