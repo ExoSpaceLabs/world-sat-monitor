@@ -161,6 +161,10 @@ def satellite_orbital_status(satellite_id: int):
     provider_priority = list(status_payload["provider_priority"])
     selected_provider = status_payload["provider"]
     selected_index = provider_priority.index(selected_provider) if selected_provider in provider_priority else None
+
+    def iso(value):
+        return value.isoformat() if value is not None else None
+
     provider_states = status_payload["provider_states"]
     provider_candidates = []
     for index, provider_name in enumerate(provider_priority):
@@ -182,10 +186,6 @@ def satellite_orbital_status(satellite_id: int):
         now,
         settings.provider_refresh_seconds,
     )
-
-    def iso(value):
-        return value.isoformat() if value is not None else None
-
     return {
         "satellite": {
             "id": int(status_payload["satellite"]["id"]),
