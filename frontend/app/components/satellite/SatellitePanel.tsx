@@ -719,7 +719,6 @@ export function DetailsPanel({basemap, followSatellite, satellite, satelliteId, 
   useEffect(() => {
     if (displayMode !== "group" || groupId === null) return;
     let cancelled = false;
-    setGroupOrbitalStatus(null);
     const refresh = async () => {
       try {
         const status = await getSatelliteGroupOrbitalStatus(groupId);
