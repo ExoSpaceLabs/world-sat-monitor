@@ -7,6 +7,7 @@ import type {
   CatalogSearchResult,
   GroupPosition,
   ManagedSatellite,
+  OrbitalSourceStatus,
   Satellite,
   SatelliteGroup,
   SatelliteGroupMember,
@@ -27,6 +28,7 @@ import {
   deactivateManagedSatellite,
   deleteManagedSatellite,
   deleteSatelliteGroup,
+  getSatelliteOrbitalStatus,
   listManagedSatellites,
   listSatelliteGroupMembers,
   purgeSatelliteGroup,
@@ -46,6 +48,7 @@ type DetailsPanelProps = {
   basemap: Basemap;
   followSatellite: boolean;
   satellite: Satellite;
+  satelliteId: number | null;
   group: SatelliteGroup | null;
   groupPositions: GroupPosition[];
   displayMode: "satellite" | "group";
@@ -78,6 +81,18 @@ function formatTimestamp(value: unknown) {
   if (typeof value !== "string" || !value) return "—";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
+
+function formatAgeSeconds(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  const seconds = Math.max(0, Math.floor(value));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
 }
 
 function matchesCandidateState(
@@ -640,7 +655,39 @@ export function SatellitePanel({satellite, managedSatellites, selectedNoradId, o
   </aside>;
 }
 
-export function DetailsPanel({basemap, followSatellite, satellite, group, groupPositions, displayMode, positionReady, solarState, isMock, interpolated, docked, onToggleFollow, onClose}: DetailsPanelProps) {
+export function DetailsPanel({basemap, followSatellite, satellite, satelliteId, group, groupPositions, displayMode, positionReady, solarState, isMock, interpolated, docked, onToggleFollow, onClose}: DetailsPanelProps) {
+  const [orbitalStatus, setOrbitalStatus] = useState<OrbitalSourceStatus | null>(null);
+  const [orbitalStatusError, setOrbitalStatusError] = useState<{satelliteId: number; message: string} | null>(null);
+
+  useEffect(() => {
+    if (displayMode !== "satellite" || satelliteId === null) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const status = await getSatelliteOrbitalStatus(satelliteId);
+        if (!cancelled) {
+          setOrbitalStatus(status);
+          setOrbitalStatusError(null);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setOrbitalStatusError({
+            satelliteId,
+            message: caught instanceof Error ? caught.message : "Could not load orbital source status",
+          });
+        }
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(refresh, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [displayMode, satelliteId]);
+
+  const selectedOrbitalStatus = orbitalStatus?.satellite.id === satelliteId ? orbitalStatus : null;
+  const selectedOrbitalError = orbitalStatusError?.satelliteId === satelliteId ? orbitalStatusError.message : null;
   const selectedReady = displayMode === "satellite" && positionReady;
   const sunElevation = selectedReady ? solarElevation(satellite.lat, satellite.lon, solarState) : null;
   const positioned = useMemo(() => groupPositions.filter((entry) => entry.position !== null), [groupPositions]);
@@ -652,11 +699,24 @@ export function DetailsPanel({basemap, followSatellite, satellite, group, groupP
 
   return <aside className={`details-card ${docked ? "docked" : ""}`} aria-label="Display details">
     <div className="card-head details-head"><span className="status-dot"/><div><small>DISPLAY DETAILS</small><h1>{displayMode === "group" ? group?.name ?? "GROUP" : satellite.name}</h1></div><b>{displayMode === "group" ? "GROUP" : "SINGLE"}</b><button className="details-close" type="button" onClick={onClose} aria-label="Close details">×</button></div>
-    {displayMode === "satellite" ? (!selectedReady ? <div className="sat-position-wait">WAITING FOR PROPAGATED POSITION…</div> : <>
-      <dl className="details-grid"><div><dt>ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} <small>km</small></dd></div><div><dt>HEADING</dt><dd>{satellite.heading.toFixed(1)}°</dd></div><div><dt>LATITUDE</dt><dd>{signedDegrees(satellite.lat)}</dd></div><div><dt>LONGITUDE</dt><dd>{signedDegrees(satellite.lon)}</dd></div></dl>
-      <div className="data-row"><span>BASEMAP</span><b>{basemap.toUpperCase()}</b></div><div className="data-row"><span>POSITION</span><b>{interpolated ? "INTERPOLATED" : "RAW SAMPLE"}</b></div><div className="data-row"><span>SOURCE</span><b>{isMock ? "MOCK OMM" : "PROPAGATED"}</b></div><div className="data-row"><span>ILLUMINATION</span><b className={(sunElevation ?? -1) >= 0 ? "daylight" : "nighttime"}>{(sunElevation ?? -1) >= 0 ? "DAYLIGHT" : "NIGHT"}</b></div>
+    {displayMode === "satellite" ? <>
+      {!selectedReady ? <div className="sat-position-wait">WAITING FOR PROPAGATED POSITION…</div> : <>
+        <dl className="details-grid"><div><dt>ALTITUDE</dt><dd>{satellite.altitude.toFixed(1)} <small>km</small></dd></div><div><dt>HEADING</dt><dd>{satellite.heading.toFixed(1)}°</dd></div><div><dt>LATITUDE</dt><dd>{signedDegrees(satellite.lat)}</dd></div><div><dt>LONGITUDE</dt><dd>{signedDegrees(satellite.lon)}</dd></div></dl>
+        <div className="data-row"><span>BASEMAP</span><b>{basemap.toUpperCase()}</b></div><div className="data-row"><span>POSITION</span><b>{interpolated ? "INTERPOLATED" : "RAW SAMPLE"}</b></div><div className="data-row"><span>SOURCE</span><b>{isMock ? "MOCK OMM" : "PROPAGATED"}</b></div><div className="data-row"><span>ILLUMINATION</span><b className={(sunElevation ?? -1) >= 0 ? "daylight" : "nighttime"}>{(sunElevation ?? -1) >= 0 ? "DAYLIGHT" : "NIGHT"}</b></div>
+      </>}
+      <div className="details-section-title">ORBITAL SOURCE</div>
+      {selectedOrbitalStatus ? <>
+        <div className="data-row"><span>PROVIDER</span><b>{selectedOrbitalStatus.provider.name.toUpperCase()}</b></div>
+        <div className="data-row"><span>PROVIDER HEALTH</span><b className={`quality-state ${selectedOrbitalStatus.provider.health}`}>{selectedOrbitalStatus.provider.health.toUpperCase()}</b></div>
+        <div className="data-row"><span>SOURCE FRESHNESS</span><b className={`quality-state ${selectedOrbitalStatus.element_set?.freshness ?? "unknown"}`}>{(selectedOrbitalStatus.element_set?.freshness ?? "unknown").toUpperCase()}</b></div>
+        <div className="data-row"><span>SOURCE AGE</span><b>{formatAgeSeconds(selectedOrbitalStatus.element_set?.age_seconds)}</b></div>
+        <div className="data-row"><span>ELEMENT EPOCH</span><b>{formatTimestamp(selectedOrbitalStatus.element_set?.epoch)}</b></div>
+        <div className="data-row"><span>LAST PROVIDER UPDATE</span><b>{formatTimestamp(selectedOrbitalStatus.provider.last_success_at)}</b></div>
+        {selectedOrbitalStatus.provider.next_retry_at && <div className="data-row"><span>NEXT RETRY</span><b>{formatTimestamp(selectedOrbitalStatus.provider.next_retry_at)}</b></div>}
+        {selectedOrbitalStatus.provider.last_error && <div className="provider-status-note" title={selectedOrbitalStatus.provider.last_error}>{selectedOrbitalStatus.provider.last_error}</div>}
+      </> : <div className="sat-position-wait">{selectedOrbitalError ? `ORBITAL STATUS UNAVAILABLE · ${selectedOrbitalError}` : "LOADING ORBITAL SOURCE STATUS…"}</div>}
       <button className={`follow-button ${followSatellite ? "active" : ""}`} onClick={onToggleFollow} aria-pressed={followSatellite}>{followSatellite ? "FOLLOWING SATELLITE" : "FOLLOW SATELLITE"}</button>
-    </>) : group ? <>
+    </> : group ? <>
       <dl className="details-grid"><div><dt>MEMBERS</dt><dd>{group.member_count}</dd></div><div><dt>ACTIVE</dt><dd>{group.active_member_count}</dd></div><div><dt>POSITIONS READY</dt><dd>{positioned.length}</dd></div><div><dt>COVERAGE</dt><dd>{coverage.toFixed(1)}%</dd></div></dl>
       <div className="data-row"><span>TYPE</span><b>{group.group_type.toUpperCase()}</b></div><div className="data-row"><span>SOURCE</span><b>{group.source.toUpperCase()}</b></div><div className="data-row"><span>SOURCE KEY</span><b>{group.source_key ?? "—"}</b></div><div className="data-row"><span>AVG ALTITUDE</span><b>{avgAltitude === null ? "—" : `${avgAltitude.toFixed(1)} km`}</b></div><div className="data-row"><span>ALTITUDE RANGE</span><b>{minAltitude === null || maxAltitude === null ? "—" : `${minAltitude.toFixed(0)}–${maxAltitude.toFixed(0)} km`}</b></div><div className="data-row"><span>LAST SYNC</span><b>{formatTimestamp(group.metadata.last_synced_at)}</b></div>
     </> : <div className="sat-position-wait">SELECT A GROUP TO DISPLAY ITS DETAILS.</div>}

@@ -217,3 +217,20 @@ test("single direction vector uses the grouped visual treatment", async () => {
   assert.match(satelliteLayer, /trackLayerSettings/);
   assert.match(satelliteLayer, /direction_vector_enabled: false/);
 });
+
+
+test("orbital source quality is visible in single-object details", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../app/services/worldsat-api.ts", import.meta.url), "utf8");
+  const monitor = await readFile(new URL("../app/components/world-sat-monitor/WorldSatMonitor.tsx", import.meta.url), "utf8");
+
+  assert.match(api, /getSatelliteOrbitalStatus/);
+  assert.match(api, /\/orbital-status/);
+  assert.match(satellitePanel, /ORBITAL SOURCE/);
+  assert.match(satellitePanel, /PROVIDER HEALTH/);
+  assert.match(satellitePanel, /SOURCE FRESHNESS/);
+  assert.match(satellitePanel, /ELEMENT EPOCH/);
+  assert.match(satellitePanel, /LAST PROVIDER UPDATE/);
+  assert.match(satellitePanel, /setInterval\(refresh, 30000\)/);
+  assert.match(monitor, /satelliteId=\{displayedManagedSatellite\?\.id \?\? null\}/);
+});

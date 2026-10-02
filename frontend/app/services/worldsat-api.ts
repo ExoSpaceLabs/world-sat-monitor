@@ -2,6 +2,7 @@ import type {
   CatalogSearchResult,
   GroupPosition,
   ManagedSatellite,
+  OrbitalSourceStatus,
   Satellite,
   SatelliteCreateRequest,
   SatelliteGroup,
@@ -165,6 +166,10 @@ export async function saveAppSettings(settings: AppSettings): Promise<AppSetting
 export async function listManagedSatellites(active?: boolean): Promise<ManagedSatellite[]> {
   const suffix = active === undefined ? "" : `?active=${active}`;
   return (await requestJson<SatelliteListResponse>(`/api/v1/satellites${suffix}`)).satellites;
+}
+
+export function getSatelliteOrbitalStatus(satelliteId: number): Promise<OrbitalSourceStatus> {
+  return requestJson<OrbitalSourceStatus>(`/api/v1/satellites/${satelliteId}/orbital-status`);
 }
 
 export async function searchSatelliteCatalog(query: string, provider = "celestrak"): Promise<CatalogSearchResult[]> {
