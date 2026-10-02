@@ -18,6 +18,7 @@ from .orbit import (
     interpolate_ecef,
 )
 from .positions_api import router as positions_router
+from .provider_registry import provider_descriptors
 from .provider_resilience import provider_health, source_freshness
 from .repository import (
     create_satellite,
@@ -95,6 +96,11 @@ def health() -> dict[str, str]:
     with connect() as connection:
         connection.execute("SELECT 1")
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/v1/providers")
+def providers():
+    return {"providers": list(provider_descriptors())}
 
 
 @app.get("/api/v1/settings", response_model=AppSettings)
