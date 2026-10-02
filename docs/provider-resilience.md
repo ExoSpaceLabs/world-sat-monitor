@@ -130,3 +130,8 @@ Provider construction is centralized in `provider_registry.py`. Adding a new orb
 provider therefore requires registering its factory and implementing the
 `OrbitalDataProvider` contract rather than adding provider-name branches throughout
 the worker.
+
+`GET /api/v1/providers` exposes the registered provider names, enabled state, provider
+kind, and single/group/catalog capabilities. Future UI for provider-priority editing
+can therefore discover backend capabilities instead of maintaining a second provider
+registry in the frontend.
