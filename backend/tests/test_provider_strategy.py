@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app.orbital_provider import ProviderError
 from app.provider_registry import build_orbital_provider, provider_descriptors, registered_provider_names
 from app.provider_service import _process_active_satellite
+
+ORBITAL_STORE = Path("backend/app/orbital_store.py").read_text(encoding="utf-8")
+MAIN = Path("backend/app/main.py").read_text(encoding="utf-8")
 
 
 class _Provider:
@@ -126,6 +130,21 @@ class ProviderStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["backoff_skips"], 2)
         self.assertEqual(metrics["stale_fallbacks"], 1)
         self.assertEqual(metrics["provider_failovers"], 0)
+
+
+class ProviderProvenanceContractTests(unittest.TestCase):
+    def test_status_prefers_current_state_element_provenance(self):
+        section = ORBITAL_STORE.split("def get_orbital_source_status", 1)[1].split("def get_group_orbital_source_summary", 1)[0]
+        current_state_index = section.index("source_element_set_id")
+        active_element_index = section.index("SELECT * FROM orbital_element_sets WHERE id = %s")
+        policy_fallback_index = section.index("get_latest_element_set_by_priority")
+        self.assertLess(current_state_index, active_element_index)
+        self.assertLess(active_element_index, policy_fallback_index)
+
+    def test_provider_capability_endpoint_is_registry_backed(self):
+        self.assertIn('@app.get("/api/v1/providers")', MAIN)
+        section = MAIN.split('def providers()', 1)[1].split('@app.get("/api/v1/settings"', 1)[0]
+        self.assertIn("provider_descriptors()", section)
 
 
 if __name__ == "__main__":
