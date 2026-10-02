@@ -25,6 +25,8 @@ class Settings:
 
     provider_poll_seconds: float = float(os.getenv("PROVIDER_POLL_SECONDS", "5"))
     provider_refresh_seconds: int = int(os.getenv("PROVIDER_REFRESH_SECONDS", "7200"))
+    provider_retry_base_seconds: int = int(os.getenv("PROVIDER_RETRY_BASE_SECONDS", "30"))
+    provider_retry_max_seconds: int = int(os.getenv("PROVIDER_RETRY_MAX_SECONDS", "1800"))
     celestrak_enabled: bool = _as_bool("CELESTRAK_ENABLED", True)
     celestrak_base_url: str = os.getenv(
         "CELESTRAK_BASE_URL",
@@ -39,6 +41,16 @@ class Settings:
         "https://celestrak.org/NORAD/elements/",
     )
     celestrak_timeout_seconds: float = float(os.getenv("CELESTRAK_TIMEOUT_SECONDS", "15"))
+    celestrak_request_attempts: int = max(1, int(os.getenv("CELESTRAK_REQUEST_ATTEMPTS", "2")))
+    celestrak_retry_delay_seconds: float = max(
+        0.0, float(os.getenv("CELESTRAK_RETRY_DELAY_SECONDS", "0.5"))
+    )
+    celestrak_catalog_cache_seconds: int = max(
+        0, int(os.getenv("CELESTRAK_CATALOG_CACHE_SECONDS", "7200"))
+    )
+    celestrak_catalog_stale_seconds: int = max(
+        0, int(os.getenv("CELESTRAK_CATALOG_STALE_SECONDS", "86400"))
+    )
     provider_health_port: int = int(os.getenv("PROVIDER_HEALTH_PORT", "8010"))
 
     propagator_poll_seconds: float = float(os.getenv("PROPAGATOR_POLL_SECONDS", "2"))

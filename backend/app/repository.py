@@ -8,7 +8,7 @@ from psycopg.types.json import Jsonb
 
 
 SATELLITE_SELECT = """
-    SELECT s.id, s.name, s.active, s.object_type, s.provider_preference,
+    SELECT s.id, s.name, s.active, s.object_type, s.provider_preference, s.provider_priority,
            s.metadata, s.created_at, s.updated_at,
            COALESCE(jsonb_object_agg(si.namespace, si.value) FILTER (WHERE si.namespace IS NOT NULL), '{}'::jsonb) AS identifiers
     FROM satellites s
@@ -16,6 +16,8 @@ SATELLITE_SELECT = """
 """
 GROUP_SELECT = """
     SELECT g.id, g.name, g.group_type, g.source, g.source_key, g.metadata,
+           g.display_provider_refreshed_at, g.display_provider_failures,
+           g.display_provider_retry_at, g.display_provider_last_error,
            g.created_at, g.updated_at,
            COUNT(gm.satellite_id)::int AS member_count,
            COUNT(gm.satellite_id) FILTER (WHERE s.active)::int AS active_member_count
@@ -73,9 +75,9 @@ def _replace_identifiers(connection, satellite_id: int, identifiers: Iterable[An
 
 def create_satellite(connection, value: Any) -> dict[str, Any]:
     row = connection.execute("""
-        INSERT INTO satellites (name, active, object_type, provider_preference, metadata)
-        VALUES (%s, %s, %s, %s, %s) RETURNING id
-    """, (value.name, value.active, value.object_type, value.provider_preference, Jsonb(value.metadata))).fetchone()
+        INSERT INTO satellites (name, active, object_type, provider_preference, provider_priority, metadata)
+        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+    """, (value.name, value.active, value.object_type, value.provider_preference, value.provider_priority, Jsonb(value.metadata))).fetchone()
     satellite_id = int(row["id"])
     _replace_identifiers(connection, satellite_id, value.identifiers)
     created = get_satellite(connection, satellite_id)
@@ -85,10 +87,19 @@ def create_satellite(connection, value: Any) -> dict[str, Any]:
 
 
 def update_satellite(connection, satellite_id: int, changes: dict[str, Any]) -> dict[str, Any] | None:
+    changes = dict(changes)
     identifiers = changes.pop("identifiers", None) if "identifiers" in changes else None
+    if "provider_priority" in changes:
+        priority = list(changes["provider_priority"] or [])
+        if priority:
+            changes["provider_preference"] = priority[0]
+    elif "provider_preference" in changes:
+        preference = changes["provider_preference"] or "celestrak"
+        changes["provider_preference"] = preference
+        changes["provider_priority"] = [preference]
     assignments: list[str] = []
     params: list[Any] = []
-    column_map = {"name": "name", "object_type": "object_type", "provider_preference": "provider_preference", "metadata": "metadata"}
+    column_map = {"name": "name", "object_type": "object_type", "provider_preference": "provider_preference", "provider_priority": "provider_priority", "metadata": "metadata"}
     for field, column in column_map.items():
         if field not in changes:
             continue
@@ -161,7 +172,7 @@ def delete_group(connection, group_id: int) -> bool:
 
 def list_group_members(connection, group_id: int) -> list[dict[str, Any]]:
     rows = connection.execute("""
-        SELECT s.id, s.name, s.active, s.object_type, s.provider_preference, s.metadata, s.created_at, s.updated_at,
+        SELECT s.id, s.name, s.active, s.object_type, s.provider_preference, s.provider_priority, s.metadata, s.created_at, s.updated_at,
                gm.metadata AS membership_metadata, gm.added_at,
                COALESCE((SELECT jsonb_object_agg(si.namespace, si.value) FROM satellite_identifiers si WHERE si.satellite_id = s.id), '{}'::jsonb) AS identifiers
         FROM satellite_group_members gm JOIN satellites s ON s.id = gm.satellite_id

@@ -13,6 +13,7 @@ export type ManagedSatellite = {
   active: boolean;
   object_type: string;
   provider_preference: string | null;
+  provider_priority: string[];
   metadata: Record<string, unknown>;
   identifiers: Record<string, string>;
   norad_id: string | null;
@@ -20,11 +21,53 @@ export type ManagedSatellite = {
   updated_at?: string;
 };
 
+export type OrbitalSourceStatus = {
+  satellite: {id: number; name: string; active: boolean};
+  provider: {
+    name: string;
+    priority: string[];
+    selected_index: number | null;
+    fallback_active: boolean;
+    health: "unknown" | "healthy" | "degraded" | "backoff";
+    refresh_interval_seconds: number;
+    last_attempt_at: string | null;
+    last_success_at: string | null;
+    last_error_at: string | null;
+    last_error: string | null;
+    consecutive_failures: number;
+    next_retry_at: string | null;
+  };
+  element_set: {
+    id: number;
+    source: string;
+    source_format: string;
+    epoch: string;
+    fetched_at: string;
+    age_seconds: number | null;
+    freshness: "unknown" | "fresh" | "aging" | "stale";
+  } | null;
+  propagation: {
+    run_id: string;
+    generated_at: string;
+    start_time: string;
+    end_time: string;
+    status: string;
+    is_mock: boolean;
+  } | null;
+  current_state: {
+    state_time: string;
+    updated_at: string;
+    source_run_id: string;
+    source_element_set_id: number | null;
+  } | null;
+};
+
 export type SatelliteCreateRequest = {
   name: string;
   active?: boolean;
   object_type?: string;
   provider_preference?: string | null;
+  provider_priority?: string[];
   metadata?: Record<string, unknown>;
   identifiers?: Array<{namespace: string; value: string}>;
 };
@@ -57,6 +100,60 @@ export type SatelliteGroup = {
   active_member_count: number;
   created_at: string;
   updated_at: string;
+};
+
+export type GroupOrbitalSourceStatus = {
+  group: SatelliteGroup;
+  generated_at: string;
+  refresh_interval_seconds: number;
+  group_provider: {
+    name: string;
+    health: "unknown" | "healthy" | "degraded" | "backoff";
+    last_success_at: string | null;
+    next_retry_at: string | null;
+    last_error: string | null;
+    consecutive_failures: number;
+  } | null;
+  members: {
+    total: number;
+    active: number;
+  };
+  coverage: {
+    element_sets: {count: number; percent: number};
+    current_state: {count: number; percent: number};
+    current_on_latest_elements: {count: number; percent: number};
+  };
+  freshness: {
+    fresh: number;
+    aging: number;
+    stale: number;
+    unknown: number;
+    oldest_epoch: string | null;
+    newest_epoch: string | null;
+  };
+  provider_health: {
+    healthy: number;
+    degraded: number;
+    backoff: number;
+    unknown: number;
+    providers: Record<string, number>;
+    oldest_success_at: string | null;
+    newest_success_at: string | null;
+  };
+  attention: {
+    total: number;
+    members: Array<{
+      satellite_id: number;
+      name: string;
+      active: boolean;
+      provider: string;
+      provider_health: "unknown" | "healthy" | "degraded" | "backoff";
+      freshness: "unknown" | "fresh" | "aging" | "stale";
+      age_seconds: number | null;
+      element_epoch: string | null;
+      last_error: string | null;
+    }>;
+  };
 };
 
 export type SatelliteGroupCreateRequest = {

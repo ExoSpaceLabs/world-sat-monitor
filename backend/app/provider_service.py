@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import math
 import re
@@ -17,43 +17,31 @@ from .catalog import (
 )
 from .config import settings
 from .db import connect, wait_for_database
-from .group_display import list_requested_groups, mark_group_provider_refreshed
-from .migrations import migrate_schema
-from .orbital_provider import (
-    CelesTrakProvider,
-    MockOrbitalDataProvider,
-    OrbitalDataProvider,
-    ProviderError,
+from .group_display import (
+    list_requested_groups,
+    mark_group_provider_failed,
+    mark_group_provider_refreshed,
 )
+from .migrations import migrate_schema
+from .orbital_provider import ProviderError
+from .provider_policy import provider_priority_for
+from .provider_registry import build_orbital_provider
 from .orbital_store import (
     cancel_inactive_pending_jobs,
     ensure_propagation_job,
     get_latest_element_set,
+    get_latest_element_set_by_priority,
     get_provider_fetch_state,
     insert_element_set,
     record_provider_fetch,
 )
 from .provider_group_store import get_provider_group, sync_provider_group
+from .provider_resilience import retry_blocked, retry_delay_seconds
 from .repository import list_group_members, list_satellites
 from .seed import ensure_mock_data
 from .worker_health import WorkerHealth, start_health_server
 
 LOGGER = logging.getLogger("worldsat.orbital-provider")
-
-
-def _provider_for(satellite: dict[str, Any]) -> OrbitalDataProvider:
-    preference = str(satellite.get("provider_preference") or "").strip().lower()
-    metadata = dict(satellite.get("metadata") or {})
-    if preference == "mock" or metadata.get("mock") is True:
-        return MockOrbitalDataProvider()
-    if preference in {"", "celestrak"}:
-        if not settings.celestrak_enabled:
-            raise ProviderError("CelesTrak provider is disabled")
-        return CelesTrakProvider(
-            settings.celestrak_base_url,
-            timeout_seconds=settings.celestrak_timeout_seconds,
-        )
-    raise ProviderError(f"unsupported orbital provider preference: {preference}")
 
 
 def _is_due(last_success_at: datetime | None, now: datetime) -> bool:
@@ -112,21 +100,42 @@ def _process_requested_group(
         return
 
     provider_sets = None
-    is_celestrak_group = (
-        str(group.get("source") or "").lower() == "celestrak"
+    group_provider_name = str(group.get("source") or "").strip().lower()
+    is_provider_group = (
+        group_provider_name not in {"", "user"}
         and bool(group.get("source_key"))
     )
-    if is_celestrak_group:
+    if is_provider_group:
         last_refresh = group.get("display_provider_refreshed_at")
-        if _is_due(last_refresh, now):
-            if not settings.celestrak_enabled:
-                raise ProviderError("CelesTrak provider is disabled")
-            provider = CelesTrakProvider(
-                settings.celestrak_base_url,
-                timeout_seconds=settings.celestrak_timeout_seconds,
-            )
-            provider_sets = provider.fetch_group(str(group["source_key"]))
-            metrics["display_fetches"] += 1
+        group_retry_state = {"next_retry_at": group.get("display_provider_retry_at")}
+        if _is_due(last_refresh, now) and not retry_blocked(group_retry_state, now):
+            try:
+                provider = build_orbital_provider(group_provider_name)
+                fetch_group = getattr(provider, "fetch_group", None)
+                if not callable(fetch_group):
+                    raise ProviderError(
+                        f"orbital provider does not support group fetch: {group_provider_name}"
+                    )
+                provider_sets = fetch_group(str(group["source_key"]))
+                metrics["display_fetches"] += 1
+            except Exception as error:
+                failures = int(group.get("display_provider_failures") or 0)
+                delay_seconds = retry_delay_seconds(
+                    failures,
+                    base_seconds=settings.provider_retry_base_seconds,
+                    max_seconds=settings.provider_retry_max_seconds,
+                )
+                with connect() as connection:
+                    mark_group_provider_failed(
+                        connection,
+                        group_id,
+                        error=str(error),
+                        retry_at=now + timedelta(seconds=delay_seconds),
+                    )
+                    connection.commit()
+                raise
+        elif _is_due(last_refresh, now):
+            metrics["backoff_skips"] += 1
 
     with connect() as connection:
         for member in members:
@@ -153,10 +162,12 @@ def _process_requested_group(
                     )
 
             if element_set_id is None:
-                preferred_source = str(member.get("provider_preference") or "").strip().lower() or None
-                latest = get_latest_element_set(connection, satellite_id, source=preferred_source)
-                if latest is None and preferred_source is not None:
-                    latest = get_latest_element_set(connection, satellite_id)
+                latest = get_latest_element_set_by_priority(
+                    connection,
+                    satellite_id,
+                    provider_priority_for(member),
+                    include_unlisted=True,
+                )
                 if latest is not None:
                     element_set_id = int(latest["id"])
 
@@ -175,6 +186,128 @@ def _process_requested_group(
         connection.commit()
 
 
+def _record_satellite_provider_failure(
+    satellite_id: int,
+    provider_name: str,
+    now: datetime,
+    error: Exception,
+) -> None:
+    with connect() as connection:
+        state = get_provider_fetch_state(connection, satellite_id, provider_name)
+        failures = int(state["consecutive_failures"]) if state is not None else 0
+        delay_seconds = retry_delay_seconds(
+            failures,
+            base_seconds=settings.provider_retry_base_seconds,
+            max_seconds=settings.provider_retry_max_seconds,
+        )
+        record_provider_fetch(
+            connection,
+            satellite_id,
+            provider_name,
+            success=False,
+            error=str(error)[:2000],
+            next_retry_at=now + timedelta(seconds=delay_seconds),
+            attempted_at=now,
+        )
+        connection.commit()
+
+
+def _process_active_satellite(
+    satellite: dict[str, Any],
+    now: datetime,
+    metrics: dict[str, int],
+) -> bool:
+    satellite_id = int(satellite["id"])
+    priority = provider_priority_for(satellite)
+    fallback_element_set = None
+
+    for priority_index, provider_name in enumerate(priority):
+        with connect() as connection:
+            state = get_provider_fetch_state(connection, satellite_id, provider_name)
+            latest = get_latest_element_set(connection, satellite_id, source=provider_name)
+            if fallback_element_set is None and latest is not None:
+                fallback_element_set = latest
+            last_success_at = state["last_success_at"] if state else None
+
+            if latest is not None and not _is_due(last_success_at, now):
+                if _ensure_job(connection, satellite_id, int(latest["id"])):
+                    metrics["jobs_created"] += 1
+                connection.commit()
+                if priority_index > 0:
+                    metrics["provider_failovers"] += 1
+                return True
+
+            if retry_blocked(state, now):
+                metrics["backoff_skips"] += 1
+                connection.commit()
+                continue
+
+        try:
+            provider = build_orbital_provider(provider_name)
+            element_set = provider.fetch_latest(satellite["identifiers"])
+        except Exception as error:
+            metrics["provider_failures"] += 1
+            LOGGER.warning(
+                "provider %s refresh failed for satellite %s: %s",
+                provider_name,
+                satellite_id,
+                error,
+            )
+            try:
+                _record_satellite_provider_failure(
+                    satellite_id,
+                    provider_name,
+                    now,
+                    error,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "failed to record provider %s error for satellite %s",
+                    provider_name,
+                    satellite_id,
+                )
+            continue
+
+        metrics["fetched"] += 1
+        with connect() as connection:
+            element_set_id, inserted = insert_element_set(
+                connection,
+                satellite_id,
+                element_set,
+            )
+            if inserted:
+                metrics["new_element_sets"] += 1
+            record_provider_fetch(
+                connection,
+                satellite_id,
+                provider.name,
+                success=True,
+                element_set_id=element_set_id,
+            )
+            if _ensure_job(connection, satellite_id, element_set_id):
+                metrics["jobs_created"] += 1
+            connection.commit()
+        if priority_index > 0:
+            metrics["provider_failovers"] += 1
+        return True
+
+    with connect() as connection:
+        latest = fallback_element_set or get_latest_element_set_by_priority(
+            connection,
+            satellite_id,
+            priority,
+            include_unlisted=True,
+        )
+        if latest is not None:
+            if _ensure_job(connection, satellite_id, int(latest["id"])):
+                metrics["jobs_created"] += 1
+            connection.commit()
+            metrics["stale_fallbacks"] += 1
+            return True
+        connection.commit()
+    return False
+
+
 def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     metrics = {
@@ -185,6 +318,10 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         "display_groups": 0,
         "display_fetches": 0,
         "display_jobs_created": 0,
+        "backoff_skips": 0,
+        "provider_failures": 0,
+        "provider_failovers": 0,
+        "stale_fallbacks": 0,
         "errors": 0,
     }
 
@@ -207,61 +344,20 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
 
     for satellite in satellites:
         metrics["active"] += 1
-        satellite_id = int(satellite["id"])
-        provider_name = str(
-            satellite.get("provider_preference")
-            or ("mock" if dict(satellite.get("metadata") or {}).get("mock") else "celestrak")
-        ).lower()
-
         try:
-            provider = _provider_for(satellite)
-            provider_name = provider.name
-            with connect() as connection:
-                state = get_provider_fetch_state(connection, satellite_id, provider.name)
-                latest = get_latest_element_set(connection, satellite_id, source=provider.name)
-                last_success_at = state["last_success_at"] if state else None
-
-                if latest is not None and not _is_due(last_success_at, now):
-                    if _ensure_job(connection, satellite_id, int(latest["id"])):
-                        metrics["jobs_created"] += 1
-                    connection.commit()
-                    continue
-
-            element_set = provider.fetch_latest(satellite["identifiers"])
-            metrics["fetched"] += 1
-            with connect() as connection:
-                element_set_id, inserted = insert_element_set(
-                    connection,
-                    satellite_id,
-                    element_set,
+            if not _process_active_satellite(satellite, now, metrics):
+                metrics["errors"] += 1
+                LOGGER.warning(
+                    "no orbital provider or stored element set is usable for satellite %s",
+                    satellite["id"],
                 )
-                if inserted:
-                    metrics["new_element_sets"] += 1
-                record_provider_fetch(
-                    connection,
-                    satellite_id,
-                    provider.name,
-                    success=True,
-                    element_set_id=element_set_id,
-                )
-                if _ensure_job(connection, satellite_id, element_set_id):
-                    metrics["jobs_created"] += 1
-                connection.commit()
         except Exception as error:
             metrics["errors"] += 1
-            LOGGER.warning("provider refresh failed for satellite %s: %s", satellite_id, error)
-            try:
-                with connect() as connection:
-                    record_provider_fetch(
-                        connection,
-                        satellite_id,
-                        provider_name,
-                        success=False,
-                        error=str(error)[:2000],
-                    )
-                    connection.commit()
-            except Exception:
-                LOGGER.exception("failed to record provider error for satellite %s", satellite_id)
+            LOGGER.exception(
+                "provider cycle failed unexpectedly for satellite %s: %s",
+                satellite["id"],
+                error,
+            )
 
     return metrics
 
@@ -302,6 +398,70 @@ def _catalog_group_search_payload(text: str, limit: int) -> dict[str, Any]:
     return {"query": text, "provider": "celestrak", "groups": groups}
 
 
+def _local_catalog_results(text: str, limit: int) -> list[dict[str, Any]]:
+    needle = text.strip().casefold()
+    if not needle:
+        return []
+
+    with connect() as connection:
+        satellites = list_satellites(connection)
+
+    ranked: list[tuple[int, str, int, dict[str, Any]]] = []
+    for satellite in satellites:
+        identifiers = {
+            str(namespace): str(value)
+            for namespace, value in dict(satellite.get("identifiers") or {}).items()
+        }
+        name = str(satellite.get("name") or "")
+        searchable = [name, *identifiers.values()]
+        normalized = [value.casefold() for value in searchable if value]
+        if not any(needle in value for value in normalized):
+            continue
+
+        exact = any(needle == value for value in normalized)
+        prefix = any(value.startswith(needle) for value in normalized)
+        rank = 0 if exact else 1 if prefix else 2
+        satellite_id = int(satellite["id"])
+        metadata = dict(satellite.get("metadata") or {})
+        metadata.update({
+            "catalog_fallback": "local",
+            "provider_status": "unavailable",
+        })
+        provider = provider_priority_for(satellite)[0]
+        provider_object_id = identifiers.get("NORAD_CAT_ID") or f"local:{satellite_id}"
+        payload = {
+            "provider": provider,
+            "provider_object_id": provider_object_id,
+            "name": name,
+            "object_type": satellite.get("object_type"),
+            "identifiers": identifiers,
+            "metadata": metadata,
+            "local": {
+                "present": True,
+                "satellite_id": satellite_id,
+                "active": bool(satellite.get("active")),
+                "name": name,
+            },
+        }
+        ranked.append((rank, name.casefold(), satellite_id, payload))
+
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in ranked[:limit]]
+
+
+def _local_catalog_fallback(text: str, provider: str, limit: int, detail: str):
+    results = _local_catalog_results(text, limit)
+    if not results:
+        return 503, {"detail": detail}
+    return 200, {
+        "query": text,
+        "provider": provider,
+        "degraded": True,
+        "notice": "CelesTrak is unavailable; showing matching objects from the local catalog.",
+        "results": results,
+    }
+
+
 def _catalog_route(path: str, query: dict[str, list[str]]):
     if path == "/catalog/groups":
         return 200, _catalog_groups_payload()
@@ -319,7 +479,7 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
         try:
             return 200, _catalog_group_search_payload(text, limit)
         except CatalogError as error:
-            return 502, {"detail": str(error)}
+            return 503, {"detail": str(error)}
 
     if path != "/catalog/search":
         return None
@@ -335,16 +495,25 @@ def _catalog_route(path: str, query: dict[str, list[str]]):
     if provider != "celestrak":
         return 422, {"detail": f"unsupported catalog provider: {provider}"}
     if not settings.celestrak_enabled:
-        return 503, {"detail": "CelesTrak provider is disabled"}
+        return _local_catalog_fallback(
+            text,
+            provider,
+            limit,
+            "CelesTrak provider is disabled and no matching local objects were found",
+        )
 
     try:
         catalog = CelesTrakCatalog(
             settings.celestrak_catalog_url,
             timeout_seconds=settings.celestrak_timeout_seconds,
+            request_attempts=settings.celestrak_request_attempts,
+            retry_delay_seconds=settings.celestrak_retry_delay_seconds,
+            cache_seconds=settings.celestrak_catalog_cache_seconds,
+            stale_seconds=settings.celestrak_catalog_stale_seconds,
         )
         results = catalog.search(text, limit=limit)
     except CatalogError as error:
-        return 502, {"detail": str(error)}
+        return _local_catalog_fallback(text, provider, limit, str(error))
 
     payloads = []
     with connect() as connection:
@@ -404,12 +573,16 @@ def _catalog_post_route(path: str, query: dict[str, list[str]]):
         catalog = CelesTrakCatalog(
             settings.celestrak_catalog_url,
             timeout_seconds=settings.celestrak_timeout_seconds,
+            request_attempts=settings.celestrak_request_attempts,
+            retry_delay_seconds=settings.celestrak_retry_delay_seconds,
+            cache_seconds=settings.celestrak_catalog_cache_seconds,
+            stale_seconds=settings.celestrak_catalog_stale_seconds,
         )
         members = catalog.group(definition.key)
         if not members:
             return 502, {"detail": f"CelesTrak group {definition.name} returned no members"}
     except CatalogError as error:
-        return 502, {"detail": str(error)}
+        return 503, {"detail": str(error)}
 
     try:
         with connect() as connection:

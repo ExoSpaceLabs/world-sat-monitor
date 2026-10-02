@@ -110,13 +110,14 @@ def sync_provider_group(
     created_rows = connection.execute(
         """
         INSERT INTO satellites (
-            name, active, object_type, provider_preference, metadata
+            name, active, object_type, provider_preference, provider_priority, metadata
         )
         SELECT
             incoming.name,
             FALSE,
             incoming.object_type,
             %s::text,
+            ARRAY[%s::text],
             incoming.metadata
                 || jsonb_build_object(
                     'catalog_source', %s::text,
@@ -135,7 +136,7 @@ def sync_provider_group(
         )
         RETURNING id
         """,
-        (definition.provider, definition.provider),
+        (definition.provider, definition.provider, definition.provider),
     ).fetchall()
 
     # Provider-created catalog objects carry their provider object id in metadata,

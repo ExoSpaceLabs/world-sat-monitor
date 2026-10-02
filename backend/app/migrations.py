@@ -101,6 +101,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_orbital_element_sets_source_fingerprint
 """
 
 CURRENT_SCHEMA_SQL = r"""
+ALTER TABLE satellites
+    ADD COLUMN IF NOT EXISTS provider_priority TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+
+UPDATE satellites
+SET provider_priority = ARRAY[
+    LOWER(BTRIM(
+        CASE
+            WHEN metadata->>'mock' = 'true' THEN 'mock'
+            WHEN NULLIF(provider_preference, '') IS NOT NULL THEN provider_preference
+            ELSE 'celestrak'
+        END
+    ))
+]
+WHERE cardinality(provider_priority) = 0;
+
+UPDATE satellites
+SET provider_preference = provider_priority[1]
+WHERE provider_preference IS NULL
+  AND cardinality(provider_priority) > 0;
+
+ALTER TABLE satellites
+    ALTER COLUMN provider_priority SET DEFAULT ARRAY['celestrak']::TEXT[];
+
 ALTER TABLE propagation_jobs
     ADD COLUMN IF NOT EXISTS history_hours INTEGER NOT NULL DEFAULT 48
         CHECK (history_hours >= 0);
@@ -133,8 +156,19 @@ CREATE TABLE IF NOT EXISTS provider_fetch_state (
     last_success_at TIMESTAMPTZ,
     last_error TEXT,
     latest_element_set_id BIGINT REFERENCES orbital_element_sets(id) ON DELETE SET NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+    next_retry_at TIMESTAMPTZ,
+    last_error_at TIMESTAMPTZ,
     PRIMARY KEY (satellite_id, provider)
 );
+
+ALTER TABLE provider_fetch_state
+    ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0
+        CHECK (consecutive_failures >= 0);
+ALTER TABLE provider_fetch_state
+    ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE provider_fetch_state
+    ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS satellite_current_state (
     satellite_id BIGINT PRIMARY KEY REFERENCES satellites(id) ON DELETE CASCADE,
@@ -175,6 +209,13 @@ ALTER TABLE satellite_groups
         CHECK (display_step_seconds >= 10 AND display_step_seconds <= 3600);
 ALTER TABLE satellite_groups
     ADD COLUMN IF NOT EXISTS display_provider_refreshed_at TIMESTAMPTZ;
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_failures INTEGER NOT NULL DEFAULT 0
+        CHECK (display_provider_failures >= 0);
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_retry_at TIMESTAMPTZ;
+ALTER TABLE satellite_groups
+    ADD COLUMN IF NOT EXISTS display_provider_last_error TEXT;
 
 CREATE INDEX IF NOT EXISTS ix_satellite_groups_type_name
     ON satellite_groups (group_type, name);

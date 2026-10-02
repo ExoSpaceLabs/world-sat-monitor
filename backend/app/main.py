@@ -18,6 +18,8 @@ from .orbit import (
     interpolate_ecef,
 )
 from .positions_api import router as positions_router
+from .provider_registry import provider_descriptors
+from .provider_resilience import provider_health, source_freshness
 from .repository import (
     create_satellite,
     delete_satellite,
@@ -32,6 +34,7 @@ from .repository import (
     update_satellite,
 )
 from .satellite_models import SatelliteCreate, SatelliteUpdate
+from .orbital_store import get_orbital_source_status
 from .seed import ensure_mock_data
 from .settings_store import AppSettings, JsonSettingsStore
 
@@ -52,6 +55,7 @@ def _satellite_payload(row: dict[str, Any]) -> dict[str, Any]:
         "active": row["active"],
         "object_type": row["object_type"],
         "provider_preference": row["provider_preference"],
+        "provider_priority": list(row.get("provider_priority") or []),
         "metadata": row["metadata"],
         "identifiers": row["identifiers"],
         "norad_id": row.get("norad_id"),
@@ -92,6 +96,11 @@ def health() -> dict[str, str]:
     with connect() as connection:
         connection.execute("SELECT 1")
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/v1/providers")
+def providers():
+    return {"providers": list(provider_descriptors())}
 
 
 @app.get("/api/v1/settings", response_model=AppSettings)
@@ -135,6 +144,76 @@ def satellite_details(satellite_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="satellite not found")
     return _satellite_payload(row)
+
+
+@app.get("/api/v1/satellites/{satellite_id}/orbital-status")
+def satellite_orbital_status(satellite_id: int):
+    now = datetime.now(timezone.utc)
+    with connect() as connection:
+        status_payload = get_orbital_source_status(connection, satellite_id)
+    if status_payload is None:
+        raise HTTPException(status_code=404, detail="satellite not found")
+
+    element_set = status_payload["element_set"]
+    provider_state = status_payload["provider_state"]
+    propagation_run = status_payload["propagation_run"]
+    current_state = status_payload["current_state"]
+    provider_priority = list(status_payload["provider_priority"])
+    selected_provider = status_payload["provider"]
+    selected_index = provider_priority.index(selected_provider) if selected_provider in provider_priority else None
+    age_seconds, freshness = source_freshness(
+        element_set["epoch"] if element_set is not None else None,
+        now,
+        settings.provider_refresh_seconds,
+    )
+
+    def iso(value):
+        return value.isoformat() if value is not None else None
+
+    return {
+        "satellite": {
+            "id": int(status_payload["satellite"]["id"]),
+            "name": status_payload["satellite"]["name"],
+            "active": bool(status_payload["satellite"]["active"]),
+        },
+        "provider": {
+            "name": selected_provider,
+            "priority": provider_priority,
+            "selected_index": selected_index,
+            "fallback_active": selected_index is None or selected_index > 0,
+            "health": provider_health(provider_state, now),
+            "refresh_interval_seconds": settings.provider_refresh_seconds,
+            "last_attempt_at": iso(provider_state["last_attempt_at"]) if provider_state else None,
+            "last_success_at": iso(provider_state["last_success_at"]) if provider_state else None,
+            "last_error_at": iso(provider_state["last_error_at"]) if provider_state else None,
+            "last_error": provider_state["last_error"] if provider_state else None,
+            "consecutive_failures": int(provider_state["consecutive_failures"]) if provider_state else 0,
+            "next_retry_at": iso(provider_state["next_retry_at"]) if provider_state else None,
+        },
+        "element_set": None if element_set is None else {
+            "id": int(element_set["id"]),
+            "source": element_set["source"],
+            "source_format": element_set["source_format"],
+            "epoch": iso(element_set["epoch"]),
+            "fetched_at": iso(element_set["fetched_at"]),
+            "age_seconds": age_seconds,
+            "freshness": freshness,
+        },
+        "propagation": None if propagation_run is None else {
+            "run_id": str(propagation_run["id"]),
+            "generated_at": iso(propagation_run["generated_at"]),
+            "start_time": iso(propagation_run["start_time"]),
+            "end_time": iso(propagation_run["end_time"]),
+            "status": propagation_run["status"],
+            "is_mock": bool(propagation_run["is_mock"]),
+        },
+        "current_state": None if current_state is None else {
+            "state_time": iso(current_state["state_time"]),
+            "updated_at": iso(current_state["updated_at"]),
+            "source_run_id": str(current_state["source_run_id"]),
+            "source_element_set_id": current_state["source_element_set_id"],
+        },
+    }
 
 
 @app.patch("/api/v1/satellites/{satellite_id}")

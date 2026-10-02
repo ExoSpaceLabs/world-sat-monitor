@@ -6,6 +6,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from .orbital_provider import NormalizedElementSet
+from .provider_policy import provider_priority_for
 
 
 def get_latest_element_set(connection, satellite_id: int, source: str | None = None):
@@ -22,6 +23,45 @@ def get_latest_element_set(connection, satellite_id: int, source: str | None = N
         params,
     ).fetchone()
 
+
+
+def get_latest_element_set_by_priority(
+    connection,
+    satellite_id: int,
+    providers: tuple[str, ...] | list[str],
+    *,
+    include_unlisted: bool = False,
+):
+    ordered = list(providers)
+    if not ordered:
+        return get_latest_element_set(connection, satellite_id)
+
+    if include_unlisted:
+        return connection.execute(
+            """
+            SELECT *
+            FROM orbital_element_sets
+            WHERE satellite_id = %s
+            ORDER BY
+                COALESCE(array_position(%s::text[], source), cardinality(%s::text[]) + 1),
+                fetched_at DESC,
+                id DESC
+            LIMIT 1
+            """,
+            (satellite_id, ordered, ordered),
+        ).fetchone()
+
+    return connection.execute(
+        """
+        SELECT *
+        FROM orbital_element_sets
+        WHERE satellite_id = %s
+          AND source = ANY(%s::text[])
+        ORDER BY array_position(%s::text[], source), fetched_at DESC, id DESC
+        LIMIT 1
+        """,
+        (satellite_id, ordered, ordered),
+    ).fetchone()
 
 def get_provider_fetch_state(connection, satellite_id: int, provider: str):
     return connection.execute(
@@ -104,29 +144,309 @@ def record_provider_fetch(
     success: bool,
     element_set_id: int | None = None,
     error: str | None = None,
+    next_retry_at: datetime | None = None,
+    attempted_at: datetime | None = None,
 ) -> None:
+    attempted_at = (attempted_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    last_success_at = attempted_at if success else None
+    last_error = None if success else error
+    failure_count = 0 if success else 1
+    retry_at = None if success else next_retry_at
+    last_error_at = None if success else attempted_at
+
     connection.execute(
         """
         INSERT INTO provider_fetch_state (
             satellite_id, provider, last_attempt_at, last_success_at,
-            last_error, latest_element_set_id
+            last_error, latest_element_set_id, consecutive_failures,
+            next_retry_at, last_error_at
         )
-        VALUES (%s, %s, NOW(), CASE WHEN %s THEN NOW() ELSE NULL END, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (satellite_id, provider)
         DO UPDATE SET
             last_attempt_at = EXCLUDED.last_attempt_at,
-            last_success_at = CASE
-                WHEN %s THEN EXCLUDED.last_attempt_at
-                ELSE provider_fetch_state.last_success_at
-            END,
+            last_success_at = COALESCE(
+                EXCLUDED.last_success_at,
+                provider_fetch_state.last_success_at
+            ),
             last_error = EXCLUDED.last_error,
             latest_element_set_id = COALESCE(
                 EXCLUDED.latest_element_set_id,
                 provider_fetch_state.latest_element_set_id
-            )
+            ),
+            consecutive_failures = CASE
+                WHEN EXCLUDED.last_success_at IS NOT NULL THEN 0
+                ELSE provider_fetch_state.consecutive_failures + 1
+            END,
+            next_retry_at = EXCLUDED.next_retry_at,
+            last_error_at = CASE
+                WHEN EXCLUDED.last_success_at IS NOT NULL
+                    THEN provider_fetch_state.last_error_at
+                ELSE EXCLUDED.last_error_at
+            END
         """,
-        (satellite_id, provider, success, error, element_set_id, success),
+        (
+            satellite_id,
+            provider,
+            attempted_at,
+            last_success_at,
+            last_error,
+            element_set_id,
+            failure_count,
+            retry_at,
+            last_error_at,
+        ),
     )
+
+
+def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] | None:
+    satellite = connection.execute(
+        """
+        SELECT id, name, active, provider_preference, provider_priority, metadata
+        FROM satellites
+        WHERE id = %s
+        """,
+        (satellite_id,),
+    ).fetchone()
+    if satellite is None:
+        return None
+
+    provider_priority = provider_priority_for(satellite)
+    current_state = connection.execute(
+        """
+        SELECT state_time, updated_at, source_run_id, source_element_set_id
+        FROM satellite_current_state
+        WHERE satellite_id = %s
+        """,
+        (satellite_id,),
+    ).fetchone()
+
+    latest = None
+    if current_state is not None and current_state["source_element_set_id"] is not None:
+        latest = connection.execute(
+            "SELECT * FROM orbital_element_sets WHERE id = %s",
+            (int(current_state["source_element_set_id"]),),
+        ).fetchone()
+    if latest is None:
+        latest = get_latest_element_set_by_priority(
+            connection,
+            satellite_id,
+            provider_priority,
+            include_unlisted=True,
+        )
+
+    provider_name = str(latest["source"]) if latest is not None else provider_priority[0]
+    provider_state = get_provider_fetch_state(connection, satellite_id, provider_name)
+
+    run = None
+    if latest is not None:
+        run = connection.execute(
+            """
+            SELECT id, generated_at, start_time, end_time, status, is_mock
+            FROM propagation_runs
+            WHERE satellite_id = %s
+              AND source_element_set_id = %s
+              AND status = 'completed'
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            (satellite_id, int(latest["id"])),
+        ).fetchone()
+
+    return {
+        "satellite": satellite,
+        "provider": provider_name,
+        "provider_priority": provider_priority,
+        "element_set": latest,
+        "provider_state": provider_state,
+        "propagation_run": run,
+        "current_state": current_state,
+    }
+
+
+def get_group_orbital_source_summary(
+    connection,
+    group_id: int,
+    *,
+    now: datetime | None = None,
+    refresh_seconds: int,
+    attention_limit: int = 10,
+) -> dict[str, Any]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    refresh = max(1, int(refresh_seconds))
+    fresh_limit = refresh * 2
+    aging_limit = max(refresh * 6, 24 * 3600)
+    attention_limit = max(1, min(50, int(attention_limit)))
+
+    row = connection.execute(
+        """
+        WITH members AS (
+            SELECT
+                s.id AS satellite_id,
+                s.name,
+                s.active,
+                CASE
+                    WHEN s.metadata->>'mock' = 'true' THEN ARRAY['mock']::text[]
+                    WHEN cardinality(s.provider_priority) > 0 THEN s.provider_priority
+                    WHEN NULLIF(BTRIM(s.provider_preference), '') IS NOT NULL
+                        THEN ARRAY[LOWER(BTRIM(s.provider_preference))]
+                    ELSE ARRAY['celestrak']::text[]
+                END AS provider_priority
+            FROM satellite_group_members gm
+            JOIN satellites s ON s.id = gm.satellite_id
+            WHERE gm.group_id = %s
+        ),
+        resolved AS (
+            SELECT
+                m.*,
+                latest.id AS element_set_id,
+                latest.source AS element_source,
+                latest.epoch AS element_epoch,
+                latest.fetched_at AS element_fetched_at,
+                COALESCE(latest.source, m.provider_priority[1]) AS provider_name
+            FROM members m
+            LEFT JOIN LATERAL (
+                SELECT oes.id, oes.source, oes.epoch, oes.fetched_at
+                FROM orbital_element_sets oes
+                WHERE oes.satellite_id = m.satellite_id
+                ORDER BY
+                    COALESCE(
+                        array_position(m.provider_priority, oes.source),
+                        cardinality(m.provider_priority) + 1
+                    ),
+                    oes.epoch DESC,
+                    oes.id DESC
+                LIMIT 1
+            ) latest ON TRUE
+        ),
+        classified AS (
+            SELECT
+                r.*,
+                pfs.last_attempt_at,
+                pfs.last_success_at,
+                pfs.last_error_at,
+                pfs.last_error,
+                pfs.consecutive_failures,
+                pfs.next_retry_at,
+                scs.satellite_id AS current_state_satellite_id,
+                scs.source_element_set_id AS current_source_element_set_id,
+                CASE
+                    WHEN r.element_epoch IS NULL THEN NULL
+                    ELSE GREATEST(
+                        0,
+                        EXTRACT(EPOCH FROM (%s::timestamptz - r.element_epoch))::bigint
+                    )
+                END AS age_seconds
+            FROM resolved r
+            LEFT JOIN provider_fetch_state pfs
+              ON pfs.satellite_id = r.satellite_id
+             AND pfs.provider = r.provider_name
+            LEFT JOIN satellite_current_state scs
+              ON scs.satellite_id = r.satellite_id
+        ),
+        status_rows AS (
+            SELECT
+                c.*,
+                CASE
+                    WHEN c.age_seconds IS NULL THEN 'unknown'
+                    WHEN c.age_seconds <= %s THEN 'fresh'
+                    WHEN c.age_seconds <= %s THEN 'aging'
+                    ELSE 'stale'
+                END AS freshness,
+                CASE
+                    WHEN c.next_retry_at IS NOT NULL
+                     AND c.next_retry_at > %s::timestamptz THEN 'backoff'
+                    WHEN COALESCE(c.consecutive_failures, 0) > 0
+                      OR c.last_error IS NOT NULL THEN 'degraded'
+                    WHEN c.last_success_at IS NOT NULL THEN 'healthy'
+                    ELSE 'unknown'
+                END AS provider_health
+            FROM classified c
+        ),
+        attention_ranked AS (
+            SELECT
+                sr.*,
+                CASE
+                    WHEN sr.provider_health = 'backoff' THEN 5
+                    WHEN sr.provider_health = 'degraded' THEN 4
+                    WHEN sr.freshness = 'stale' THEN 3
+                    WHEN sr.freshness = 'unknown' THEN 2
+                    WHEN sr.freshness = 'aging' THEN 1
+                    ELSE 0
+                END AS severity
+            FROM status_rows sr
+        )
+        SELECT
+            COUNT(*)::int AS member_count,
+            COUNT(*) FILTER (WHERE active)::int AS active_member_count,
+            COUNT(element_set_id)::int AS element_set_members,
+            COUNT(current_state_satellite_id)::int AS current_state_members,
+            COUNT(*) FILTER (
+                WHERE element_set_id IS NOT NULL
+                  AND current_source_element_set_id = element_set_id
+            )::int AS current_on_latest_elements,
+            COUNT(*) FILTER (WHERE freshness = 'fresh')::int AS freshness_fresh,
+            COUNT(*) FILTER (WHERE freshness = 'aging')::int AS freshness_aging,
+            COUNT(*) FILTER (WHERE freshness = 'stale')::int AS freshness_stale,
+            COUNT(*) FILTER (WHERE freshness = 'unknown')::int AS freshness_unknown,
+            COUNT(*) FILTER (WHERE provider_health = 'healthy')::int AS health_healthy,
+            COUNT(*) FILTER (WHERE provider_health = 'degraded')::int AS health_degraded,
+            COUNT(*) FILTER (WHERE provider_health = 'backoff')::int AS health_backoff,
+            COUNT(*) FILTER (WHERE provider_health = 'unknown')::int AS health_unknown,
+            MIN(element_epoch) AS oldest_element_epoch,
+            MAX(element_epoch) AS newest_element_epoch,
+            MIN(last_success_at) AS oldest_provider_success_at,
+            MAX(last_success_at) AS newest_provider_success_at,
+            COALESCE(
+                (
+                    SELECT jsonb_object_agg(provider_name, provider_count ORDER BY provider_name)
+                    FROM (
+                        SELECT provider_name, COUNT(*)::int AS provider_count
+                        FROM status_rows
+                        GROUP BY provider_name
+                    ) provider_counts
+                ),
+                '{}'::jsonb
+            ) AS providers,
+            (
+                SELECT COUNT(*)::int
+                FROM attention_ranked
+                WHERE severity > 0
+            ) AS attention_total,
+            COALESCE(
+                (
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'satellite_id', satellite_id,
+                            'name', name,
+                            'active', active,
+                            'provider', provider_name,
+                            'provider_health', provider_health,
+                            'freshness', freshness,
+                            'age_seconds', age_seconds,
+                            'element_epoch', element_epoch,
+                            'last_error', last_error
+                        )
+                        ORDER BY severity DESC, age_seconds DESC NULLS LAST, satellite_id
+                    )
+                    FROM (
+                        SELECT *
+                        FROM attention_ranked
+                        WHERE severity > 0
+                        ORDER BY severity DESC, age_seconds DESC NULLS LAST, satellite_id
+                        LIMIT %s
+                    ) attention_rows
+                ),
+                '[]'::jsonb
+            ) AS attention
+        FROM status_rows
+        """,
+        (group_id, current, fresh_limit, aging_limit, current, attention_limit),
+    ).fetchone()
+
+    if row is None:
+        raise RuntimeError("group orbital-source summary query returned no row")
+    return dict(row)
 
 
 def ensure_propagation_job(

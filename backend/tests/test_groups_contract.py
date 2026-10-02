@@ -25,6 +25,7 @@ class GroupContractTests(unittest.TestCase):
         self.assertIn('@router.post("/{group_id}/display")', API)
         self.assertIn('@router.delete("/{group_id}/display"', API)
         self.assertIn('@router.get("/{group_id}/positions")', API)
+        self.assertIn('@router.get("/{group_id}/orbital-status")', API)
 
     def test_collection_satellite_purge_is_set_based_and_blocks_active_members(self):
         section = API.split("def remove_group_satellites", 1)[1].split("def group_members", 1)[0]
@@ -62,11 +63,41 @@ class GroupContractTests(unittest.TestCase):
         self.assertIn("fetch_group", PROVIDER)
         self.assertIn("display_jobs_created", PROVIDER)
 
+
+    def test_provider_group_refresh_uses_registry_not_celestrak_switch(self):
+        section = PROVIDER.split("def _process_requested_group", 1)[1].split("def _record_satellite_provider_failure", 1)[0]
+        self.assertIn("group_provider_name", section)
+        self.assertIn("build_orbital_provider(group_provider_name)", section)
+        self.assertIn('getattr(provider, "fetch_group", None)', section)
+        self.assertNotIn("is_celestrak_group", section)
+
     def test_existing_databases_receive_group_display_columns(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS satellite_groups", MIGRATIONS)
         self.assertIn("display_requested_until", MIGRATIONS)
         self.assertIn("display_prediction_hours", MIGRATIONS)
         self.assertIn("horizon_hours", MIGRATIONS)
+
+
+class GroupOrbitalQualityContractTests(unittest.TestCase):
+    def test_group_orbital_quality_is_aggregated_and_bounded(self):
+        section = STORE.split("def get_group_orbital_source_summary", 1)[1].split("def ensure_propagation_job", 1)[0]
+        self.assertIn("satellite_group_members", section)
+        self.assertIn("provider_fetch_state", section)
+        self.assertIn("satellite_current_state", section)
+        self.assertIn("jsonb_object_agg", section)
+        self.assertIn("jsonb_agg", section)
+        self.assertIn("LIMIT %s", section)
+        self.assertNotIn("position_samples", section)
+        self.assertIn("provider_priority", section)
+        self.assertIn("array_position(m.provider_priority, oes.source)", section)
+
+    def test_group_status_response_has_quality_and_attention_sections(self):
+        section = API.split("def group_orbital_status", 1)[1].split('@router.patch("/{group_id}")', 1)[0]
+        self.assertIn('"coverage"', section)
+        self.assertIn('"freshness"', section)
+        self.assertIn('"provider_health"', section)
+        self.assertIn('"attention"', section)
+        self.assertIn("attention_limit=10", section)
 
 
 if __name__ == "__main__":
