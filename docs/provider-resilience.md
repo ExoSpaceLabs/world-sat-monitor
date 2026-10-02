@@ -135,3 +135,16 @@ the worker.
 kind, and single/group/catalog capabilities. Future UI for provider-priority editing
 can therefore discover backend capabilities instead of maintaining a second provider
 registry in the frontend.
+
+
+### Active-source provenance
+
+The single-object orbital-status endpoint reports the element set referenced by
+`satellite_current_state` when one exists. This is deliberate: after a provider
+failover, operator-facing provenance must describe the source actually driving the
+current propagated state rather than an older element set belonging to a
+higher-priority provider.
+
+Provider-managed group display refresh is also provider-neutral. The group source is
+resolved through the provider registry and must advertise a callable group-fetch
+operation; the display worker no longer contains a CelesTrak-specific refresh branch.
