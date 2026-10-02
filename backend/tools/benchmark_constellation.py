@@ -65,12 +65,15 @@ def seed_fixture(connection, max_size: int, sizes: tuple[int, ...]):
 
     rows = connection.execute(
         """
-        INSERT INTO satellites (name, active, object_type, provider_preference, metadata)
+        INSERT INTO satellites (
+            name, active, object_type, provider_preference, provider_priority, metadata
+        )
         SELECT
             'BENCH-' || %s::text || '-' || series::text,
             TRUE,
             'payload',
             'benchmark',
+            ARRAY['benchmark']::text[],
             jsonb_build_object('benchmark_token', %s::text)
         FROM generate_series(1, %s::integer) AS series
         RETURNING id
