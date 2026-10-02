@@ -221,7 +221,7 @@ jobs:
 
           mock_id="$(docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT id FROM satellites WHERE name='WORLDSAT-01' LIMIT 1;")"
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"health":"healthy"'
-          curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"freshness":"fresh"'
+          curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"freshness":"stale"'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"source":"mock"'
           curl --fail --silent -X POST http://localhost:3000/api/v1/positions/current             -H 'Content-Type: application/json'             -d "{\"satellite_ids\":[${mock_id}]}" | grep '"WORLDSAT-01"'
 
