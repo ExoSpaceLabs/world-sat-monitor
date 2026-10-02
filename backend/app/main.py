@@ -161,15 +161,31 @@ def satellite_orbital_status(satellite_id: int):
     provider_priority = list(status_payload["provider_priority"])
     selected_provider = status_payload["provider"]
     selected_index = provider_priority.index(selected_provider) if selected_provider in provider_priority else None
+
+    def iso(value):
+        return value.isoformat() if value is not None else None
+
+    provider_states = status_payload["provider_states"]
+    provider_candidates = []
+    for index, provider_name in enumerate(provider_priority):
+        state = provider_states.get(provider_name)
+        provider_candidates.append({
+            "name": provider_name,
+            "index": index,
+            "selected": provider_name == selected_provider,
+            "health": provider_health(state, now),
+            "last_attempt_at": iso(state["last_attempt_at"]) if state else None,
+            "last_success_at": iso(state["last_success_at"]) if state else None,
+            "last_error_at": iso(state["last_error_at"]) if state else None,
+            "last_error": state["last_error"] if state else None,
+            "consecutive_failures": int(state["consecutive_failures"]) if state else 0,
+            "next_retry_at": iso(state["next_retry_at"]) if state else None,
+        })
     age_seconds, freshness = source_freshness(
         element_set["epoch"] if element_set is not None else None,
         now,
         settings.provider_refresh_seconds,
     )
-
-    def iso(value):
-        return value.isoformat() if value is not None else None
-
     return {
         "satellite": {
             "id": int(status_payload["satellite"]["id"]),
@@ -181,6 +197,7 @@ def satellite_orbital_status(satellite_id: int):
             "priority": provider_priority,
             "selected_index": selected_index,
             "fallback_active": selected_index is None or selected_index > 0,
+            "candidates": provider_candidates,
             "health": provider_health(provider_state, now),
             "refresh_interval_seconds": settings.provider_refresh_seconds,
             "last_attempt_at": iso(provider_state["last_attempt_at"]) if provider_state else None,
