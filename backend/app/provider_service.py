@@ -419,7 +419,7 @@ def _local_catalog_results(text: str, limit: int) -> list[dict[str, Any]]:
             "catalog_fallback": "local",
             "provider_status": "unavailable",
         })
-        provider = str(satellite.get("provider_preference") or "local").strip().lower() or "local"
+        provider = provider_priority_for(satellite)[0]
         provider_object_id = identifiers.get("NORAD_CAT_ID") or f"local:{satellite_id}"
         payload = {
             "provider": provider,
