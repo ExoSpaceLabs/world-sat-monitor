@@ -23,16 +23,14 @@ from .group_display import (
     mark_group_provider_refreshed,
 )
 from .migrations import migrate_schema
-from .orbital_provider import (
-    CelesTrakProvider,
-    MockOrbitalDataProvider,
-    OrbitalDataProvider,
-    ProviderError,
-)
+from .orbital_provider import ProviderError
+from .provider_policy import provider_priority_for
+from .provider_registry import build_orbital_provider
 from .orbital_store import (
     cancel_inactive_pending_jobs,
     ensure_propagation_job,
     get_latest_element_set,
+    get_latest_element_set_by_priority,
     get_provider_fetch_state,
     insert_element_set,
     record_provider_fetch,
@@ -44,23 +42,6 @@ from .seed import ensure_mock_data
 from .worker_health import WorkerHealth, start_health_server
 
 LOGGER = logging.getLogger("worldsat.orbital-provider")
-
-
-def _provider_for(satellite: dict[str, Any]) -> OrbitalDataProvider:
-    preference = str(satellite.get("provider_preference") or "").strip().lower()
-    metadata = dict(satellite.get("metadata") or {})
-    if preference == "mock" or metadata.get("mock") is True:
-        return MockOrbitalDataProvider()
-    if preference in {"", "celestrak"}:
-        if not settings.celestrak_enabled:
-            raise ProviderError("CelesTrak provider is disabled")
-        return CelesTrakProvider(
-            settings.celestrak_base_url,
-            timeout_seconds=settings.celestrak_timeout_seconds,
-            request_attempts=settings.celestrak_request_attempts,
-            retry_delay_seconds=settings.celestrak_retry_delay_seconds,
-        )
-    raise ProviderError(f"unsupported orbital provider preference: {preference}")
 
 
 def _is_due(last_success_at: datetime | None, now: datetime) -> bool:
@@ -127,16 +108,9 @@ def _process_requested_group(
         last_refresh = group.get("display_provider_refreshed_at")
         group_retry_state = {"next_retry_at": group.get("display_provider_retry_at")}
         if _is_due(last_refresh, now) and not retry_blocked(group_retry_state, now):
-            if not settings.celestrak_enabled:
-                raise ProviderError("CelesTrak provider is disabled")
-            provider = CelesTrakProvider(
-                settings.celestrak_base_url,
-                timeout_seconds=settings.celestrak_timeout_seconds,
-                request_attempts=settings.celestrak_request_attempts,
-                retry_delay_seconds=settings.celestrak_retry_delay_seconds,
-            )
             try:
-                provider_sets = provider.fetch_group(str(group["source_key"]))
+                provider = build_orbital_provider("celestrak")
+                provider_sets = provider.fetch_group(str(group["source_key"]))  # type: ignore[attr-defined]
                 metrics["display_fetches"] += 1
             except Exception as error:
                 failures = int(group.get("display_provider_failures") or 0)
@@ -182,10 +156,12 @@ def _process_requested_group(
                     )
 
             if element_set_id is None:
-                preferred_source = str(member.get("provider_preference") or "").strip().lower() or None
-                latest = get_latest_element_set(connection, satellite_id, source=preferred_source)
-                if latest is None and preferred_source is not None:
-                    latest = get_latest_element_set(connection, satellite_id)
+                latest = get_latest_element_set_by_priority(
+                    connection,
+                    satellite_id,
+                    provider_priority_for(member),
+                    include_unlisted=True,
+                )
                 if latest is not None:
                     element_set_id = int(latest["id"])
 
@@ -204,6 +180,128 @@ def _process_requested_group(
         connection.commit()
 
 
+def _record_satellite_provider_failure(
+    satellite_id: int,
+    provider_name: str,
+    now: datetime,
+    error: Exception,
+) -> None:
+    with connect() as connection:
+        state = get_provider_fetch_state(connection, satellite_id, provider_name)
+        failures = int(state["consecutive_failures"]) if state is not None else 0
+        delay_seconds = retry_delay_seconds(
+            failures,
+            base_seconds=settings.provider_retry_base_seconds,
+            max_seconds=settings.provider_retry_max_seconds,
+        )
+        record_provider_fetch(
+            connection,
+            satellite_id,
+            provider_name,
+            success=False,
+            error=str(error)[:2000],
+            next_retry_at=now + timedelta(seconds=delay_seconds),
+            attempted_at=now,
+        )
+        connection.commit()
+
+
+def _process_active_satellite(
+    satellite: dict[str, Any],
+    now: datetime,
+    metrics: dict[str, int],
+) -> bool:
+    satellite_id = int(satellite["id"])
+    priority = provider_priority_for(satellite)
+    fallback_element_set = None
+
+    for priority_index, provider_name in enumerate(priority):
+        with connect() as connection:
+            state = get_provider_fetch_state(connection, satellite_id, provider_name)
+            latest = get_latest_element_set(connection, satellite_id, source=provider_name)
+            if fallback_element_set is None and latest is not None:
+                fallback_element_set = latest
+            last_success_at = state["last_success_at"] if state else None
+
+            if latest is not None and not _is_due(last_success_at, now):
+                if _ensure_job(connection, satellite_id, int(latest["id"])):
+                    metrics["jobs_created"] += 1
+                connection.commit()
+                if priority_index > 0:
+                    metrics["provider_failovers"] += 1
+                return True
+
+            if retry_blocked(state, now):
+                metrics["backoff_skips"] += 1
+                connection.commit()
+                continue
+
+        try:
+            provider = build_orbital_provider(provider_name)
+            element_set = provider.fetch_latest(satellite["identifiers"])
+        except Exception as error:
+            metrics["provider_failures"] += 1
+            LOGGER.warning(
+                "provider %s refresh failed for satellite %s: %s",
+                provider_name,
+                satellite_id,
+                error,
+            )
+            try:
+                _record_satellite_provider_failure(
+                    satellite_id,
+                    provider_name,
+                    now,
+                    error,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "failed to record provider %s error for satellite %s",
+                    provider_name,
+                    satellite_id,
+                )
+            continue
+
+        metrics["fetched"] += 1
+        with connect() as connection:
+            element_set_id, inserted = insert_element_set(
+                connection,
+                satellite_id,
+                element_set,
+            )
+            if inserted:
+                metrics["new_element_sets"] += 1
+            record_provider_fetch(
+                connection,
+                satellite_id,
+                provider.name,
+                success=True,
+                element_set_id=element_set_id,
+            )
+            if _ensure_job(connection, satellite_id, element_set_id):
+                metrics["jobs_created"] += 1
+            connection.commit()
+        if priority_index > 0:
+            metrics["provider_failovers"] += 1
+        return True
+
+    with connect() as connection:
+        latest = fallback_element_set or get_latest_element_set_by_priority(
+            connection,
+            satellite_id,
+            priority,
+            include_unlisted=True,
+        )
+        if latest is not None:
+            if _ensure_job(connection, satellite_id, int(latest["id"])):
+                metrics["jobs_created"] += 1
+            connection.commit()
+            metrics["stale_fallbacks"] += 1
+            return True
+        connection.commit()
+    return False
+
+
 def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     metrics = {
@@ -215,6 +313,9 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         "display_fetches": 0,
         "display_jobs_created": 0,
         "backoff_skips": 0,
+        "provider_failures": 0,
+        "provider_failovers": 0,
+        "stale_fallbacks": 0,
         "errors": 0,
     }
 
@@ -237,81 +338,22 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
 
     for satellite in satellites:
         metrics["active"] += 1
-        satellite_id = int(satellite["id"])
-        provider_name = str(
-            satellite.get("provider_preference")
-            or ("mock" if dict(satellite.get("metadata") or {}).get("mock") else "celestrak")
-        ).lower()
-
         try:
-            provider = _provider_for(satellite)
-            provider_name = provider.name
-            with connect() as connection:
-                state = get_provider_fetch_state(connection, satellite_id, provider.name)
-                latest = get_latest_element_set(connection, satellite_id, source=provider.name)
-                last_success_at = state["last_success_at"] if state else None
-
-                if latest is not None and not _is_due(last_success_at, now):
-                    if _ensure_job(connection, satellite_id, int(latest["id"])):
-                        metrics["jobs_created"] += 1
-                    connection.commit()
-                    continue
-
-                if retry_blocked(state, now):
-                    metrics["backoff_skips"] += 1
-                    if latest is not None and _ensure_job(connection, satellite_id, int(latest["id"])):
-                        metrics["jobs_created"] += 1
-                    connection.commit()
-                    continue
-
-            element_set = provider.fetch_latest(satellite["identifiers"])
-            metrics["fetched"] += 1
-            with connect() as connection:
-                element_set_id, inserted = insert_element_set(
-                    connection,
-                    satellite_id,
-                    element_set,
+            if not _process_active_satellite(satellite, now, metrics):
+                metrics["errors"] += 1
+                LOGGER.warning(
+                    "no orbital provider or stored element set is usable for satellite %s",
+                    satellite["id"],
                 )
-                if inserted:
-                    metrics["new_element_sets"] += 1
-                record_provider_fetch(
-                    connection,
-                    satellite_id,
-                    provider.name,
-                    success=True,
-                    element_set_id=element_set_id,
-                )
-                if _ensure_job(connection, satellite_id, element_set_id):
-                    metrics["jobs_created"] += 1
-                connection.commit()
         except Exception as error:
             metrics["errors"] += 1
-            LOGGER.warning("provider refresh failed for satellite %s: %s", satellite_id, error)
-            try:
-                with connect() as connection:
-                    state = get_provider_fetch_state(connection, satellite_id, provider_name)
-                    failures = int(state["consecutive_failures"]) if state is not None else 0
-                    delay_seconds = retry_delay_seconds(
-                        failures,
-                        base_seconds=settings.provider_retry_base_seconds,
-                        max_seconds=settings.provider_retry_max_seconds,
-                    )
-                    record_provider_fetch(
-                        connection,
-                        satellite_id,
-                        provider_name,
-                        success=False,
-                        error=str(error)[:2000],
-                        next_retry_at=now + timedelta(seconds=delay_seconds),
-                        attempted_at=now,
-                    )
-                    connection.commit()
-            except Exception:
-                LOGGER.exception("failed to record provider error for satellite %s", satellite_id)
+            LOGGER.exception(
+                "provider cycle failed unexpectedly for satellite %s: %s",
+                satellite["id"],
+                error,
+            )
 
     return metrics
-
-
 def _catalog_group_payload(connection, definition) -> dict[str, Any]:
     local = get_provider_group(connection, definition.provider, definition.key)
     payload = definition.payload()
