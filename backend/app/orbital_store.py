@@ -212,12 +212,29 @@ def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] |
         return None
 
     provider_priority = provider_priority_for(satellite)
-    latest = get_latest_element_set_by_priority(
-        connection,
-        satellite_id,
-        provider_priority,
-        include_unlisted=True,
-    )
+    current_state = connection.execute(
+        """
+        SELECT state_time, updated_at, source_run_id, source_element_set_id
+        FROM satellite_current_state
+        WHERE satellite_id = %s
+        """,
+        (satellite_id,),
+    ).fetchone()
+
+    latest = None
+    if current_state is not None and current_state["source_element_set_id"] is not None:
+        latest = connection.execute(
+            "SELECT * FROM orbital_element_sets WHERE id = %s",
+            (int(current_state["source_element_set_id"]),),
+        ).fetchone()
+    if latest is None:
+        latest = get_latest_element_set_by_priority(
+            connection,
+            satellite_id,
+            provider_priority,
+            include_unlisted=True,
+        )
+
     provider_name = str(latest["source"]) if latest is not None else provider_priority[0]
     provider_state = get_provider_fetch_state(connection, satellite_id, provider_name)
 
@@ -235,15 +252,6 @@ def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] |
             """,
             (satellite_id, int(latest["id"])),
         ).fetchone()
-
-    current_state = connection.execute(
-        """
-        SELECT state_time, updated_at, source_run_id, source_element_set_id
-        FROM satellite_current_state
-        WHERE satellite_id = %s
-        """,
-        (satellite_id,),
-    ).fetchone()
 
     return {
         "satellite": satellite,
