@@ -63,6 +63,14 @@ class GroupContractTests(unittest.TestCase):
         self.assertIn("fetch_group", PROVIDER)
         self.assertIn("display_jobs_created", PROVIDER)
 
+
+    def test_provider_group_refresh_uses_registry_not_celestrak_switch(self):
+        section = PROVIDER.split("def _process_requested_group", 1)[1].split("def _record_satellite_provider_failure", 1)[0]
+        self.assertIn("group_provider_name", section)
+        self.assertIn("build_orbital_provider(group_provider_name)", section)
+        self.assertIn('getattr(provider, "fetch_group", None)', section)
+        self.assertNotIn("is_celestrak_group", section)
+
     def test_existing_databases_receive_group_display_columns(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS satellite_groups", MIGRATIONS)
         self.assertIn("display_requested_until", MIGRATIONS)
