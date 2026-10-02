@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app.orbital_provider import ProviderError
-from app.provider_registry import build_orbital_provider, registered_provider_names
+from app.provider_registry import build_orbital_provider, provider_descriptors, registered_provider_names
 from app.provider_service import _process_active_satellite
 
 
@@ -38,6 +38,14 @@ class ProviderStrategyTests(unittest.TestCase):
         self.assertEqual(registered_provider_names(), ("mock", "celestrak"))
         with self.assertRaisesRegex(ProviderError, "unsupported orbital provider"):
             build_orbital_provider("not-a-provider")
+
+    def test_registry_describes_runtime_capabilities(self):
+        descriptors = {item["name"]: item for item in provider_descriptors()}
+        self.assertEqual(descriptors["mock"]["kind"], "synthetic")
+        self.assertFalse(descriptors["mock"]["supports_catalog"])
+        self.assertEqual(descriptors["celestrak"]["kind"], "external")
+        self.assertTrue(descriptors["celestrak"]["supports_group_fetch"])
+        self.assertTrue(descriptors["celestrak"]["supports_catalog"])
 
     def test_worker_fails_over_to_next_provider(self):
         now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
