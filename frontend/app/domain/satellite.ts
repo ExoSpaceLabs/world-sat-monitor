@@ -13,6 +13,7 @@ export type ManagedSatellite = {
   active: boolean;
   object_type: string;
   provider_preference: string | null;
+  provider_priority: string[];
   metadata: Record<string, unknown>;
   identifiers: Record<string, string>;
   norad_id: string | null;
@@ -63,6 +64,7 @@ export type SatelliteCreateRequest = {
   active?: boolean;
   object_type?: string;
   provider_preference?: string | null;
+  provider_priority?: string[];
   metadata?: Record<string, unknown>;
   identifiers?: Array<{namespace: string; value: string}>;
 };
