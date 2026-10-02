@@ -277,10 +277,13 @@ def get_group_orbital_source_summary(
                 s.id AS satellite_id,
                 s.name,
                 s.active,
-                COALESCE(
-                    NULLIF(LOWER(BTRIM(s.provider_preference)), ''),
-                    CASE WHEN s.metadata->>'mock' = 'true' THEN 'mock' ELSE 'celestrak' END
-                ) AS preferred_provider
+                CASE
+                    WHEN s.metadata->>'mock' = 'true' THEN ARRAY['mock']::text[]
+                    WHEN cardinality(s.provider_priority) > 0 THEN s.provider_priority
+                    WHEN NULLIF(BTRIM(s.provider_preference), '') IS NOT NULL
+                        THEN ARRAY[LOWER(BTRIM(s.provider_preference))]
+                    ELSE ARRAY['celestrak']::text[]
+                END AS provider_priority
             FROM satellite_group_members gm
             JOIN satellites s ON s.id = gm.satellite_id
             WHERE gm.group_id = %s
@@ -292,14 +295,17 @@ def get_group_orbital_source_summary(
                 latest.source AS element_source,
                 latest.epoch AS element_epoch,
                 latest.fetched_at AS element_fetched_at,
-                COALESCE(latest.source, m.preferred_provider) AS provider_name
+                COALESCE(latest.source, m.provider_priority[1]) AS provider_name
             FROM members m
             LEFT JOIN LATERAL (
                 SELECT oes.id, oes.source, oes.epoch, oes.fetched_at
                 FROM orbital_element_sets oes
                 WHERE oes.satellite_id = m.satellite_id
                 ORDER BY
-                    CASE WHEN oes.source = m.preferred_provider THEN 0 ELSE 1 END,
+                    COALESCE(
+                        array_position(m.provider_priority, oes.source),
+                        cardinality(m.provider_priority) + 1
+                    ),
                     oes.epoch DESC,
                     oes.id DESC
                 LIMIT 1
