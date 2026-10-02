@@ -100,17 +100,23 @@ def _process_requested_group(
         return
 
     provider_sets = None
-    is_celestrak_group = (
-        str(group.get("source") or "").lower() == "celestrak"
+    group_provider_name = str(group.get("source") or "").strip().lower()
+    is_provider_group = (
+        group_provider_name not in {"", "user"}
         and bool(group.get("source_key"))
     )
-    if is_celestrak_group:
+    if is_provider_group:
         last_refresh = group.get("display_provider_refreshed_at")
         group_retry_state = {"next_retry_at": group.get("display_provider_retry_at")}
         if _is_due(last_refresh, now) and not retry_blocked(group_retry_state, now):
             try:
-                provider = build_orbital_provider("celestrak")
-                provider_sets = provider.fetch_group(str(group["source_key"]))  # type: ignore[attr-defined]
+                provider = build_orbital_provider(group_provider_name)
+                fetch_group = getattr(provider, "fetch_group", None)
+                if not callable(fetch_group):
+                    raise ProviderError(
+                        f"orbital provider does not support group fetch: {group_provider_name}"
+                    )
+                provider_sets = fetch_group(str(group["source_key"]))
                 metrics["display_fetches"] += 1
             except Exception as error:
                 failures = int(group.get("display_provider_failures") or 0)
@@ -354,6 +360,8 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
             )
 
     return metrics
+
+
 def _catalog_group_payload(connection, definition) -> dict[str, Any]:
     local = get_provider_group(connection, definition.provider, definition.key)
     payload = definition.payload()
