@@ -25,6 +25,9 @@ export type OrbitalSourceStatus = {
   satellite: {id: number; name: string; active: boolean};
   provider: {
     name: string;
+    priority: string[];
+    selected_index: number | null;
+    fallback_active: boolean;
     health: "unknown" | "healthy" | "degraded" | "backoff";
     refresh_interval_seconds: number;
     last_attempt_at: string | null;
