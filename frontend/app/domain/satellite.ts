@@ -97,6 +97,60 @@ export type SatelliteGroup = {
   updated_at: string;
 };
 
+export type GroupOrbitalSourceStatus = {
+  group: SatelliteGroup;
+  generated_at: string;
+  refresh_interval_seconds: number;
+  group_provider: {
+    name: string;
+    health: "unknown" | "healthy" | "degraded" | "backoff";
+    last_success_at: string | null;
+    next_retry_at: string | null;
+    last_error: string | null;
+    consecutive_failures: number;
+  } | null;
+  members: {
+    total: number;
+    active: number;
+  };
+  coverage: {
+    element_sets: {count: number; percent: number};
+    current_state: {count: number; percent: number};
+    current_on_latest_elements: {count: number; percent: number};
+  };
+  freshness: {
+    fresh: number;
+    aging: number;
+    stale: number;
+    unknown: number;
+    oldest_epoch: string | null;
+    newest_epoch: string | null;
+  };
+  provider_health: {
+    healthy: number;
+    degraded: number;
+    backoff: number;
+    unknown: number;
+    providers: Record<string, number>;
+    oldest_success_at: string | null;
+    newest_success_at: string | null;
+  };
+  attention: {
+    total: number;
+    members: Array<{
+      satellite_id: number;
+      name: string;
+      active: boolean;
+      provider: string;
+      provider_health: "unknown" | "healthy" | "degraded" | "backoff";
+      freshness: "unknown" | "fresh" | "aging" | "stale";
+      age_seconds: number | null;
+      element_epoch: string | null;
+      last_error: string | null;
+    }>;
+  };
+};
+
 export type SatelliteGroupCreateRequest = {
   name: string;
   group_type?: SatelliteGroupType;

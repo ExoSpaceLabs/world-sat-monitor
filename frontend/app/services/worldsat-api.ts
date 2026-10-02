@@ -1,5 +1,6 @@
 import type {
   CatalogSearchResult,
+  GroupOrbitalSourceStatus,
   GroupPosition,
   ManagedSatellite,
   OrbitalSourceStatus,
@@ -199,6 +200,10 @@ export function deleteManagedSatellite(satelliteId: number): Promise<void> {
 
 export async function listSatelliteGroups(): Promise<SatelliteGroup[]> {
   return (await requestJson<GroupListResponse>("/api/v1/groups")).groups;
+}
+
+export function getSatelliteGroupOrbitalStatus(groupId: number): Promise<GroupOrbitalSourceStatus> {
+  return requestJson<GroupOrbitalSourceStatus>(`/api/v1/groups/${groupId}/orbital-status`);
 }
 
 export function createSatelliteGroup(value: SatelliteGroupCreateRequest): Promise<SatelliteGroup> {

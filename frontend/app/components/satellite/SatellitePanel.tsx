@@ -5,6 +5,7 @@ import type {CatalogGroupDefinition} from "../../domain/catalog-group";
 import type {Basemap} from "../../domain/types";
 import type {
   CatalogSearchResult,
+  GroupOrbitalSourceStatus,
   GroupPosition,
   ManagedSatellite,
   OrbitalSourceStatus,
@@ -28,6 +29,7 @@ import {
   deactivateManagedSatellite,
   deleteManagedSatellite,
   deleteSatelliteGroup,
+  getSatelliteGroupOrbitalStatus,
   getSatelliteOrbitalStatus,
   listManagedSatellites,
   listSatelliteGroupMembers,
@@ -94,6 +96,22 @@ function formatAgeSeconds(value: number | null | undefined) {
   const days = Math.floor(hours / 24);
   return `${days}d ${hours % 24}h`;
 }
+
+function formatProviderDistribution(providers: Record<string, number>) {
+  const entries = Object.entries(providers).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+  return entries.length ? entries.map(([name, count]) => `${name.toUpperCase()} ${count}`).join(" · ") : "—";
+}
+
+function formatProviderHealthCounts(status: GroupOrbitalSourceStatus) {
+  const health = status.provider_health;
+  return `H ${health.healthy} · D ${health.degraded} · B ${health.backoff} · U ${health.unknown}`;
+}
+
+function formatFreshnessCounts(status: GroupOrbitalSourceStatus) {
+  const freshness = status.freshness;
+  return `F ${freshness.fresh} · A ${freshness.aging} · S ${freshness.stale} · U ${freshness.unknown}`;
+}
+
 
 function matchesCandidateState(
   satellite: ManagedSatellite,
@@ -666,6 +684,10 @@ export function SatellitePanel({satellite, managedSatellites, selectedNoradId, o
 export function DetailsPanel({basemap, followSatellite, satellite, satelliteId, group, groupPositions, displayMode, positionReady, solarState, isMock, interpolated, docked, onToggleFollow, onClose}: DetailsPanelProps) {
   const [orbitalStatus, setOrbitalStatus] = useState<OrbitalSourceStatus | null>(null);
   const [orbitalStatusError, setOrbitalStatusError] = useState<{satelliteId: number; message: string} | null>(null);
+  const [groupOrbitalStatus, setGroupOrbitalStatus] = useState<GroupOrbitalSourceStatus | null>(null);
+  const [groupOrbitalStatusError, setGroupOrbitalStatusError] = useState<{groupId: number; message: string} | null>(null);
+
+  const groupId = group?.id ?? null;
 
   useEffect(() => {
     if (displayMode !== "satellite" || satelliteId === null) return;
@@ -694,8 +716,38 @@ export function DetailsPanel({basemap, followSatellite, satellite, satelliteId, 
     };
   }, [displayMode, satelliteId]);
 
+  useEffect(() => {
+    if (displayMode !== "group" || groupId === null) return;
+    let cancelled = false;
+    setGroupOrbitalStatus(null);
+    const refresh = async () => {
+      try {
+        const status = await getSatelliteGroupOrbitalStatus(groupId);
+        if (!cancelled) {
+          setGroupOrbitalStatus(status);
+          setGroupOrbitalStatusError(null);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setGroupOrbitalStatusError({
+            groupId,
+            message: caught instanceof Error ? caught.message : "Could not load group orbital quality",
+          });
+        }
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(refresh, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [displayMode, groupId]);
+
   const selectedOrbitalStatus = orbitalStatus?.satellite.id === satelliteId ? orbitalStatus : null;
   const selectedOrbitalError = orbitalStatusError?.satelliteId === satelliteId ? orbitalStatusError.message : null;
+  const selectedGroupOrbitalStatus = groupOrbitalStatus?.group.id === groupId ? groupOrbitalStatus : null;
+  const selectedGroupOrbitalError = groupOrbitalStatusError?.groupId === groupId ? groupOrbitalStatusError.message : null;
   const selectedReady = displayMode === "satellite" && positionReady;
   const sunElevation = selectedReady ? solarElevation(satellite.lat, satellite.lon, solarState) : null;
   const positioned = useMemo(() => groupPositions.filter((entry) => entry.position !== null), [groupPositions]);
@@ -727,6 +779,21 @@ export function DetailsPanel({basemap, followSatellite, satellite, satelliteId, 
     </> : group ? <>
       <dl className="details-grid"><div><dt>MEMBERS</dt><dd>{group.member_count}</dd></div><div><dt>ACTIVE</dt><dd>{group.active_member_count}</dd></div><div><dt>POSITIONS READY</dt><dd>{positioned.length}</dd></div><div><dt>COVERAGE</dt><dd>{coverage.toFixed(1)}%</dd></div></dl>
       <div className="data-row"><span>TYPE</span><b>{group.group_type.toUpperCase()}</b></div><div className="data-row"><span>SOURCE</span><b>{group.source.toUpperCase()}</b></div><div className="data-row"><span>SOURCE KEY</span><b>{group.source_key ?? "—"}</b></div><div className="data-row"><span>AVG ALTITUDE</span><b>{avgAltitude === null ? "—" : `${avgAltitude.toFixed(1)} km`}</b></div><div className="data-row"><span>ALTITUDE RANGE</span><b>{minAltitude === null || maxAltitude === null ? "—" : `${minAltitude.toFixed(0)}–${maxAltitude.toFixed(0)} km`}</b></div><div className="data-row"><span>LAST SYNC</span><b>{formatTimestamp(group.metadata.last_synced_at)}</b></div>
+      <div className="details-section-title">ORBITAL DATA QUALITY</div>
+      {selectedGroupOrbitalStatus ? <>
+        {selectedGroupOrbitalStatus.group_provider && <div className="data-row"><span>GROUP FETCH</span><b className={`quality-state ${selectedGroupOrbitalStatus.group_provider.health}`}>{selectedGroupOrbitalStatus.group_provider.name.toUpperCase()} · {selectedGroupOrbitalStatus.group_provider.health.toUpperCase()}</b></div>}
+        <div className="data-row"><span>PROVIDERS</span><b>{formatProviderDistribution(selectedGroupOrbitalStatus.provider_health.providers)}</b></div>
+        <div className="data-row"><span>PROVIDER HEALTH</span><b>{formatProviderHealthCounts(selectedGroupOrbitalStatus)}</b></div>
+        <div className="data-row"><span>FRESHNESS</span><b>{formatFreshnessCounts(selectedGroupOrbitalStatus)}</b></div>
+        <div className="data-row"><span>ELEMENT COVERAGE</span><b>{selectedGroupOrbitalStatus.coverage.element_sets.percent.toFixed(1)}% · {selectedGroupOrbitalStatus.coverage.element_sets.count}/{selectedGroupOrbitalStatus.members.total}</b></div>
+        <div className="data-row"><span>CURRENT STATE</span><b>{selectedGroupOrbitalStatus.coverage.current_state.percent.toFixed(1)}% · {selectedGroupOrbitalStatus.coverage.current_state.count}/{selectedGroupOrbitalStatus.members.total}</b></div>
+        <div className="data-row"><span>STATE ON LATEST ELEMENTS</span><b>{selectedGroupOrbitalStatus.coverage.current_on_latest_elements.percent.toFixed(1)}% · {selectedGroupOrbitalStatus.coverage.current_on_latest_elements.count}/{selectedGroupOrbitalStatus.members.total}</b></div>
+        <div className="data-row"><span>OLDEST ELEMENT EPOCH</span><b>{formatTimestamp(selectedGroupOrbitalStatus.freshness.oldest_epoch)}</b></div>
+        <div className="data-row"><span>NEWEST ELEMENT EPOCH</span><b>{formatTimestamp(selectedGroupOrbitalStatus.freshness.newest_epoch)}</b></div>
+        <div className="data-row"><span>LAST PROVIDER UPDATE</span><b>{formatTimestamp(selectedGroupOrbitalStatus.provider_health.newest_success_at)}</b></div>
+        {selectedGroupOrbitalStatus.attention.total > 0 && <div className="provider-status-note" title={selectedGroupOrbitalStatus.attention.members.map((member) => `${member.name}: ${member.provider_health}/${member.freshness}`).join(" · ")}>ATTENTION · {selectedGroupOrbitalStatus.attention.total} MEMBER{selectedGroupOrbitalStatus.attention.total === 1 ? "" : "S"} · {selectedGroupOrbitalStatus.attention.members.slice(0, 3).map((member) => member.name).join(" · ")}{selectedGroupOrbitalStatus.attention.total > 3 ? ` · +${selectedGroupOrbitalStatus.attention.total - 3}` : ""}</div>}
+        {selectedGroupOrbitalStatus.group_provider?.last_error && <div className="provider-status-note" title={selectedGroupOrbitalStatus.group_provider.last_error}>{selectedGroupOrbitalStatus.group_provider.last_error}</div>}
+      </> : <div className="sat-position-wait">{selectedGroupOrbitalError ? `GROUP ORBITAL QUALITY UNAVAILABLE · ${selectedGroupOrbitalError}` : "LOADING GROUP ORBITAL QUALITY…"}</div>}
     </> : <div className="sat-position-wait">SELECT A GROUP TO DISPLAY ITS DETAILS.</div>}
   </aside>;
 }

@@ -225,6 +225,12 @@ jobs:
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"source":"mock"'
           curl --fail --silent -X POST http://localhost:3000/api/v1/positions/current             -H 'Content-Type: application/json'             -d "{\"satellite_ids\":[${mock_id}]}" | grep '"WORLDSAT-01"'
 
+          quality_group="$(curl --fail --silent -X POST http://localhost:3000/api/v1/groups             -H 'Content-Type: application/json'             -d '{"name":"CI-ORBITAL-QUALITY","group_type":"mission"}')"
+          quality_group_id="$(printf '%s' "$quality_group" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          curl --fail --silent -X POST "http://localhost:3000/api/v1/groups/${quality_group_id}/members"             -H 'Content-Type: application/json'             -d "{\"satellite_id\":${mock_id}}" >/dev/null
+          curl --fail --silent "http://localhost:3000/api/v1/groups/${quality_group_id}/orbital-status" | python -c 'import json,sys; d=json.load(sys.stdin); assert d["members"]["total"] == 1; assert d["provider_health"]["healthy"] == 1; assert d["freshness"]["stale"] == 1; assert d["coverage"]["element_sets"]["count"] == 1; assert d["coverage"]["current_state"]["count"] == 1; assert d["coverage"]["current_on_latest_elements"]["count"] == 1; assert len(d["attention"]["members"]) <= 10'
+          curl --fail --silent -o /dev/null -X DELETE "http://localhost:3000/api/v1/groups/${quality_group_id}"
+
           created="$(curl --fail --silent -X POST http://localhost:3000/api/v1/satellites             -H 'Content-Type: application/json'             -d '{"name":"CI-INACTIVE","active":false,"identifiers":[{"namespace":"NORAD_CAT_ID","value":"100001"},{"namespace":"COSPAR","value":"2026-001A"}]}')"
           satellite_id="$(printf '%s' "$created" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
           printf '%s' "$created" | grep '"active":false'

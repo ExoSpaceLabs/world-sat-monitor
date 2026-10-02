@@ -242,3 +242,18 @@ test("local catalog fallback is visible when CelesTrak is unavailable", async ()
   assert.match(satellitePanel, /CELESTRAK UNAVAILABLE · SHOWING LOCAL CATALOG MATCHES/);
   assert.match(satellitePanel, /sat-catalog-notice/);
 });
+
+
+test("group orbital quality is aggregated in details", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../app/services/worldsat-api.ts", import.meta.url), "utf8");
+
+  assert.match(api, /getSatelliteGroupOrbitalStatus/);
+  assert.match(api, /groups\/\$\{groupId\}\/orbital-status/);
+  assert.match(satellitePanel, /ORBITAL DATA QUALITY/);
+  assert.match(satellitePanel, /PROVIDER HEALTH/);
+  assert.match(satellitePanel, /ELEMENT COVERAGE/);
+  assert.match(satellitePanel, /STATE ON LATEST ELEMENTS/);
+  assert.match(satellitePanel, /ATTENTION ·/);
+  assert.match(satellitePanel, /setInterval\(refresh, 60000\)/);
+});
