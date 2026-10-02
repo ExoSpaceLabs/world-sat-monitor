@@ -54,6 +54,7 @@ def _satellite_payload(row: dict[str, Any]) -> dict[str, Any]:
         "active": row["active"],
         "object_type": row["object_type"],
         "provider_preference": row["provider_preference"],
+        "provider_priority": list(row.get("provider_priority") or []),
         "metadata": row["metadata"],
         "identifiers": row["identifiers"],
         "norad_id": row.get("norad_id"),
