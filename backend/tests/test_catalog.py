@@ -59,7 +59,10 @@ class CatalogTests(unittest.TestCase):
     def test_celestrak_host_prefers_direct_gp_for_interactive_search(self):
         body = json.dumps([FIXTURE[0]]).encode()
         with patch("app.catalog.urlopen", return_value=BytesIO(body)) as mocked:
-            result = CelesTrakCatalog("https://celestrak.org/satcat/records.php").search("ISS")
+            result = CelesTrakCatalog(
+                "https://celestrak.org/satcat/records.php",
+                request_attempts=1,
+            ).search("ISS")
         url = mocked.call_args.args[0].full_url
         self.assertIn("/NORAD/elements/gp.php?", url)
         self.assertIn("NAME=ISS", url)
