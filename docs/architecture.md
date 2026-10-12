@@ -14,9 +14,15 @@ flowchart LR
     B --> CFG[(settings.json volume)]
 
     C[CelesTrak GP/catalog] --> P[orbital-provider]
+    ST[Space-Track GP / optional] --> P
     P --> DB
     W[propagator] --> DB
 ```
+
+Space-Track GP integration is opt-in and restricted to the `orbital-provider`
+worker. It primes bounded multi-satellite GP batches through one authenticated
+session and uses existing PostgreSQL provider state to avoid premature refresh
+after worker restarts. See [Space-Track provider](space-track-provider.md).
 
 The Docker Compose services are:
 
