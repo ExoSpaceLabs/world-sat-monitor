@@ -51,6 +51,14 @@ class Settings:
     celestrak_catalog_stale_seconds: int = max(
         0, int(os.getenv("CELESTRAK_CATALOG_STALE_SECONDS", "86400"))
     )
+    spacetrack_enabled: bool = _as_bool("SPACETRACK_ENABLED", False)
+    spacetrack_identity: str = os.getenv("SPACETRACK_IDENTITY", "")
+    spacetrack_password: str = os.getenv("SPACETRACK_PASSWORD", "")
+    spacetrack_base_url: str = os.getenv("SPACETRACK_BASE_URL", "https://www.space-track.org")
+    spacetrack_timeout_seconds: float = float(os.getenv("SPACETRACK_TIMEOUT_SECONDS", "15"))
+    spacetrack_batch_size: int = int(os.getenv("SPACETRACK_BATCH_SIZE", "80"))
+    spacetrack_refresh_seconds: float = float(os.getenv("SPACETRACK_REFRESH_SECONDS", "3600"))
+    
     provider_health_port: int = int(os.getenv("PROVIDER_HEALTH_PORT", "8010"))
 
     propagator_poll_seconds: float = float(os.getenv("PROPAGATOR_POLL_SECONDS", "2"))
