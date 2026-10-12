@@ -166,10 +166,11 @@ class BrowserSmokeTests(unittest.TestCase):
         ).inner_text()
         self.assertGreater(int(re.search(r"\d+", triangles).group()), 0)
         opacity = panel.get_by_role("slider", name="Night shadow opacity")
-        opacity.fill("0")
+        opacity.focus()
+        opacity.press("Home")
         self.page.wait_for_timeout(300)
         no_shadow = self._capture_globe("shadow-zero")
-        opacity.fill("100")
+        opacity.press("End")
         self.page.wait_for_timeout(300)
         full_shadow = self._capture_globe("shadow-full")
         self.assertGreater(pixel_difference(no_shadow, full_shadow), 1.0,
