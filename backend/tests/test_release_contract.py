@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import re
 import unittest
 
 
@@ -15,7 +14,7 @@ PUBLISH = (ROOT / ".github/workflows/publish-images.yml").read_text(encoding="ut
 
 class ReleaseContractTests(unittest.TestCase):
     def test_release_identity_is_consistent(self):
-        self.assertRegex(VERSION, r"^[0-9]+\\.[0-9]+\\.[0-9]+$")
+        self.assertRegex(VERSION, r"^[0-9]+\.[0-9]+\.[0-9]+$")
         package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
         lockfile = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
         identity = (ROOT / "frontend/app/domain/application.ts").read_text(encoding="utf-8")
