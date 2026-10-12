@@ -37,6 +37,7 @@ from .orbital_store import (
 )
 from .provider_group_store import get_provider_group, sync_provider_group
 from .provider_resilience import retry_blocked, retry_delay_seconds
+from .space_track import ProviderDeferred
 from .repository import list_group_members, list_satellites
 from .seed import ensure_mock_data
 from .worker_health import WorkerHealth, start_health_server
@@ -245,6 +246,10 @@ def _process_active_satellite(
         try:
             provider = build_orbital_provider(provider_name)
             element_set = provider.fetch_latest(satellite["identifiers"])
+        except ProviderDeferred:
+            # The batch has not been retrieved yet; this is not a provider outage.
+            metrics["backoff_skips"] += 1
+            continue
         except Exception as error:
             metrics["provider_failures"] += 1
             LOGGER.warning(
@@ -341,6 +346,21 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         except Exception as error:
             metrics["errors"] += 1
             LOGGER.warning("display refresh failed for group %s: %s", group["id"], error)
+
+    # Space-Track explicitly discourages one GP HTTP request per spacecraft.
+    # Prime one bounded multi-NORAD batch per cycle through the shared session.
+    if settings.spacetrack_enabled:
+        st_candidates = [
+            satellite.get("identifiers") or {}
+            for satellite in satellites
+            if "spacetrack" in provider_priority_for(satellite)
+        ]
+        if st_candidates:
+            try:
+                build_orbital_provider("spacetrack").prime(st_candidates)
+            except Exception as error:
+                metrics["provider_failures"] += 1
+                LOGGER.warning("Space-Track batch refresh failed: %s", error)
 
     for satellite in satellites:
         metrics["active"] += 1
