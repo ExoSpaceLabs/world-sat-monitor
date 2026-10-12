@@ -33,6 +33,7 @@ class ProviderStrategyTests(unittest.TestCase):
             "display_fetches": 0,
             "display_jobs_created": 0,
             "backoff_skips": 0,
+            "provider_deferred": 0,
             "provider_failures": 0,
             "provider_failovers": 0,
             "stale_fallbacks": 0,
@@ -168,7 +169,8 @@ class ProviderStrategyTests(unittest.TestCase):
             self.assertTrue(_process_active_satellite(satellite, now, metrics))
 
         record_failure.assert_not_called()
-        self.assertEqual(metrics["backoff_skips"], 1)
+        self.assertEqual(metrics["provider_deferred"], 1)
+        self.assertEqual(metrics["backoff_skips"], 0)
         self.assertEqual(metrics["provider_failures"], 0)
         self.assertEqual(metrics["provider_failovers"], 1)
         record_success.assert_called_once()
