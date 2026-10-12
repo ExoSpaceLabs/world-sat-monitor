@@ -66,6 +66,11 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page_errors = []
         self.tiles_seen = []
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
+        # Each browser case starts from a clean, persisted application configuration.
+        # This is safe only because CI owns a disposable Compose database and settings volume.
+        reset = self.context.request.post(BASE_URL + "/api/v1/settings/reset")
+        if not reset.ok:
+            raise AssertionError(f"Fixture settings reset failed: HTTP {reset.status}")
         self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
         for pattern in (r"^https://services\.arcgisonline\.com/",
                         r"^https://server\.arcgisonline\.com/",
@@ -172,11 +177,19 @@ class BrowserSmokeTests(unittest.TestCase):
         opacity.press("Home")
         self.page.wait_for_timeout(300)
         no_shadow = self._capture_globe("shadow-zero")
+        self.page.wait_for_timeout(300)
+        no_shadow_repeat = self._capture_globe("shadow-zero-repeat")
+        baseline_noise = pixel_difference(no_shadow, no_shadow_repeat)
         opacity.press("End")
         self.page.wait_for_timeout(300)
         full_shadow = self._capture_globe("shadow-full")
-        self.assertGreater(pixel_difference(no_shadow, full_shadow), 1.0,
-                           "Shadow renderer reported READY but did not change image pixels")
+        shadow_effect = pixel_difference(no_shadow_repeat, full_shadow)
+        print(f"Shadow comparison: baseline noise={baseline_noise:.3f}, effect={shadow_effect:.3f}")
+        self.assertGreater(
+            shadow_effect,
+            max(1.5, baseline_noise * 3 + 0.5),
+            "Shadow shader reported READY but opacity change did not exceed image baseline noise",
+        )
         environment.click()
         expect(environment).to_have_attribute("aria-checked", "false")
         expect(self.page.locator("footer")).to_contain_text("ENVIRONMENT OFF")
