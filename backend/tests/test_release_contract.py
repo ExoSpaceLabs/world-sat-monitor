@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import re
 import unittest
 
 
@@ -12,9 +14,16 @@ PUBLISH = (ROOT / ".github/workflows/publish-images.yml").read_text(encoding="ut
 
 
 class ReleaseContractTests(unittest.TestCase):
-    def test_v1_release_identity_is_explicit(self):
-        self.assertEqual(VERSION, "1.0.0")
-        self.assertIn("${WORLDSAT_IMAGE_TAG:-1.0.0}", IMAGE_COMPOSE)
+    def test_release_identity_is_consistent(self):
+        self.assertRegex(VERSION, r"^[0-9]+\\.[0-9]+\\.[0-9]+$")
+        package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+        lockfile = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
+        identity = (ROOT / "frontend/app/domain/application.ts").read_text(encoding="utf-8")
+        self.assertEqual(package["version"], VERSION)
+        self.assertEqual(lockfile["version"], VERSION)
+        self.assertEqual(lockfile["packages"][""]["version"], VERSION)
+        self.assertIn(f"${{WORLDSAT_IMAGE_TAG:-{VERSION}}}", IMAGE_COMPOSE)
+        self.assertIn(f'version: "{VERSION}"', identity)
 
     def test_local_and_pull_only_compose_paths_are_separate(self):
         self.assertIn("build:", LOCAL_COMPOSE)
