@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 
@@ -45,7 +46,11 @@ class BrowserSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.driver = sync_playwright().start()
-        cls.browser = cls.driver.chromium.launch(headless=True)
+        cls.browser = cls.driver.chromium.launch(
+            headless=True,
+            args=['--use-gl=angle', '--use-angle=swiftshader',
+                  '--enable-unsafe-swiftshader', '--enable-webgl'],
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -110,3 +115,37 @@ class BrowserSmokeTests(unittest.TestCase):
             path=str(ARTIFACTS / (self._testMethodName + "-" + name + ".png")),
             animations="disabled",
         )
+
+    def test_ui_001_browser_boot_and_panel_clicks(self):
+        canvas = self._open()
+        self.assertGreater(canvas.bounding_box()["width"], 400)
+        expect(self.page.get_by_role("button", name="Open map settings")).to_be_visible()
+        self._capture_globe("initial")
+        panel = self._settings()
+        panel.get_by_role("button", name="Close map settings").click()
+        expect(panel).to_have_count(0)
+        expect(self.page.get_by_role("button", name="Open map settings")).to_have_attribute(
+            "aria-expanded", "false"
+        )
+
+    def test_ui_003_basemap_button_changes_rendered_pixels(self):
+        self._open()
+        panel = self._settings()
+        expect(panel.get_by_role("button", name="THEMED", exact=True)).to_have_attribute(
+            "aria-pressed", "true"
+        )
+        before = self._capture_globe("themed")
+        with self.page.expect_response(
+            lambda response: "tile.openstreetmap.org" in response.url
+            and response.status == 200, timeout=30000,
+        ):
+            panel.get_by_role("button", name="STREET", exact=True).click()
+        expect(panel.get_by_role("button", name="STREET", exact=True)).to_have_attribute(
+            "aria-pressed", "true"
+        )
+        expect(self.page.locator("footer")).to_contain_text("MAP READY", timeout=30000)
+        # Let raster opacity transition settle after actual tile receipt.
+        self.page.wait_for_timeout(400)
+        after = self._capture_globe("street")
+        self.assertGreater(pixel_difference(before, after), 1.0,
+                           "Basemap was selected, but rendered pixels were unchanged")
