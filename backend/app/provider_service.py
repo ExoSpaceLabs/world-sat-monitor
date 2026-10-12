@@ -52,6 +52,27 @@ def _is_due(last_success_at: datetime | None, now: datetime) -> bool:
     return age >= settings.provider_refresh_seconds
 
 
+def _spacetrack_due_identifiers(connection, satellites, now):
+    selected = [sat for sat in satellites if "spacetrack" in provider_priority_for(sat)]
+    if not selected:
+        return []
+    rows = connection.execute(
+        """SELECT satellite_id, last_success_at, next_retry_at
+           FROM provider_fetch_state
+           WHERE provider = 'spacetrack' AND satellite_id = ANY(%s::bigint[])""",
+        ([int(sat["id"]) for sat in selected],),
+    ).fetchall()
+    by_id = {int(row["satellite_id"]): row for row in rows}
+    return [
+        sat.get("identifiers") or {}
+        for sat in selected
+        if _is_due(
+            by_id[int(sat["id"])]["last_success_at"] if int(sat["id"]) in by_id else None,
+            now,
+        ) and not retry_blocked(by_id.get(int(sat["id"])), now)
+    ]
+
+
 def _ensure_job(connection, satellite_id: int, element_set_id: int) -> bool:
     _, created = ensure_propagation_job(
         connection,
