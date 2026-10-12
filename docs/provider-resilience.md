@@ -113,6 +113,8 @@ and, once another provider is configured:
 {"provider_priority": ["spacetrack", "celestrak"]}
 ```
 
+Runtime provider selection is driven by `provider_priority` / `provider_priority_for()` alone. `provider_preference` is a backwards-compatible API/database alias for the first entry; new provider integrations must not add direct runtime reads of the legacy field.
+
 The orbital-provider worker evaluates the list in order. A provider in backoff, a
 disabled provider, an unsupported provider, or a provider request failure does not
 prevent the worker from trying the next configured source. Provider health and retry
@@ -139,6 +141,8 @@ registry in the frontend.
 
 ### Active-source provenance
 
+The single-satellite status response also exposes the full candidate chain, including provider health and which candidate is selected, so failover is observable.
+
 The single-object orbital-status endpoint reports the element set referenced by
 `satellite_current_state` when one exists. This is deliberate: after a provider
 failover, operator-facing provenance must describe the source actually driving the
@@ -149,24 +153,3 @@ Provider-managed group display refresh is also provider-neutral. The group sourc
 resolved through the provider registry and must advertise a callable group-fetch
 operation; the display worker no longer contains a CelesTrak-specific refresh branch.
 
-
-## Provider selection policy
-
-Each satellite now has an ordered `provider_priority` policy. The first entry is
-the preferred source; later entries are fallbacks. Provider workers evaluate the
-ordered list independently, including per-provider retry/backoff state, and retain
-stored orbital elements as a final degraded fallback.
-
-`provider_preference` remains in the API and database only as a compatibility
-alias for the first priority entry. Runtime provider selection must use
-`provider_priority` / `provider_priority_for()`; new provider integrations must
-not add special-case reads of the legacy alias.
-
-The provider registry exposes capabilities through `GET /api/v1/providers`.
-Adding a provider therefore consists of registering its implementation/capabilities
-and making it available to the ordered policy, rather than adding provider-specific
-branching throughout the worker.
-
-The single-satellite orbital-status response reports the full candidate chain with
-health, retry state, and which source is currently active. This makes failover
-observable instead of merely reporting the source that happened to win.
