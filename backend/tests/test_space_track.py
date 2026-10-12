@@ -13,10 +13,11 @@ RECORD = json.loads(Path("backend/tests/fixtures/celestrak_gp_mario.json").read_
 
 
 class FakeOpener:
-    def __init__(self, *, fail_login=False, fail_query=False):
+    def __init__(self, *, fail_login=False, fail_query=False, records=None):
         self.calls = []
         self.fail_login = fail_login
         self.fail_query = fail_query
+        self.records = records if records is not None else [RECORD]
 
     def open(self, request, timeout):
         self.calls.append((request, timeout))
@@ -26,7 +27,7 @@ class FakeOpener:
             return BytesIO(b'{"Login":"Success"}')
         if self.fail_query:
             return BytesIO(b"<html>session expired</html>")
-        return BytesIO(json.dumps([RECORD]).encode("utf-8"))
+        return BytesIO(json.dumps(self.records).encode("utf-8"))
 
     @property
     def gp_queries(self):
@@ -84,6 +85,15 @@ class SpaceTrackProviderTests(unittest.TestCase):
         self.provider.prime([self.ids, {"NORAD_CAT_ID": "55124"}])
         self.assertEqual(len(self.opener.gp_queries), 2)
         self.assertEqual(len(self.provider._records), 2)
+
+    def test_gp_omm_supports_nine_digit_catalog_ids(self):
+        record = dict(RECORD, NORAD_CAT_ID=123456789)
+        opener = FakeOpener(records=[record])
+        provider = SpaceTrackProvider("user", "secret", opener=opener)
+        provider.prime([{"NORAD_CAT_ID": "123456789"}])
+        result = provider.fetch_latest({"NORAD_CAT_ID": "123456789"})
+        self.assertEqual(result.raw_payload["NORAD_CAT_ID"], 123456789)
+        self.assertIn("/NORAD_CAT_ID/123456789/format/json", opener.gp_queries[0])
 
     def test_invalid_identifier_is_rejected_before_network(self):
         for bad in ("", "-1", "abc", "1,2", "1000000000", "0"):
