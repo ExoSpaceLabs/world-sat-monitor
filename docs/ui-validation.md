@@ -32,13 +32,16 @@ qualification.
   real backend, PostgreSQL and SGP4 jobs.
 - Let actual browser network calls reach the WorldSat API; the UI-test tile
   fixtures intercept *only* third-party imagery requests.
-- The shadow test fixes browser UTC to midnight with an Africa-facing view and
-  compares the globe's screenshot at shadow opacity 0% versus 100%.
+- The shadow test fixes browser UTC to midnight with an Africa-facing view,
+  measures image noise between two 0%-opacity captures, then requires the
+  0%-versus-100% change to exceed that baseline by a meaningful margin.
 - Require reported shadow shader READY and a positive triangle count, **plus**
   a nontrivial change in final rendered pixels. Status telemetry alone is
   insufficient evidence.
 - Tests are sequential in one isolated Compose database. Each test uses an
-  independent browser context.
+  independent browser context and resets the persisted application settings
+  through the backend before opening the page. Object CRUD tests clean up
+  their own records.
 
 The first comparison thresholds are preliminary and must be calibrated
 against observed test artifacts. They are not a pixel-perfect golden image.
