@@ -15,6 +15,9 @@ Official documentation: https://www.space-track.org/documentation
   against issuing one HTTP request per spacecraft.
 - API request ceilings are **less than 30/minute and 300/hour**. This adapter
   reserves headroom with a process-local budget of 24/minute, 240/hour.
+- The worker consults PostgreSQL's last-success and retry timestamps before
+  building the batch; a process restart does not override an existing fresh
+  provider state.
 - Only one batch (up to 80 NORAD IDs by default) is requested per worker cycle.
   Remaining IDs are deferred until another cycle; deferred work is not recorded
   as a provider outage.
