@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from .config import settings
 from .orbital_provider import (
     CelesTrakProvider,
@@ -8,6 +10,20 @@ from .orbital_provider import (
     ProviderError,
 )
 from .provider_policy import normalize_provider_name
+from .space_track import SpaceTrackProvider
+
+
+@lru_cache(maxsize=1)
+def _shared_spacetrack_provider() -> SpaceTrackProvider:
+    # One authenticated session, cache and request budget per orbital-provider process.
+    return SpaceTrackProvider(
+        settings.spacetrack_identity,
+        settings.spacetrack_password,
+        base_url=settings.spacetrack_base_url,
+        timeout_seconds=settings.spacetrack_timeout_seconds,
+        batch_size=settings.spacetrack_batch_size,
+        refresh_seconds=settings.spacetrack_refresh_seconds,
+    )
 
 
 def provider_descriptors() -> tuple[dict[str, object], ...]:
@@ -27,6 +43,14 @@ def provider_descriptors() -> tuple[dict[str, object], ...]:
             "supports_single_fetch": True,
             "supports_group_fetch": True,
             "supports_catalog": True,
+        },
+        {
+            "name": "spacetrack",
+            "enabled": settings.spacetrack_enabled,
+            "kind": "external",
+            "supports_single_fetch": True,
+            "supports_group_fetch": False,
+            "supports_catalog": False,
         },
     )
 
@@ -48,4 +72,8 @@ def build_orbital_provider(name: str) -> OrbitalDataProvider:
             request_attempts=settings.celestrak_request_attempts,
             retry_delay_seconds=settings.celestrak_retry_delay_seconds,
         )
+    if provider == "spacetrack":
+        if not settings.spacetrack_enabled:
+            raise ProviderError("Space-Track provider is disabled")
+        return _shared_spacetrack_provider()
     raise ProviderError(f"unsupported orbital provider: {provider}")
