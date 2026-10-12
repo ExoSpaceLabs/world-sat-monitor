@@ -149,3 +149,31 @@ class BrowserSmokeTests(unittest.TestCase):
         after = self._capture_globe("street")
         self.assertGreater(pixel_difference(before, after), 1.0,
                            "Basemap was selected, but rendered pixels were unchanged")
+
+    def test_ui_004_005_shadow_opacity_changes_actual_globe_pixels(self):
+        # At 00:00 UTC the initial Africa-facing viewport is on Earth's night side.
+        self.page.clock.install(time=datetime(2026, 10, 12, 0, 0, tzinfo=timezone.utc))
+        self._open()
+        panel = self._settings()
+        environment = panel.get_by_role("switch", name=re.compile("SKY.*NIGHT SHADOW"))
+        expect(environment).to_have_attribute("aria-checked", "true")
+        panel.get_by_role("switch", name=re.compile("SCENE TELEMETRY")).click()
+        telemetry = self.page.get_by_label("Scene debug telemetry")
+        expect(telemetry).to_contain_text(re.compile(r"SHADOW RENDER\s+READY"),
+                                         timeout=20000)
+        triangles = telemetry.locator("dt", has_text="SHADOW MESH").locator(
+            "xpath=following-sibling::dd"
+        ).inner_text()
+        self.assertGreater(int(re.search(r"\d+", triangles).group()), 0)
+        opacity = panel.get_by_role("slider", name="Night shadow opacity")
+        opacity.fill("0")
+        self.page.wait_for_timeout(300)
+        no_shadow = self._capture_globe("shadow-zero")
+        opacity.fill("100")
+        self.page.wait_for_timeout(300)
+        full_shadow = self._capture_globe("shadow-full")
+        self.assertGreater(pixel_difference(no_shadow, full_shadow), 1.0,
+                           "Shadow renderer reported READY but did not change image pixels")
+        environment.click()
+        expect(environment).to_have_attribute("aria-checked", "false")
+        expect(self.page.locator("footer")).to_contain_text("ENVIRONMENT OFF")
