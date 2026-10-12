@@ -159,8 +159,10 @@ class BrowserSmokeTests(unittest.TestCase):
         expect(environment).to_have_attribute("aria-checked", "true")
         panel.get_by_role("switch", name=re.compile("SCENE TELEMETRY")).click()
         telemetry = self.page.get_by_label("Scene debug telemetry")
-        expect(telemetry).to_contain_text(re.compile(r"SHADOW RENDER\s+READY"),
-                                         timeout=20000)
+        expect(
+            telemetry.locator("dt", has_text="SHADOW RENDER")
+            .locator("xpath=following-sibling::dd")
+        ).to_have_text("READY", timeout=20000)
         triangles = telemetry.locator("dt", has_text="SHADOW MESH").locator(
             "xpath=following-sibling::dd"
         ).inner_text()
