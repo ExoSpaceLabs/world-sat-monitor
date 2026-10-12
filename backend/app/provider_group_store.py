@@ -148,12 +148,11 @@ def sync_provider_group(
         SELECT satellite.id, 'NORAD_CAT_ID', incoming.norad_id
         FROM worldsat_provider_group_import incoming
         JOIN satellites satellite
-          ON satellite.provider_preference = %s
-         AND satellite.metadata->>'catalog_source' = %s
+          ON satellite.metadata->>'catalog_source' = %s
          AND satellite.metadata->>'provider_object_id' = incoming.norad_id
         ON CONFLICT DO NOTHING
         """,
-        (definition.provider, definition.provider),
+        (definition.provider,),
     )
 
     # If an object already existed locally with only its COSPAR identifier,

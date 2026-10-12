@@ -113,6 +113,8 @@ and, once another provider is configured:
 {"provider_priority": ["spacetrack", "celestrak"]}
 ```
 
+Runtime provider selection is driven by `provider_priority` / `provider_priority_for()` alone. `provider_preference` is a backwards-compatible API/database alias for the first entry; new provider integrations must not add direct runtime reads of the legacy field.
+
 The orbital-provider worker evaluates the list in order. A provider in backoff, a
 disabled provider, an unsupported provider, or a provider request failure does not
 prevent the worker from trying the next configured source. Provider health and retry
@@ -139,6 +141,8 @@ registry in the frontend.
 
 ### Active-source provenance
 
+The single-satellite status response also exposes the full candidate chain, including provider health and which candidate is selected, so failover is observable.
+
 The single-object orbital-status endpoint reports the element set referenced by
 `satellite_current_state` when one exists. This is deliberate: after a provider
 failover, operator-facing provenance must describe the source actually driving the
@@ -148,3 +152,4 @@ higher-priority provider.
 Provider-managed group display refresh is also provider-neutral. The group source is
 resolved through the provider registry and must advertise a callable group-fetch
 operation; the display worker no longer contains a CelesTrak-specific refresh branch.
+

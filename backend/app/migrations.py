@@ -124,6 +124,12 @@ WHERE provider_preference IS NULL
 ALTER TABLE satellites
     ALTER COLUMN provider_priority SET DEFAULT ARRAY['celestrak']::TEXT[];
 
+ALTER TABLE satellites
+    DROP CONSTRAINT IF EXISTS provider_priority_cardinality_check;
+ALTER TABLE satellites
+    ADD CONSTRAINT provider_priority_cardinality_check
+    CHECK (cardinality(provider_priority) BETWEEN 1 AND 8);
+
 ALTER TABLE propagation_jobs
     ADD COLUMN IF NOT EXISTS history_hours INTEGER NOT NULL DEFAULT 48
         CHECK (history_hours >= 0);

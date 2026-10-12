@@ -263,3 +263,14 @@ test("provider priority follows catalog source for imported satellites", async (
   const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
   assert.match(satellitePanel, /provider_preference: result\.provider,[\s\S]*provider_priority: \[result\.provider\]/);
 });
+
+
+test("provider failover chain is visible in orbital details", async () => {
+  const satellitePanel = await readFile(new URL("../app/components/satellite/SatellitePanel.tsx", import.meta.url), "utf8");
+  const domain = await readFile(new URL("../app/domain/satellite.ts", import.meta.url), "utf8");
+
+  assert.match(domain, /candidates: Array/);
+  assert.match(satellitePanel, /PRIMARY PROVIDER/);
+  assert.match(satellitePanel, /FALLBACK \$\{candidate\.index\}/);
+  assert.match(satellitePanel, /candidate\.selected \? " · ACTIVE"/);
+});

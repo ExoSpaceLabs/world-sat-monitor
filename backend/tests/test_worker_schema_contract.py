@@ -24,6 +24,8 @@ class WorkerSchemaContractTests(unittest.TestCase):
     def test_additive_migration_covers_worker_schema(self):
         self.assertIn("CURRENT_SCHEMA_SQL", MIGRATIONS)
         self.assertIn("provider_priority TEXT[]", MIGRATIONS)
+        self.assertIn("provider_priority_cardinality_check", MIGRATIONS)
+        self.assertIn("provider_priority_cardinality_check", SCHEMA)
         self.assertIn("cardinality(provider_priority) = 0", MIGRATIONS)
         self.assertIn("provider_fetch_state", MIGRATIONS)
         self.assertIn("satellite_current_state", MIGRATIONS)

@@ -225,6 +225,9 @@ jobs:
              WHERE s.name='WORLDSAT-01' AND scs.source_element_set_id IS NOT NULL;"             | grep '^1$'
 
           mock_id="$(docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT id FROM satellites WHERE name='WORLDSAT-01' LIMIT 1;")"
+          curl --fail --silent "http://localhost:3000/api/v1/providers" | python -c 'import json,sys; d=json.load(sys.stdin); names={p["name"] for p in d["providers"]}; assert {"mock","celestrak"} <= names'
+          docker compose exec -T db psql -U worldsat -d worldsat -Atc             "SELECT provider_priority[1] FROM satellites WHERE id=${mock_id};" | grep '^mock$'
+          curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | python -c 'import json,sys; d=json.load(sys.stdin); p=d["provider"]; assert p["priority"] == ["mock"]; assert len(p["candidates"]) == 1; assert p["candidates"][0]["name"] == "mock"; assert p["candidates"][0]["selected"] is True'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"health":"healthy"'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"freshness":"stale"'
           curl --fail --silent "http://localhost:3000/api/v1/satellites/${mock_id}/orbital-status" | grep '"source":"mock"'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from app.satellite_models import SatelliteCreate, SatelliteUpdate
 from app.provider_policy import (
@@ -54,6 +55,16 @@ class ProviderPolicyTests(unittest.TestCase):
     def test_empty_priority_is_rejected(self):
         with self.assertRaises(ValueError):
             SatelliteCreate(name="demo", provider_priority=[])
+
+
+    def test_runtime_modules_do_not_depend_on_legacy_preference(self):
+        for path in (
+            "backend/app/provider_service.py",
+            "backend/app/provider_group_store.py",
+        ):
+            text = Path(path).read_text(encoding="utf-8")
+            self.assertNotIn('get("provider_preference")', text)
+            self.assertNotIn("satellite.provider_preference =", text)
 
 
 if __name__ == "__main__":

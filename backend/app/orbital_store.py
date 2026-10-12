@@ -74,6 +74,27 @@ def get_provider_fetch_state(connection, satellite_id: int, provider: str):
     ).fetchone()
 
 
+def get_provider_fetch_states(
+    connection,
+    satellite_id: int,
+    providers: tuple[str, ...] | list[str],
+) -> dict[str, dict[str, Any]]:
+    ordered = list(providers)
+    if not ordered:
+        return {}
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM provider_fetch_state
+        WHERE satellite_id = %s
+          AND provider = ANY(%s::text[])
+        """,
+        (satellite_id, ordered),
+    ).fetchall()
+    return {str(row["provider"]): dict(row) for row in rows}
+
+
+
 def insert_element_set(
     connection,
     satellite_id: int,
@@ -236,7 +257,10 @@ def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] |
         )
 
     provider_name = str(latest["source"]) if latest is not None else provider_priority[0]
-    provider_state = get_provider_fetch_state(connection, satellite_id, provider_name)
+    provider_states = get_provider_fetch_states(connection, satellite_id, provider_priority)
+    provider_state = provider_states.get(provider_name)
+    if provider_state is None and provider_name not in provider_priority:
+        provider_state = get_provider_fetch_state(connection, satellite_id, provider_name)
 
     run = None
     if latest is not None:
@@ -257,6 +281,7 @@ def get_orbital_source_status(connection, satellite_id: int) -> dict[str, Any] |
         "satellite": satellite,
         "provider": provider_name,
         "provider_priority": provider_priority,
+        "provider_states": provider_states,
         "element_set": latest,
         "provider_state": provider_state,
         "propagation_run": run,
@@ -285,13 +310,7 @@ def get_group_orbital_source_summary(
                 s.id AS satellite_id,
                 s.name,
                 s.active,
-                CASE
-                    WHEN s.metadata->>'mock' = 'true' THEN ARRAY['mock']::text[]
-                    WHEN cardinality(s.provider_priority) > 0 THEN s.provider_priority
-                    WHEN NULLIF(BTRIM(s.provider_preference), '') IS NOT NULL
-                        THEN ARRAY[LOWER(BTRIM(s.provider_preference))]
-                    ELSE ARRAY['celestrak']::text[]
-                END AS provider_priority
+                s.provider_priority
             FROM satellite_group_members gm
             JOIN satellites s ON s.id = gm.satellite_id
             WHERE gm.group_id = %s

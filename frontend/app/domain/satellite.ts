@@ -28,6 +28,18 @@ export type OrbitalSourceStatus = {
     priority: string[];
     selected_index: number | null;
     fallback_active: boolean;
+    candidates: Array<{
+      name: string;
+      index: number;
+      selected: boolean;
+      health: "unknown" | "healthy" | "degraded" | "backoff";
+      last_attempt_at: string | null;
+      last_success_at: string | null;
+      last_error_at: string | null;
+      last_error: string | null;
+      consecutive_failures: number;
+      next_retry_at: string | null;
+    }>;
     health: "unknown" | "healthy" | "degraded" | "backoff";
     refresh_interval_seconds: number;
     last_attempt_at: string | null;
