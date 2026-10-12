@@ -18,6 +18,7 @@ Current release: **v1.1.0**
 - **Space environment** with inertial star background, solar position, UTC Earth rotation, and day/night illumination.
 - **Backend orbital propagation**. The browser renders products; it does not run the orbit propagator.
 - **CelesTrak GP ingestion** plus a deterministic mock provider used by integration tests.
+- **Experimental opt-in Space-Track GP** ingestion on `develop`, using authenticated batched OMM/JSON acquisition; disabled unless configured.
 - **SGP4 propagation** from normalized OMM/GP-compatible orbital element sets.
 - **Constellation-scale current-state queries** that avoid scanning detailed trajectory storage.
 - **Persistent application settings** and PostgreSQL-backed satellite, group, provider, and propagation state.
@@ -323,6 +324,7 @@ See [`docs/deployment.md`](docs/deployment.md) for the release/deployment contra
 
 ## Documentation
 
+- [`docs/space-track-provider.md`](docs/space-track-provider.md) - opt-in Space-Track credentials, GP batches, rate limits and known restrictions.
 - [`docs/provider-resilience.md`](docs/provider-resilience.md) - v1.1 provider backoff, catalog fallback, provenance, health and priority policy.
 - [`docs/releases/v1.1.0.md`](docs/releases/v1.1.0.md) - v1.1.0 release scope, caveats and upgrade notes.
 - [`docs/architecture.md`](docs/architecture.md) - service, data, provider, propagation, and collection architecture.
