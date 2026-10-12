@@ -51,3 +51,62 @@ class BrowserSmokeTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.browser.close()
         cls.driver.stop()
+
+    def setUp(self):
+        self.context = self.browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            device_scale_factor=1, timezone_id="UTC", reduced_motion="reduce",
+        )
+        self.page = self.context.new_page()
+        self.page_errors = []
+        self.tiles_seen = []
+        self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
+        self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        for pattern in (r"^https://services\.arcgisonline\.com/",
+                        r"^https://server\.arcgisonline\.com/",
+                        r"^https://tile\.openstreetmap\.org/"):
+            self.page.route(re.compile(pattern), self._serve_tile)
+
+    def _serve_tile(self, route):
+        url = route.request.url
+        self.tiles_seen.append(url)
+        route.fulfill(status=200, content_type="image/png",
+                      body=STREET_TILE if "openstreetmap.org" in url else DARK_TILE)
+
+    def tearDown(self):
+        try:
+            if not self.page.is_closed():
+                self.page.screenshot(path=str(ARTIFACTS / (self._testMethodName + ".png")))
+        finally:
+            try:
+                self.context.tracing.stop(
+                    path=str(ARTIFACTS / (self._testMethodName + "-trace.zip")))
+            finally:
+                self.context.close()
+        self.assertEqual(self.page_errors, [], "Uncaught browser JavaScript errors")
+
+    def _open(self):
+        self.page.goto(BASE_URL, wait_until="domcontentloaded")
+        status = self.page.locator("footer")
+        expect(status).to_contain_text("API ONLINE", timeout=45000)
+        expect(status).to_contain_text("MAP READY", timeout=45000)
+        canvas = self.page.locator("[data-layer='globe-map'] canvas.maplibregl-canvas")
+        expect(canvas).to_be_visible()
+        self.assertTrue(canvas.evaluate(
+            "(canvas) => Boolean(canvas.getContext('webgl2')) && canvas.width > 0"
+        ), "MapLibre WebGL2 rendering canvas is missing")
+        return canvas
+
+    def _settings(self):
+        trigger = self.page.get_by_role("button", name="Open map settings")
+        trigger.click()
+        expect(trigger).to_have_attribute("aria-expanded", "true")
+        panel = self.page.get_by_label("Map settings", exact=True)
+        expect(panel).to_be_visible()
+        return panel
+
+    def _capture_globe(self, name):
+        return self.page.locator("[data-layer='globe-map']").screenshot(
+            path=str(ARTIFACTS / (self._testMethodName + "-" + name + ".png")),
+            animations="disabled",
+        )
