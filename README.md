@@ -327,6 +327,7 @@ See [`docs/deployment.md`](docs/deployment.md) for the release/deployment contra
 - [`docs/space-track-provider.md`](docs/space-track-provider.md) - opt-in Space-Track credentials, GP batches, rate limits and known restrictions.
 - [`docs/provider-resilience.md`](docs/provider-resilience.md) - v1.1 provider backoff, catalog fallback, provenance, health and priority policy.
 - [`docs/releases/v1.1.0.md`](docs/releases/v1.1.0.md) - v1.1.0 release scope, caveats and upgrade notes.
+- [`docs/ui-validation.md`](docs/ui-validation.md) - automated Chromium UI interactions, WebGL pixels, and visual release gates.
 - [`docs/architecture.md`](docs/architecture.md) - service, data, provider, propagation, and collection architecture.
 - [`docs/orbit-display.md`](docs/orbit-display.md) - single/group rendering and environment behavior.
 - [`docs/basemap-contrast.md`](docs/basemap-contrast.md) - basemap sources and visualization contrast policy.
