@@ -356,6 +356,10 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         cancel_inactive_pending_jobs(connection)
         requested_groups = list_requested_groups(connection, now)
         satellites = list_satellites(connection, active=True)
+        st_candidates = (
+            _spacetrack_due_identifiers(connection, satellites, now)
+            if settings.spacetrack_enabled else []
+        )
         connection.commit()
 
     # Display work comes first so opening a constellation is responsive even when
@@ -371,19 +375,12 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
 
     # Space-Track explicitly discourages one GP HTTP request per spacecraft.
     # Prime one bounded multi-NORAD batch per cycle through the shared session.
-    if settings.spacetrack_enabled:
-        st_candidates = [
-            satellite.get("identifiers") or {}
-            for satellite in satellites
-            if "spacetrack" in provider_priority_for(satellite)
-        ]
-        if st_candidates:
-            try:
-                build_orbital_provider("spacetrack").prime(st_candidates)
-            except Exception as error:
-                metrics["provider_failures"] += 1
-                LOGGER.warning("Space-Track batch refresh failed: %s", error)
-
+    if st_candidates:
+        try:
+            build_orbital_provider("spacetrack").prime(st_candidates)
+        except Exception as error:
+            metrics["provider_failures"] += 1
+            LOGGER.warning("Space-Track batch refresh failed: %s", error)
     for satellite in satellites:
         metrics["active"] += 1
         try:
