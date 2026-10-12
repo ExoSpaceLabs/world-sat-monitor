@@ -4,21 +4,29 @@ import test from "node:test";
 
 const root = new URL("..", import.meta.url);
 
-test("application identity exposes ExoSpaceLabs and v1.0.0", async () => {
-  const [page, about, application, aboutStyles, packageJson, readme] = await Promise.all([
+test("application identity matches the declared release version", async () => {
+  const [page, about, application, aboutStyles, packageJson, lockJson, versionText, readme] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/components/about/AboutPanel.tsx", root), "utf8"),
     readFile(new URL("app/domain/application.ts", root), "utf8"),
     readFile(new URL("app/components/about/styles.css", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
+    readFile(new URL("package-lock.json", root), "utf8"),
+    readFile(new URL("../VERSION", root), "utf8"),
     readFile(new URL("../README.md", root), "utf8"),
   ]);
   const pkg = JSON.parse(packageJson);
+  const lock = JSON.parse(lockJson);
+  const version = versionText.trim();
 
-  assert.equal(pkg.version, "1.0.0");
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  assert.equal(pkg.version, version);
+  assert.equal(lock.version, version);
+  assert.equal(lock.packages[""].version, version);
   assert.match(page, /<AboutControl\/>/);
   assert.match(application, /owner: "ExoSpaceLabs"/);
-  assert.match(application, /version: "1\.0\.0"/);
+  assert.ok(application.includes(`version: "${version}"`));
+  assert.ok(readme.includes(`Current release: **v${version}**`));
   assert.match(application, /https:\/\/github\.com\/ExoSpaceLabs\/world-sat-monitor/);
   assert.match(application, /exospacelabs@gmail\.com/);
   assert.match(readme, /exospacelabs@gmail\.com/);
