@@ -39,7 +39,7 @@ class ProviderStrategyTests(unittest.TestCase):
         }
 
     def test_registry_is_explicit_and_unknown_provider_is_rejected(self):
-        self.assertEqual(registered_provider_names(), ("mock", "celestrak"))
+        self.assertEqual(registered_provider_names(), ("mock", "celestrak", "spacetrack"))
         with self.assertRaisesRegex(ProviderError, "unsupported orbital provider"):
             build_orbital_provider("not-a-provider")
 
@@ -50,6 +50,10 @@ class ProviderStrategyTests(unittest.TestCase):
         self.assertEqual(descriptors["celestrak"]["kind"], "external")
         self.assertTrue(descriptors["celestrak"]["supports_group_fetch"])
         self.assertTrue(descriptors["celestrak"]["supports_catalog"])
+        self.assertEqual(descriptors["spacetrack"]["kind"], "external")
+        self.assertTrue(descriptors["spacetrack"]["supports_single_fetch"])
+        self.assertFalse(descriptors["spacetrack"]["supports_group_fetch"])
+        self.assertFalse(descriptors["spacetrack"]["supports_catalog"])
 
     def test_worker_fails_over_to_next_provider(self):
         now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
