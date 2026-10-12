@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from app.orbital_provider import ProviderError
 from app.space_track import ProviderDeferred
 from app.provider_registry import build_orbital_provider, provider_descriptors, registered_provider_names
-from app.provider_service import _process_active_satellite
+from app.provider_service import _process_active_satellite, _spacetrack_due_identifiers
 
 ORBITAL_STORE = Path("backend/app/orbital_store.py").read_text(encoding="utf-8")
 MAIN = Path("backend/app/main.py").read_text(encoding="utf-8")
@@ -137,6 +137,31 @@ class ProviderStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["stale_fallbacks"], 1)
         self.assertEqual(metrics["provider_failovers"], 0)
 
+
+    def test_spacetrack_batch_selection_honors_durable_refresh_and_backoff(self):
+        now = datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc)
+        satellites = [
+            {"id": 1, "provider_priority": ["spacetrack", "celestrak"],
+             "identifiers": {"NORAD_CAT_ID": "55123"}},
+            {"id": 2, "provider_priority": ["spacetrack"],
+             "identifiers": {"NORAD_CAT_ID": "55124"}},
+            {"id": 3, "provider_priority": ["spacetrack"],
+             "identifiers": {"NORAD_CAT_ID": "55125"}},
+            {"id": 4, "provider_priority": ["celestrak"],
+             "identifiers": {"NORAD_CAT_ID": "55126"}},
+        ]
+        connection = MagicMock()
+        connection.execute.return_value.fetchall.return_value = [
+            {"satellite_id": 1, "last_success_at": now - timedelta(hours=3),
+             "next_retry_at": None},
+            {"satellite_id": 2, "last_success_at": now - timedelta(minutes=3),
+             "next_retry_at": None},
+            {"satellite_id": 3, "last_success_at": now - timedelta(hours=3),
+             "next_retry_at": now + timedelta(minutes=10)},
+        ]
+        due = _spacetrack_due_identifiers(connection, satellites, now)
+        self.assertEqual(due, [{"NORAD_CAT_ID": "55123"}])
+        self.assertEqual(connection.execute.call_count, 1)
 
     def test_unprimed_spacetrack_batch_defers_without_persisting_provider_error(self):
         now = datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc)
