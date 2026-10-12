@@ -1,6 +1,6 @@
 # Deployment and release flow
 
-WorldSat Monitor v1 supports two Docker Compose deployment modes: source builds for development and published container images for normal release deployment.
+WorldSat Monitor supports two Docker Compose deployment modes: source builds for development and published container images for normal release deployment.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ http://localhost:3000
 
 `compose.images.yaml` is the release-oriented Compose file. It contains no local WorldSat Monitor `build:` directives.
 
-Start the current v1 image set:
+Start the v1.1.0 image set:
 
 ```bash
 docker compose -f compose.images.yaml pull
@@ -54,13 +54,13 @@ nginx and PostgreSQL use their upstream images directly.
 
 ### Pin a release
 
-`compose.images.yaml` resolves the project image version from `WORLDSAT_IMAGE_TAG` and defaults to the release version declared for the stack.
+`compose.images.yaml` resolves its image tag from `WORLDSAT_IMAGE_TAG` and defaults to `1.1.0` for this release. The Compose definition does not read `VERSION` at runtime, so the fallback image tag must be updated when preparing the next release.
 
-Pin v1.0.0 explicitly:
+Pin v1.1.0 explicitly:
 
 ```bash
-WORLDSAT_IMAGE_TAG=1.0.0 docker compose -f compose.images.yaml pull
-WORLDSAT_IMAGE_TAG=1.0.0 docker compose -f compose.images.yaml up -d
+WORLDSAT_IMAGE_TAG=1.1.0 docker compose -f compose.images.yaml pull
+WORLDSAT_IMAGE_TAG=1.1.0 docker compose -f compose.images.yaml up -d
 ```
 
 Using a semantic version is recommended for reproducible deployments. `latest` is convenient for interactive evaluation but is intentionally less reproducible.
@@ -119,6 +119,23 @@ CELESTRAK_TIMEOUT_SECONDS
 ```
 
 CI disables live CelesTrak access and uses deterministic fixtures/mock data. A normal deployment enables CelesTrak unless explicitly configured otherwise.
+
+## v1.1 provider resilience
+
+The provider worker applies bounded requests, persistent failure backoff and cache/stale fallback to limit outage amplification. Active satellites continue to use the latest stored orbital elements when all sources fail, with degraded source/health metadata.
+
+Configuration includes:
+
+```text
+PROVIDER_RETRY_BASE_SECONDS
+PROVIDER_RETRY_MAX_SECONDS
+CELESTRAK_REQUEST_ATTEMPTS
+CELESTRAK_RETRY_DELAY_SECONDS
+CELESTRAK_CATALOG_CACHE_SECONDS
+CELESTRAK_CATALOG_STALE_SECONDS
+```
+
+The management UI reports single-object and group source quality; the backend also exposes `/api/v1/providers`, `/api/v1/satellites/{satellite_id}/orbital-status`, and `/api/v1/groups/{group_id}/orbital-status`. See [provider-resilience.md](provider-resilience.md) for semantics. Space-Track is not shipped in v1.1.0.
 
 ## Propagation configuration
 
@@ -203,18 +220,18 @@ After both project images are published successfully, the workflow creates the l
 
 The provider and propagator are not separately built because they execute different entry points from the same backend image.
 
-## v1 release procedure
+## Release procedure
 
-The v1.0.0 procedure is therefore:
+The v1.1.0 procedure is:
 
 1. finish and validate changes on `develop`;
 2. ensure the complete `develop` CI pipeline is green;
 3. merge `develop` to `main`;
 4. allow the same CI pipeline to complete successfully on `main`;
-5. the release workflow verifies that `v1.0.0` is not already owned by another commit;
+5. the release workflow verifies that `v1.1.0` is not already owned by another commit;
 6. it publishes the multi-architecture frontend/backend images;
-7. it creates `v1.0.0` on the validated main commit;
-8. verify the image-based Compose deployment using `WORLDSAT_IMAGE_TAG=1.0.0`.
+7. it creates `v1.1.0` on the validated main commit;
+8. verify the image-based Compose deployment using `WORLDSAT_IMAGE_TAG=1.1.0`.
 
 No development commit is tagged merely to provoke automation. Future releases require a deliberate `VERSION` bump before another stable main revision can claim a new semantic release.
 
