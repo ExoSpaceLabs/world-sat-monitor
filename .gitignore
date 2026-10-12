@@ -40,3 +40,6 @@ yarn-error.log*
 # hosting/tooling
 .vercel
 next-env.d.ts
+
+# Browser validation evidence
+ui-artifacts/
