@@ -37,6 +37,7 @@ from .orbital_store import (
 )
 from .provider_group_store import get_provider_group, sync_provider_group
 from .provider_resilience import retry_blocked, retry_delay_seconds
+from .space_track import ProviderDeferred
 from .repository import list_group_members, list_satellites
 from .seed import ensure_mock_data
 from .worker_health import WorkerHealth, start_health_server
@@ -49,6 +50,27 @@ def _is_due(last_success_at: datetime | None, now: datetime) -> bool:
         return True
     age = (now - last_success_at.astimezone(timezone.utc)).total_seconds()
     return age >= settings.provider_refresh_seconds
+
+
+def _spacetrack_due_identifiers(connection, satellites, now):
+    selected = [sat for sat in satellites if "spacetrack" in provider_priority_for(sat)]
+    if not selected:
+        return []
+    rows = connection.execute(
+        """SELECT satellite_id, last_success_at, next_retry_at
+           FROM provider_fetch_state
+           WHERE provider = 'spacetrack' AND satellite_id = ANY(%s::bigint[])""",
+        ([int(sat["id"]) for sat in selected],),
+    ).fetchall()
+    by_id = {int(row["satellite_id"]): row for row in rows}
+    return [
+        sat.get("identifiers") or {}
+        for sat in selected
+        if _is_due(
+            by_id[int(sat["id"])]["last_success_at"] if int(sat["id"]) in by_id else None,
+            now,
+        ) and not retry_blocked(by_id.get(int(sat["id"])), now)
+    ]
 
 
 def _ensure_job(connection, satellite_id: int, element_set_id: int) -> bool:
@@ -245,6 +267,10 @@ def _process_active_satellite(
         try:
             provider = build_orbital_provider(provider_name)
             element_set = provider.fetch_latest(satellite["identifiers"])
+        except ProviderDeferred:
+            # The batch has not been retrieved yet; this is not a provider outage.
+            metrics["provider_deferred"] += 1
+            continue
         except Exception as error:
             metrics["provider_failures"] += 1
             LOGGER.warning(
@@ -319,6 +345,7 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         "display_fetches": 0,
         "display_jobs_created": 0,
         "backoff_skips": 0,
+        "provider_deferred": 0,
         "provider_failures": 0,
         "provider_failovers": 0,
         "stale_fallbacks": 0,
@@ -329,6 +356,10 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         cancel_inactive_pending_jobs(connection)
         requested_groups = list_requested_groups(connection, now)
         satellites = list_satellites(connection, active=True)
+        st_candidates = (
+            _spacetrack_due_identifiers(connection, satellites, now)
+            if settings.spacetrack_enabled else []
+        )
         connection.commit()
 
     # Display work comes first so opening a constellation is responsive even when
@@ -342,6 +373,14 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
             metrics["errors"] += 1
             LOGGER.warning("display refresh failed for group %s: %s", group["id"], error)
 
+    # Space-Track explicitly discourages one GP HTTP request per spacecraft.
+    # Prime one bounded multi-NORAD batch per cycle through the shared session.
+    if st_candidates:
+        try:
+            build_orbital_provider("spacetrack").prime(st_candidates)
+        except Exception as error:
+            metrics["provider_failures"] += 1
+            LOGGER.warning("Space-Track batch refresh failed: %s", error)
     for satellite in satellites:
         metrics["active"] += 1
         try:
