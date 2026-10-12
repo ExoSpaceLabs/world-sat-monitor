@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app.orbital_provider import ProviderError
+from app.space_track import ProviderDeferred
 from app.provider_registry import build_orbital_provider, provider_descriptors, registered_provider_names
 from app.provider_service import _process_active_satellite
 
@@ -134,6 +135,44 @@ class ProviderStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["backoff_skips"], 2)
         self.assertEqual(metrics["stale_fallbacks"], 1)
         self.assertEqual(metrics["provider_failovers"], 0)
+
+
+    def test_unprimed_spacetrack_batch_defers_without_persisting_provider_error(self):
+        now = datetime(2026, 10, 12, 13, 0, tzinfo=timezone.utc)
+        satellite = {
+            "id": 11,
+            "provider_priority": ["spacetrack", "celestrak"],
+            "metadata": {},
+            "identifiers": {"NORAD_CAT_ID": "55123"},
+        }
+        metrics = self._metrics()
+        connection = MagicMock()
+        manager = MagicMock()
+        manager.__enter__.return_value = connection
+        manager.__exit__.return_value = False
+        deferred_provider = MagicMock()
+        deferred_provider.fetch_latest.side_effect = ProviderDeferred("batch pending")
+
+        with (
+            patch("app.provider_service.connect", return_value=manager),
+            patch("app.provider_service.get_provider_fetch_state", return_value=None),
+            patch("app.provider_service.get_latest_element_set", return_value=None),
+            patch("app.provider_service.build_orbital_provider", side_effect=[
+                deferred_provider, _Provider("celestrak"),
+            ]),
+            patch("app.provider_service._record_satellite_provider_failure") as record_failure,
+            patch("app.provider_service.insert_element_set", return_value=(45, True)),
+            patch("app.provider_service.record_provider_fetch") as record_success,
+            patch("app.provider_service._ensure_job", return_value=True),
+        ):
+            self.assertTrue(_process_active_satellite(satellite, now, metrics))
+
+        record_failure.assert_not_called()
+        self.assertEqual(metrics["backoff_skips"], 1)
+        self.assertEqual(metrics["provider_failures"], 0)
+        self.assertEqual(metrics["provider_failovers"], 1)
+        record_success.assert_called_once()
+        self.assertEqual(record_success.call_args.args[2], "celestrak")
 
 
 class ProviderProvenanceContractTests(unittest.TestCase):
