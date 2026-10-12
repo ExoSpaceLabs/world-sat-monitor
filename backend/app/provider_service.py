@@ -248,7 +248,7 @@ def _process_active_satellite(
             element_set = provider.fetch_latest(satellite["identifiers"])
         except ProviderDeferred:
             # The batch has not been retrieved yet; this is not a provider outage.
-            metrics["backoff_skips"] += 1
+            metrics["provider_deferred"] += 1
             continue
         except Exception as error:
             metrics["provider_failures"] += 1
@@ -324,6 +324,7 @@ def run_provider_cycle(now: datetime | None = None) -> dict[str, int]:
         "display_fetches": 0,
         "display_jobs_created": 0,
         "backoff_skips": 0,
+        "provider_deferred": 0,
         "provider_failures": 0,
         "provider_failovers": 0,
         "stale_fallbacks": 0,
