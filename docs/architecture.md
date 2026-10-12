@@ -305,3 +305,17 @@ The v1 boundaries intentionally leave room for:
 - mission events and operations timelines.
 
 Those features can be added without turning the frontend into an orbital backend or coupling public catalog acquisition to user-facing request latency.
+
+
+## Orbital provider policy
+
+Satellite identity is independent from orbital-data source selection. Each satellite
+stores an ordered `provider_priority` list. The first provider is the desired primary
+source; later entries are failover sources. The legacy `provider_preference` column
+is retained as a synchronized alias for the primary source during the v1.1 transition.
+
+Provider construction lives behind `provider_registry.py`. The provider worker
+evaluates the ordered policy, respects per-provider retry/backoff state, and can
+continue with a lower-priority provider or an existing stored element set when the
+preferred source is unavailable. Propagation consumes the accepted element set and
+does not depend on provider-specific APIs.

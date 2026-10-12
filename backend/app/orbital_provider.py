@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import time
 from typing import Any, Mapping, Protocol
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -150,9 +151,17 @@ class MockOrbitalDataProvider:
 class CelesTrakProvider:
     name = "celestrak"
 
-    def __init__(self, base_url: str, timeout_seconds: float = 15.0):
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 15.0,
+        request_attempts: int = 2,
+        retry_delay_seconds: float = 0.5,
+    ):
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
+        self.request_attempts = max(1, int(request_attempts))
+        self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
 
     def _load(self, parameters: Mapping[str, str]) -> list[dict[str, Any]]:
         query = urlencode(parameters)
@@ -160,14 +169,23 @@ class CelesTrakProvider:
             f"{self.base_url}?{query}",
             headers={
                 "Accept": "application/json",
-                "User-Agent": "WorldSatMonitor/0.4 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
+                "User-Agent": "WorldSatMonitor/1.0 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
             },
         )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.load(response)
-        except Exception as error:
-            raise ProviderError(f"CelesTrak request failed: {error}") from error
+        last_error: Exception | None = None
+        for attempt in range(self.request_attempts):
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    payload = json.load(response)
+                break
+            except Exception as error:
+                last_error = error
+                if attempt + 1 >= self.request_attempts:
+                    raise ProviderError(f"CelesTrak request failed: {error}") from error
+                if self.retry_delay_seconds > 0:
+                    time.sleep(self.retry_delay_seconds * (2 ** attempt))
+        else:
+            raise ProviderError(f"CelesTrak request failed: {last_error}")
         if not isinstance(payload, list) or not payload:
             raise ProviderError("CelesTrak returned no GP data")
         records = [item for item in payload if isinstance(item, dict)]

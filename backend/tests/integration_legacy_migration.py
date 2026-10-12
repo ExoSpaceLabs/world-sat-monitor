@@ -33,6 +33,12 @@ with connect() as connection:
     ).fetchone()
     assert identifier == {"namespace": "NORAD_CAT_ID", "value": "99001"}
 
+    provider_priority = connection.execute(
+        "SELECT provider_preference, provider_priority FROM satellites WHERE id = 1"
+    ).fetchone()
+    assert provider_priority["provider_preference"] == "celestrak"
+    assert provider_priority["provider_priority"] == ["celestrak"]
+
     element_set = connection.execute(
         """
         SELECT source_format, mean_element_theory,

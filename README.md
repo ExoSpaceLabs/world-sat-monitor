@@ -4,11 +4,11 @@
 
 **WorldSat Monitor** is an open, self-hosted satellite and constellation situational-awareness platform developed by **ExoSpaceLabs**. It combines public orbital data, backend propagation, persistent satellite/group management, and an interactive 3D Earth display in a service-oriented Docker Compose stack.
 
-Current release: **v1.0.0**
+Current release: **v1.1.0**
 
 ![demo](docs/demo.gif)
 
-## What v1 provides
+## Core capabilities
 
 - **Single-satellite display** with current propagated position, altitude, heading, latitude/longitude, illumination state, history, prediction, direction vector, and optional camera follow.
 - **Constellation and group display** for provider-defined constellations and user-defined custom/mission groups.
@@ -24,6 +24,18 @@ Current release: **v1.0.0**
 - **Source-build and image-based Docker Compose deployment**.
 
 WorldSat Monitor is intended as a lightweight engineering and mission-visualization layer. Public orbital data and SGP4 predictions are useful for tracking, planning, integration, demonstration, and situational awareness, but they are not a replacement for operator navigation products or authoritative flight-dynamics data.
+
+## New in v1.1.0
+
+v1.1 makes orbital-provider availability and data age visible operational concerns instead of silent failures:
+
+- **Bounded CelesTrak retries and persistent backoff:** repeated single-satellite and provider-group failures no longer generate unbounded polling during outages.
+- **Catalog resilience:** bounded in-process catalog caching, stale-cache fallback, and local catalog search when CelesTrak is unavailable.
+- **Orbital-source provenance:** satellite and group Details expose source/element age, freshness, provider health and attention summaries. Freshness indicates age of the source elements, **not** guaranteed orbit accuracy.
+- **Explicit provider-selection policy:** ordered per-satellite `provider_priority`, per-provider failure state and deterministic degraded fallback to stored orbital elements.
+- **Provider capabilities API:** `GET /api/v1/providers` reports the available providers and their capabilities. v1.1 ships CelesTrak and the deterministic test/mock provider. **Space-Track is not yet implemented**.
+
+See [provider resilience and orbital quality](docs/provider-resilience.md) for defaults, status payloads, recovery behavior, and configuration. Multi-provider source acquisition and quantitative prediction-quality assessment are tracked separately in [#19](https://github.com/ExoSpaceLabs/world-sat-monitor/issues/19).
 
 ## Quick start
 
@@ -58,10 +70,10 @@ docker compose -f compose.images.yaml logs -f
 docker compose -f compose.images.yaml down
 ```
 
-The release defaults to the version declared in `VERSION`. A deployment can explicitly pin an image version:
+The published-image Compose definition defaults to the release's image tag (`1.1.0` here); it does not dynamically read `VERSION` at runtime. Pin an explicit image version when deploying reproducibly:
 
 ```bash
-WORLDSAT_IMAGE_TAG=1.0.0 docker compose -f compose.images.yaml up -d
+WORLDSAT_IMAGE_TAG=1.1.0 docker compose -f compose.images.yaml up -d
 ```
 
 ### Build from source
@@ -224,9 +236,11 @@ With the stack running on port 3000:
 ```bash
 curl http://localhost:3000/api/v1/health
 curl http://localhost:3000/api/v1/settings
+curl http://localhost:3000/api/v1/providers
 curl http://localhost:3000/api/v1/satellites
 curl "http://localhost:3000/api/v1/satellites?active=true"
 curl http://localhost:3000/api/v1/groups
+curl http://localhost:3000/api/v1/satellites/999999999/orbital-status
 curl http://localhost:3000/api/v1/satellites/999999999/position
 curl "http://localhost:3000/api/v1/satellites/999999999/track?resolution_seconds=60"
 ```
@@ -240,6 +254,12 @@ Important worker settings include:
 ```text
 PROVIDER_POLL_SECONDS
 PROVIDER_REFRESH_SECONDS
+PROVIDER_RETRY_BASE_SECONDS
+PROVIDER_RETRY_MAX_SECONDS
+CELESTRAK_REQUEST_ATTEMPTS
+CELESTRAK_RETRY_DELAY_SECONDS
+CELESTRAK_CATALOG_CACHE_SECONDS
+CELESTRAK_CATALOG_STALE_SECONDS
 CELESTRAK_ENABLED
 CELESTRAK_BASE_URL
 CELESTRAK_CATALOG_URL
@@ -303,6 +323,8 @@ See [`docs/deployment.md`](docs/deployment.md) for the release/deployment contra
 
 ## Documentation
 
+- [`docs/provider-resilience.md`](docs/provider-resilience.md) - v1.1 provider backoff, catalog fallback, provenance, health and priority policy.
+- [`docs/releases/v1.1.0.md`](docs/releases/v1.1.0.md) - v1.1.0 release scope, caveats and upgrade notes.
 - [`docs/architecture.md`](docs/architecture.md) - service, data, provider, propagation, and collection architecture.
 - [`docs/orbit-display.md`](docs/orbit-display.md) - single/group rendering and environment behavior.
 - [`docs/basemap-contrast.md`](docs/basemap-contrast.md) - basemap sources and visualization contrast policy.
@@ -312,7 +334,7 @@ See [`docs/deployment.md`](docs/deployment.md) for the release/deployment contra
 ## Project
 
 - **Project:** WorldSat Monitor
-- **Version:** v1.0.0
+- **Version:** v1.1.0
 - **Organization:** ExoSpaceLabs
 - **Repository:** https://github.com/ExoSpaceLabs/world-sat-monitor
 - **Contact:** exospacelabs@gmail.com

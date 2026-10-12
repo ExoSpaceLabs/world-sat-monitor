@@ -6,7 +6,12 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from app.catalog import CelesTrakCatalog, CatalogError, normalize_satcat_record
+from app.catalog import (
+    CelesTrakCatalog,
+    CatalogError,
+    _clear_catalog_cache_for_tests,
+    normalize_satcat_record,
+)
 
 
 FIXTURE = json.loads(
@@ -15,6 +20,9 @@ FIXTURE = json.loads(
 
 
 class CatalogTests(unittest.TestCase):
+    def setUp(self):
+        _clear_catalog_cache_for_tests()
+
     def test_normalizes_satcat_identifiers_and_metadata(self):
         result = normalize_satcat_record(FIXTURE[0])
         self.assertEqual(result.provider, "celestrak")
@@ -66,7 +74,10 @@ class CatalogTests(unittest.TestCase):
             "app.catalog.urlopen",
             side_effect=[OSError("gp timeout"), BytesIO(body)],
         ) as mocked:
-            result = CelesTrakCatalog("https://celestrak.org/satcat/records.php").search("ISS")
+            result = CelesTrakCatalog(
+                "https://celestrak.org/satcat/records.php",
+                request_attempts=1,
+            ).search("ISS")
         self.assertEqual(mocked.call_count, 2)
         self.assertIn("/NORAD/elements/gp.php?", mocked.call_args_list[0].args[0].full_url)
         satcat_url = mocked.call_args_list[1].args[0].full_url
@@ -84,10 +95,45 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("PAYLOADS", url)
         self.assertNotIn("ONORBIT", url)
 
+    def test_fresh_catalog_cache_avoids_repeat_upstream_request(self):
+        body = json.dumps([FIXTURE[0]]).encode()
+        catalog = CelesTrakCatalog(
+            "https://example.test/records.php",
+            request_attempts=1,
+            cache_seconds=7200,
+            stale_seconds=86400,
+        )
+        with patch("app.catalog.urlopen", return_value=BytesIO(body)) as mocked:
+            first = catalog.search("ISS")
+            second = catalog.search("ISS")
+        self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(first[0].provider_object_id, second[0].provider_object_id)
+
+    def test_stale_catalog_cache_is_used_when_provider_is_temporarily_unavailable(self):
+        body = json.dumps([FIXTURE[0]]).encode()
+        catalog = CelesTrakCatalog(
+            "https://example.test/records.php",
+            request_attempts=1,
+            cache_seconds=10,
+            stale_seconds=100,
+        )
+        with patch("app.catalog.time.monotonic", return_value=100.0), patch(
+            "app.catalog.urlopen", return_value=BytesIO(body)
+        ):
+            catalog.search("ISS")
+        with patch("app.catalog.time.monotonic", return_value=120.0), patch(
+            "app.catalog.urlopen", side_effect=OSError("offline")
+        ):
+            result = catalog.search("ISS")
+        self.assertEqual(result[0].name, "ISS (ZARYA)")
+
     def test_provider_failure_is_wrapped(self):
         with patch("app.catalog.urlopen", side_effect=OSError("offline")):
             with self.assertRaisesRegex(CatalogError, "request failed"):
-                CelesTrakCatalog("https://example.test/records.php").search("ISS")
+                CelesTrakCatalog(
+                    "https://example.test/records.php",
+                    request_attempts=1,
+                ).search("ISS")
 
     def test_direct_and_satcat_failure_reports_temporary_unavailability(self):
         with patch("app.catalog.urlopen", side_effect=OSError("offline")):

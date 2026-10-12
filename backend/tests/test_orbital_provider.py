@@ -73,9 +73,30 @@ class OrbitalProviderTests(unittest.TestCase):
         self.assertGreaterEqual(first.eccentricity, 0)
         self.assertLess(first.eccentricity, 1)
 
+    def test_celestrak_retries_transient_network_failure(self):
+        body = json.dumps(self.records).encode("utf-8")
+        with patch(
+            "app.orbital_provider.urlopen",
+            side_effect=[OSError("timeout"), BytesIO(body)],
+        ) as mocked, patch("app.orbital_provider.time.sleep") as sleep:
+            provider = CelesTrakProvider(
+                "https://example.test/gp.php",
+                timeout_seconds=1,
+                request_attempts=2,
+                retry_delay_seconds=0.25,
+            )
+            element_set = provider.fetch_latest({"NORAD_CAT_ID": "55123"})
+        self.assertEqual(mocked.call_count, 2)
+        sleep.assert_called_once_with(0.25)
+        self.assertEqual(element_set.raw_payload["OBJECT_NAME"], "MARIO")
+
     def test_celestrak_network_failure_is_wrapped(self):
         with patch("app.orbital_provider.urlopen", side_effect=OSError("offline")):
-            provider = CelesTrakProvider("https://example.test/gp.php", timeout_seconds=1)
+            provider = CelesTrakProvider(
+                "https://example.test/gp.php",
+                timeout_seconds=1,
+                request_attempts=1,
+            )
             with self.assertRaisesRegex(ProviderError, "request failed"):
                 provider.fetch_latest({"NORAD_CAT_ID": "55123"})
 

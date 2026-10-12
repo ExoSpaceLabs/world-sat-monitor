@@ -119,6 +119,10 @@ export function WorldSatMonitor() {
     () => displayedGroupId === null ? null : satelliteGroups.find((group) => group.id === displayedGroupId) ?? null,
     [displayedGroupId, satelliteGroups],
   );
+  const displayedManagedSatellite = useMemo(
+    () => displayedSatelliteNoradId === null ? null : managedSatellites.find((item) => item.norad_id === displayedSatelliteNoradId) ?? null,
+    [displayedSatelliteNoradId, managedSatellites],
+  );
   const pathActive = displayTarget.kind === "satellite"
     && appSettings.orbit.path.enabled
     && (appSettings.orbit.path.history_minutes > 0 || appSettings.orbit.path.prediction_hours > 0);
@@ -492,7 +496,7 @@ export function WorldSatMonitor() {
         {satelliteManagerOpen && <SatelliteManager groups={satelliteGroups} onClose={() => setSatelliteManagerOpen(false)} onChanged={refreshCatalogState}/>} 
         {groupsOpen && <GroupPanel groups={satelliteGroups} displayedGroupId={displayedGroupId} onDisplayGroup={handleGroupDisplay} onClose={() => setGroupsOpen(false)}/>} 
         {objectsOpen && <SatellitePanel satellite={satellite} managedSatellites={managedSatellites} selectedNoradId={selectedNoradId} onSelect={handleDisplayedSatelliteChange}/>} 
-        {detailsOpen && <DetailsPanel basemap={basemap} followSatellite={displayTarget.kind === "satellite" && followSatellite} satellite={satellite} group={displayedGroup} groupPositions={visibleGroupPositions} displayMode={displayTarget.kind} positionReady={selectedPositionReady} solarState={solarState} isMock={satelliteIsMock} interpolated={positionInterpolated} docked={listPanelOpen} onToggleFollow={() => setFollowSatellite((active) => !active)} onClose={() => setDetailsOpen(false)}/>} 
+        {detailsOpen && <DetailsPanel basemap={basemap} followSatellite={displayTarget.kind === "satellite" && followSatellite} satellite={satellite} satelliteId={displayedManagedSatellite?.id ?? null} group={displayedGroup} groupPositions={visibleGroupPositions} displayMode={displayTarget.kind} positionReady={selectedPositionReady} solarState={solarState} isMock={satelliteIsMock} interpolated={positionInterpolated} docked={listPanelOpen} onToggleFollow={() => setFollowSatellite((active) => !active)} onClose={() => setDetailsOpen(false)}/>} 
         <div className="map-credit"><BasemapCredit basemap={basemap}/></div>
         {displayTarget.kind === "group"
           ? <div className="legend"><span><i className="sat-symbol"/> GROUP MEMBER</span><span>{appSettings.group_orbit.marker_placement.toUpperCase()}</span><span>{visibleGroupPositions.length}/{displayedGroup?.member_count ?? "--"} READY</span></div>

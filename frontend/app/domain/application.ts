@@ -1,7 +1,7 @@
 export const APPLICATION_INFO = {
   name: "WorldSat Monitor",
   owner: "ExoSpaceLabs",
-  version: "1.0.0",
+  version: "1.1.0",
   repository: "https://github.com/ExoSpaceLabs/world-sat-monitor",
   email: "exospacelabs@gmail.com",
   description: "Self-hosted satellite and constellation situational-awareness, propagation, and mission visualization platform.",

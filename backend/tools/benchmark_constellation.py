@@ -11,6 +11,7 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from app.db import connect
+from app.orbital_store import get_group_orbital_source_summary
 from app.repository import (
     get_current_positions_for_selection,
     get_group_current_positions,
@@ -23,6 +24,7 @@ from app.sampling_policy import PropagationSamplingPolicy
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SIZES = (100, 1000, 5000)
 DEFAULT_GROUP_P95_TARGET_MS = {100: 100.0, 1000: 250.0, 5000: 800.0}
+DEFAULT_GROUP_QUALITY_P95_TARGET_MS = {100: 150.0, 1000: 350.0, 5000: 1000.0}
 DEFAULT_SELECTION_P95_TARGET_MS = 1000.0
 DEFAULT_TRACK_P95_TARGET_MS = 200.0
 
@@ -63,12 +65,15 @@ def seed_fixture(connection, max_size: int, sizes: tuple[int, ...]):
 
     rows = connection.execute(
         """
-        INSERT INTO satellites (name, active, object_type, provider_preference, metadata)
+        INSERT INTO satellites (
+            name, active, object_type, provider_preference, provider_priority, metadata
+        )
         SELECT
             'BENCH-' || %s::text || '-' || series::text,
             TRUE,
             'payload',
             'benchmark',
+            ARRAY['benchmark']::text[],
             jsonb_build_object('benchmark_token', %s::text)
         FROM generate_series(1, %s::integer) AS series
         RETURNING id
@@ -120,6 +125,44 @@ def seed_fixture(connection, max_size: int, sizes: tuple[int, ...]):
             (group_id, token, size),
         )
 
+    connection.execute(
+        """
+        WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS sequence
+            FROM satellites
+            WHERE metadata->>'benchmark_token' = %s
+        )
+        INSERT INTO orbital_element_sets (
+            satellite_id, epoch, source, source_format, fingerprint, raw_payload
+        )
+        SELECT
+            id,
+            %s - make_interval(secs => ((sequence - 1) %% 8)::double precision * 3600),
+            'benchmark',
+            'OMM_JSON',
+            'benchmark-quality-' || id::text,
+            jsonb_build_object('benchmark', true)
+        FROM ranked
+        """,
+        (token, now),
+    )
+    connection.execute(
+        """
+        INSERT INTO provider_fetch_state (
+            satellite_id, provider, last_attempt_at, last_success_at,
+            latest_element_set_id, consecutive_failures
+        )
+        SELECT
+            s.id, 'benchmark', %s, %s, oes.id, 0
+        FROM satellites s
+        JOIN orbital_element_sets oes
+          ON oes.satellite_id = s.id
+         AND oes.source = 'benchmark'
+        WHERE s.metadata->>'benchmark_token' = %s
+        """,
+        (now, now, token),
+    )
+
     current_run_id = str(uuid4())
     policy = PropagationSamplingPolicy(60)
     connection.execute(
@@ -167,6 +210,19 @@ def seed_fixture(connection, max_size: int, sizes: tuple[int, ...]):
         FROM ranked
         """,
         (token, now, current_run_id),
+    )
+
+    connection.execute(
+        """
+        UPDATE satellite_current_state scs
+        SET source_element_set_id = oes.id
+        FROM orbital_element_sets oes
+        JOIN satellites s ON s.id = oes.satellite_id
+        WHERE scs.satellite_id = oes.satellite_id
+          AND oes.source = 'benchmark'
+          AND s.metadata->>'benchmark_token' = %s
+        """,
+        (token,),
     )
 
     track_start = now - timedelta(minutes=90)
@@ -268,6 +324,8 @@ def run_benchmark(sizes: tuple[int, ...], enforce: bool) -> dict[str, object]:
         connection.execute("ANALYZE satellites")
         connection.execute("ANALYZE satellite_group_members")
         connection.execute("ANALYZE satellite_current_state")
+        connection.execute("ANALYZE orbital_element_sets")
+        connection.execute("ANALYZE provider_fetch_state")
         connection.execute("ANALYZE position_samples")
 
         group_results: dict[str, object] = {}
@@ -291,6 +349,38 @@ def run_benchmark(sizes: tuple[int, ...], enforce: bool) -> dict[str, object]:
                 **timing,
                 "rows": len(rows),
                 "target_p95_ms": DEFAULT_GROUP_P95_TARGET_MS.get(size, 1000.0),
+            }
+
+        quality_results: dict[str, object] = {}
+        for size in sizes:
+            group_id = fixture["group_ids"][size]
+            timing = measure(
+                lambda group_id=group_id: get_group_orbital_source_summary(
+                    connection,
+                    group_id,
+                    now=fixture["now"],
+                    refresh_seconds=7200,
+                    attention_limit=10,
+                )
+            )
+            summary = get_group_orbital_source_summary(
+                connection,
+                group_id,
+                now=fixture["now"],
+                refresh_seconds=7200,
+                attention_limit=10,
+            )
+            if int(summary["member_count"]) != size:
+                raise RuntimeError(
+                    f"expected {size} quality members, received {summary['member_count']}"
+                )
+            if len(summary["attention"]) > 10:
+                raise RuntimeError("group quality attention list exceeded its bounded limit")
+            quality_results[str(size)] = {
+                **timing,
+                "members": int(summary["member_count"]),
+                "attention_returned": len(summary["attention"]),
+                "target_p95_ms": DEFAULT_GROUP_QUALITY_P95_TARGET_MS.get(size, 1200.0),
             }
 
         selected_ids = fixture["satellite_ids"][:max_size]
@@ -364,6 +454,7 @@ def run_benchmark(sizes: tuple[int, ...], enforce: bool) -> dict[str, object]:
         result: dict[str, object] = {
             "sizes": list(sizes),
             "group_current_state": group_results,
+            "group_orbital_quality": quality_results,
             "arbitrary_selection": {
                 **selection_timing,
                 "rows": len(selection_rows),
@@ -397,6 +488,13 @@ def run_benchmark(sizes: tuple[int, ...], enforce: bool) -> dict[str, object]:
                 if observed > target:
                     raise RuntimeError(
                         f"group current-state p95 for {size} satellites was {observed:.1f} ms; target {target:.1f} ms"
+                    )
+            for size in sizes:
+                observed = float(quality_results[str(size)]["p95_ms"])
+                target = DEFAULT_GROUP_QUALITY_P95_TARGET_MS.get(size, 1200.0)
+                if observed > target:
+                    raise RuntimeError(
+                        f"group orbital-quality p95 for {size} satellites was {observed:.1f} ms; target {target:.1f} ms"
                     )
             if float(selection_timing["p95_ms"]) > DEFAULT_SELECTION_P95_TARGET_MS:
                 raise RuntimeError("arbitrary current-state batch query exceeded p95 target")

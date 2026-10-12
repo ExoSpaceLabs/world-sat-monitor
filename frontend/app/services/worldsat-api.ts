@@ -1,7 +1,9 @@
 import type {
   CatalogSearchResult,
+  GroupOrbitalSourceStatus,
   GroupPosition,
   ManagedSatellite,
+  OrbitalSourceStatus,
   Satellite,
   SatelliteCreateRequest,
   SatelliteGroup,
@@ -167,6 +169,10 @@ export async function listManagedSatellites(active?: boolean): Promise<ManagedSa
   return (await requestJson<SatelliteListResponse>(`/api/v1/satellites${suffix}`)).satellites;
 }
 
+export function getSatelliteOrbitalStatus(satelliteId: number): Promise<OrbitalSourceStatus> {
+  return requestJson<OrbitalSourceStatus>(`/api/v1/satellites/${satelliteId}/orbital-status`);
+}
+
 export async function searchSatelliteCatalog(query: string, provider = "celestrak"): Promise<CatalogSearchResult[]> {
   const params = new URLSearchParams({q: query, provider});
   return (await requestJson<CatalogSearchResponse>(`/api/v1/catalog/search?${params.toString()}`)).results;
@@ -194,6 +200,10 @@ export function deleteManagedSatellite(satelliteId: number): Promise<void> {
 
 export async function listSatelliteGroups(): Promise<SatelliteGroup[]> {
   return (await requestJson<GroupListResponse>("/api/v1/groups")).groups;
+}
+
+export function getSatelliteGroupOrbitalStatus(groupId: number): Promise<GroupOrbitalSourceStatus> {
+  return requestJson<GroupOrbitalSourceStatus>(`/api/v1/groups/${groupId}/orbital-status`);
 }
 
 export function createSatelliteGroup(value: SatelliteGroupCreateRequest): Promise<SatelliteGroup> {

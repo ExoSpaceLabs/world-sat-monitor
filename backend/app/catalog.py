@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
 import json
 import re
+import threading
+import time
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -11,6 +14,55 @@ from urllib.request import Request, urlopen
 
 class CatalogError(RuntimeError):
     pass
+
+
+_CATALOG_CACHE_MAX_ENTRIES = 128
+_catalog_cache_lock = threading.RLock()
+_catalog_cache: OrderedDict[
+    tuple[str, tuple[tuple[str, str], ...]],
+    tuple[float, list[dict[str, Any]]],
+] = OrderedDict()
+
+
+def _catalog_cache_key(
+    base_url: str,
+    params: Mapping[str, str],
+) -> tuple[str, tuple[tuple[str, str], ...]]:
+    return base_url, tuple(sorted((str(key), str(value)) for key, value in params.items()))
+
+
+def _catalog_cache_get(
+    key: tuple[str, tuple[tuple[str, str], ...]],
+    max_age_seconds: float,
+) -> list[Mapping[str, Any]] | None:
+    if max_age_seconds <= 0:
+        return None
+    now = time.monotonic()
+    with _catalog_cache_lock:
+        entry = _catalog_cache.get(key)
+        if entry is None:
+            return None
+        stored_at, records = entry
+        if now - stored_at > max_age_seconds:
+            return None
+        _catalog_cache.move_to_end(key)
+        return [dict(record) for record in records]
+
+
+def _catalog_cache_put(
+    key: tuple[str, tuple[tuple[str, str], ...]],
+    records: list[Mapping[str, Any]],
+) -> None:
+    with _catalog_cache_lock:
+        _catalog_cache[key] = (time.monotonic(), [dict(record) for record in records])
+        _catalog_cache.move_to_end(key)
+        while len(_catalog_cache) > _CATALOG_CACHE_MAX_ENTRIES:
+            _catalog_cache.popitem(last=False)
+
+
+def _clear_catalog_cache_for_tests() -> None:
+    with _catalog_cache_lock:
+        _catalog_cache.clear()
 
 
 @dataclass(frozen=True)
@@ -234,9 +286,21 @@ def _gp_params(params: Mapping[str, str]) -> dict[str, str]:
 class CelesTrakCatalog:
     name = "celestrak"
 
-    def __init__(self, base_url: str, timeout_seconds: float = 15.0):
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 15.0,
+        request_attempts: int = 2,
+        retry_delay_seconds: float = 0.5,
+        cache_seconds: int = 7200,
+        stale_seconds: int = 86400,
+    ):
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
+        self.request_attempts = max(1, int(request_attempts))
+        self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
+        self.cache_seconds = max(0, int(cache_seconds))
+        self.stale_seconds = max(self.cache_seconds, int(stale_seconds))
         self.gp_url = _direct_gp_url(base_url)
 
     def _request(self, base_url: str, params: Mapping[str, str], label: str) -> list[Mapping[str, Any]]:
@@ -247,30 +311,47 @@ class CelesTrakCatalog:
                 "User-Agent": "WorldSatMonitor/1.0 (+https://github.com/ExoSpaceLabs/world-sat-monitor)",
             },
         )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.load(response)
-        except Exception as error:
-            raise CatalogError(f"CelesTrak {label} request failed: {error}") from error
-        if not isinstance(payload, list):
-            raise CatalogError(f"CelesTrak {label} returned an invalid JSON payload")
-        return [record for record in payload if isinstance(record, Mapping)]
+        last_error: Exception | None = None
+        for attempt in range(self.request_attempts):
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    payload = json.load(response)
+                if not isinstance(payload, list):
+                    raise CatalogError(f"CelesTrak {label} returned an invalid JSON payload")
+                return [record for record in payload if isinstance(record, Mapping)]
+            except CatalogError:
+                raise
+            except Exception as error:
+                last_error = error
+                if attempt + 1 >= self.request_attempts:
+                    break
+                if self.retry_delay_seconds > 0:
+                    time.sleep(self.retry_delay_seconds * (2 ** attempt))
+        raise CatalogError(f"CelesTrak {label} request failed: {last_error}") from last_error
 
     def _load(self, params: dict[str, str]) -> list[Mapping[str, Any]]:
-        # The GP endpoint is the same direct machine API used for orbit-element
-        # retrieval and supports CATNR/INTDES/NAME/GROUP JSON queries. Prefer it
-        # for interactive catalog lookup so SATCAT slowness does not block the UI.
-        # SATCAT remains a fallback and provides richer metadata when GP is down.
+        cache_key = _catalog_cache_key(self.base_url, params)
+        cached = _catalog_cache_get(cache_key, self.cache_seconds)
+        if cached is not None:
+            return cached
+
         gp_error: CatalogError | None = None
         if self.gp_url and self.gp_url != self.base_url:
             try:
-                return self._request(self.gp_url, _gp_params(params), "GP")
+                records = self._request(self.gp_url, _gp_params(params), "GP")
+                _catalog_cache_put(cache_key, records)
+                return records
             except CatalogError as error:
                 gp_error = error
 
         try:
-            return self._request(self.base_url, params, "SATCAT")
+            records = self._request(self.base_url, params, "SATCAT")
+            _catalog_cache_put(cache_key, records)
+            return records
         except CatalogError as satcat_error:
+            stale = _catalog_cache_get(cache_key, self.stale_seconds)
+            if stale is not None:
+                return stale
             if gp_error is None:
                 raise
             raise CatalogError(

@@ -34,12 +34,12 @@ def _ensure_mock_satellite(connection) -> int:
         satellite = connection.execute(
             """
             INSERT INTO satellites (
-                name, active, object_type, provider_preference, metadata
+                name, active, object_type, provider_preference, provider_priority, metadata
             )
-            VALUES (%s, TRUE, 'payload', %s, %s)
+            VALUES (%s, TRUE, 'payload', %s, ARRAY[%s::text], %s)
             RETURNING id
             """,
-            (MOCK_NAME, MOCK_PROVIDER, Jsonb(metadata)),
+            (MOCK_NAME, MOCK_PROVIDER, MOCK_PROVIDER, Jsonb(metadata)),
         ).fetchone()
     else:
         connection.execute(
@@ -47,11 +47,12 @@ def _ensure_mock_satellite(connection) -> int:
             UPDATE satellites
             SET name = %s,
                 provider_preference = %s,
+                provider_priority = ARRAY[%s::text],
                 metadata = metadata || %s,
                 updated_at = NOW()
             WHERE id = %s
             """,
-            (MOCK_NAME, MOCK_PROVIDER, Jsonb(metadata), satellite["id"]),
+            (MOCK_NAME, MOCK_PROVIDER, MOCK_PROVIDER, Jsonb(metadata), satellite["id"]),
         )
 
     satellite_id = int(satellite["id"])

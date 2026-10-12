@@ -52,7 +52,7 @@ def main() -> None:
     with connect() as connection:
         rows = connection.execute(
             """
-            SELECT s.name, s.active, s.provider_preference,
+            SELECT s.name, s.active, s.provider_preference, s.provider_priority,
                    s.metadata->>'catalog_source' AS catalog_source,
                    norad.value AS norad_id
             FROM satellite_group_members gm
@@ -68,6 +68,7 @@ def main() -> None:
         assert [row["norad_id"] for row in rows] == ["910001", "910002"]
         assert all(row["active"] is False for row in rows)
         assert all(row["provider_preference"] == "celestrak" for row in rows)
+        assert all(row["provider_priority"] == ["celestrak"] for row in rows)
         assert all(row["catalog_source"] == "celestrak" for row in rows)
 
     # A provider sync owns membership, not monitoring state or satellite lifetime.

@@ -110,13 +110,14 @@ def sync_provider_group(
     created_rows = connection.execute(
         """
         INSERT INTO satellites (
-            name, active, object_type, provider_preference, metadata
+            name, active, object_type, provider_preference, provider_priority, metadata
         )
         SELECT
             incoming.name,
             FALSE,
             incoming.object_type,
             %s::text,
+            ARRAY[%s::text],
             incoming.metadata
                 || jsonb_build_object(
                     'catalog_source', %s::text,
@@ -135,7 +136,7 @@ def sync_provider_group(
         )
         RETURNING id
         """,
-        (definition.provider, definition.provider),
+        (definition.provider, definition.provider, definition.provider),
     ).fetchall()
 
     # Provider-created catalog objects carry their provider object id in metadata,
@@ -147,12 +148,11 @@ def sync_provider_group(
         SELECT satellite.id, 'NORAD_CAT_ID', incoming.norad_id
         FROM worldsat_provider_group_import incoming
         JOIN satellites satellite
-          ON satellite.provider_preference = %s
-         AND satellite.metadata->>'catalog_source' = %s
+          ON satellite.metadata->>'catalog_source' = %s
          AND satellite.metadata->>'provider_object_id' = incoming.norad_id
         ON CONFLICT DO NOTHING
         """,
-        (definition.provider, definition.provider),
+        (definition.provider,),
     )
 
     # If an object already existed locally with only its COSPAR identifier,

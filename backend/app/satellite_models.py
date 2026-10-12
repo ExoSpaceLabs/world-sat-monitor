@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .provider_policy import DEFAULT_PROVIDER, normalize_provider_name, normalize_provider_priority
+
 
 class SatelliteIdentifierInput(BaseModel):
     namespace: str = Field(min_length=1, max_length=64)
@@ -25,6 +27,7 @@ class SatelliteCreate(BaseModel):
     active: bool = False
     object_type: str = Field(default="payload", min_length=1, max_length=64)
     provider_preference: str | None = Field(default=None, max_length=128)
+    provider_priority: list[str] = Field(default_factory=lambda: [DEFAULT_PROVIDER], min_length=1, max_length=8)
     metadata: dict[str, Any] = Field(default_factory=dict)
     identifiers: list[SatelliteIdentifierInput] = Field(default_factory=list)
 
@@ -35,11 +38,25 @@ class SatelliteCreate(BaseModel):
 
     @field_validator("provider_preference")
     @classmethod
-    def strip_optional_text(cls, value: str | None) -> str | None:
-        if value is None:
+    def normalize_optional_provider(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
             return None
-        stripped = value.strip()
-        return stripped or None
+        return normalize_provider_name(value)
+
+    @field_validator("provider_priority")
+    @classmethod
+    def normalize_priority(cls, value: list[str]) -> list[str]:
+        return list(normalize_provider_priority(value))
+
+    @model_validator(mode="after")
+    def synchronize_provider_policy(self):
+        if "provider_priority" in self.model_fields_set:
+            self.provider_preference = self.provider_priority[0]
+        elif self.provider_preference is not None:
+            self.provider_priority = [self.provider_preference]
+        else:
+            self.provider_preference = self.provider_priority[0]
+        return self
 
     @model_validator(mode="after")
     def unique_identifier_namespaces(self):
@@ -53,6 +70,7 @@ class SatelliteUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     object_type: str | None = Field(default=None, min_length=1, max_length=64)
     provider_preference: str | None = Field(default=None, max_length=128)
+    provider_priority: list[str] | None = Field(default=None, min_length=1, max_length=8)
     metadata: dict[str, Any] | None = None
     identifiers: list[SatelliteIdentifierInput] | None = None
 
@@ -63,11 +81,25 @@ class SatelliteUpdate(BaseModel):
 
     @field_validator("provider_preference")
     @classmethod
-    def strip_provider_preference(cls, value: str | None) -> str | None:
-        if value is None:
+    def normalize_update_provider(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
             return None
-        stripped = value.strip()
-        return stripped or None
+        return normalize_provider_name(value)
+
+    @field_validator("provider_priority")
+    @classmethod
+    def normalize_update_priority(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else list(normalize_provider_priority(value))
+
+    @model_validator(mode="after")
+    def synchronize_provider_policy(self):
+        if self.provider_priority is not None:
+            self.provider_preference = self.provider_priority[0]
+        elif "provider_preference" in self.model_fields_set:
+            provider = self.provider_preference or DEFAULT_PROVIDER
+            self.provider_preference = provider
+            self.provider_priority = [provider]
+        return self
 
     @model_validator(mode="after")
     def unique_identifier_namespaces(self):
