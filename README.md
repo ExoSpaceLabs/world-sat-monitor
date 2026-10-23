@@ -277,6 +277,18 @@ PROPAGATION_CLEANUP_BATCH_SIZE
 
 Application map/orbit settings are persisted separately by the backend.
 
+## No-server public demo via ChatGPT Sites
+
+The **same frontend** can run in ChatGPT Sites with its own D1-backed
+API and on-demand JavaScript SGP4 computation. It does not require a
+separately hosted Docker/backend server. Guest sessions are isolated; some
+large constellation and continuous-worker behaviors remain Compose-only.
+
+Use `scripts/sites-rebuild.sh main` to pull and validate a clean revision
+before saving/deploying the existing Sites project. See
+[the Sites deployment contract](docs/sites-deployment.md).
+The original Docker Compose deployment is unchanged.
+
 ## Development and validation
 
 CI runs on `develop`, `main`, and pull requests. The release gate includes:
