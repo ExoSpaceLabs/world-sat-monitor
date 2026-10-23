@@ -228,6 +228,11 @@ class BrowserSmokeTests(unittest.TestCase):
         canvas = self._open()
         coordinates = self.page.locator(".coordinates")
         expect(coordinates).to_contain_text("Z1.4")
+        # Close the docked Details overlay before sending real pointer input.
+        # Playwright must not force events through a panel over the map.
+        details = self.page.get_by_role("button", name="Toggle display details")
+        details.click()
+        expect(details).to_have_attribute("aria-expanded", "false")
         canvas.hover()
         self.page.mouse.wheel(0, -900)
         self.page.wait_for_function(
