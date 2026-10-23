@@ -152,10 +152,10 @@ async function providerJson(ctx: Context, key: string, url: string, maxAge = REF
     return JSON.parse(asString(cached.body));
   // All visitors share one upstream throttle so public traffic does not
   // overwhelm CelesTrak when a new query misses the shared two-hour cache.
-  const window = Math.floor(Date.now() / 3_600_000);
-  await run(ctx.db, `INSERT INTO sites_rate_windows(key,hits,window) VALUES('celestrak',1,?)
-    ON CONFLICT(key) DO UPDATE SET hits=CASE WHEN window=excluded.window THEN hits+1 ELSE 1 END,
-      window=excluded.window`, window);
+  const slot = Math.floor(Date.now() / 3_600_000);
+  await run(ctx.db, `INSERT INTO sites_rate_windows(key,hits,slot) VALUES('celestrak',1,?)
+    ON CONFLICT(key) DO UPDATE SET hits=CASE WHEN slot=excluded.slot THEN hits+1 ELSE 1 END,
+      slot=excluded.slot`, slot);
   const rate = await one(ctx.db, "SELECT hits FROM sites_rate_windows WHERE key='celestrak'");
   if (Number(rate?.hits ?? 0) > 60) {
     if (cached) return JSON.parse(asString(cached.body));
