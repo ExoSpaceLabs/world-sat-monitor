@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS sites_group_members (
   added_at TEXT NOT NULL,
   PRIMARY KEY(group_id,satellite_id)
 );
+CREATE TABLE IF NOT EXISTS sites_rate_windows (
+  key TEXT PRIMARY KEY,
+  hits INTEGER NOT NULL,
+  window INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sites_cache (
   key TEXT PRIMARY KEY,
   body TEXT NOT NULL,
