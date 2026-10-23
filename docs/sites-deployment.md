@@ -1,102 +1,85 @@
-# ChatGPT Sites deployment contract
+# ChatGPT Sites deployment (no external server)
 
-WorldSat Monitor's authoritative source is
-[ExoSpaceLabs/world-sat-monitor](https://github.com/ExoSpaceLabs/world-sat-monitor).
-ChatGPT Sites is a public-facing UI hosting target, **not** a replacement for
-the Python orbital-processing workers or PostgreSQL.
+[WorldSat Monitor](../README.md) supports **one frontend and one HTTP API contract**
+with two runtime adapters:
 
-## Current architecture and compatibility
+| Runtime | Frontend | API + SGP4 | Persistence |
+| --- | --- | --- | --- |
+| Docker Compose (unchanged) | Next.js | Python API + provider + propagator | PostgreSQL |
+| ChatGPT Sites | **Same** Next.js build | Sites Worker: on-demand `satellite.js`/SGP4 | Built-in D1 |
 
-- Sites source directory: `frontend/`
-- Sites project linkage: `frontend/.openai/hosting.json`
-- Frontend stack: Next.js/React, vinext/Vite and MapLibre.
-- Backend stack: `backend`, `orbital-provider`, `propagator`, PostgreSQL.
-- Docker gateway currently routes `/api/`, `/api/v1/catalog/`, and
-  `/map/openfreemap/`. Sites does **not** inherit that nginx configuration.
-- Frontend API calls are same-origin relative paths, so publishing the frontend
-  without configuring equivalent API routing will cause API failures.
-- The satellite imagery basemap uses OpenFreeMap style routing as configured
-  in `frontend/app/maps/styles.ts`; restore this route before public deployment.
+Sites does not run a Python process or Docker Compose. There is no external
+server, tunnel, paid host or external database required for the Sites demo.
+The adapter is in `frontend/edge/{api,orbit,schema}.ts`, attached to the
+existing `frontend/worker/index.ts`. No copy of the UI is maintained.
+The Sites worker also restores the nginx `/map/openfreemap/*` proxy route.
 
-Do not replace the real UI or orbital calculations with an invented demo to
-make the build appear green. In a separate **public-demo deployment**, expose a
-constrained read-only API surface with rate limits and resource limits. The
-current browser UI contains management, settings, group and catalog mutation
-calls. Do not proxy write methods to a public shared backend without explicit
-visitor authentication, per-user isolation, and authorization. A UI-only
-disabled button is not an API security boundary.
+## Public demo semantics
 
-## Deterministic source rebuild
+- Every visitor receives a separate, random seven-day HTTP-only cookie and
+  D1-backed satellite, group and settings state; visitors cannot alter each
+  other's records using API requests. This is a guest **demo**, not user login.
+- A labeled synthetic `WORLDSAT-01` spacecraft provides the initial orbit.
+  CelesTrak single-object elements and selected small catalog groups use
+  OMM/JSON and SGP4 **on demand**. The provider's fetched element sets are
+  cached in D1 for two hours, including stale-on-error fallback.
+- No continuous provider or propagation workers run in Sites: results are
+  computed at request time. Timestamps/provenance indicate this.
+- Public safety bounds: 200 satellites per visitor, 200 members per group,
+  20 groups per visitor, 1,000 track points per request and a 5,000 API
+  request/day visitor allowance. Large constellations are intentionally
+  unsupported here. The original Docker implementation remains unrestricted
+  by these demo caps.
+- D1 has a Sites-side 10 GB cap. Set an access policy, monitor traffic and
+  storage, and add stronger authentication/rate limiting for production usage.
+  Guest cookies are NOT authenticated user identities or a defence against
+  determined abuse. D1 session cleanup, global quotas, and upstream API
+  throttling require operational verification before unrestricted public launch.
+- CelesTrak GP and SATCAT are external public *data sources*, not user-hosted
+  infrastructure. Site hosting and storage remain inside Sites.
 
-There are two intentional operations:
+The Python and JavaScript adapters share the URL and response envelope
+contracts but are **not byte-identical**. Do not claim Docker worker/job-queue
+semantics, exact numerical equality or unrestricted constellation scalability
+on Sites. These are explicit technical tradeoffs of serverless hosting.
 
-- **Update:** fetch the latest approved `main` commit, then build that exact
-  commit. The revision advances only when GitHub's `main` advances.
-- **Replay:** set `WORLDSAT_SOURCE_SHA` to a previously recorded full Git
-  commit SHA and rebuild that revision. No new source changes are used.
+## Rebuild from GitHub
 
-From a Work/Codex environment with GitHub network access and Node 22.13.0:
+The authoritative repository is
+`https://github.com/ExoSpaceLabs/world-sat-monitor`.
 
 ```bash
+# Uses a fresh clone of latest main and Node 22.13.0; validates Sites artifact.
 bash scripts/sites-rebuild.sh main
 
-# To reproduce a historical source revision:
-WORLDSAT_SOURCE_SHA=<full-40-character-commit-sha> \
-  bash scripts/sites-rebuild.sh main
+# Recreate an identified historical source revision:
+WORLDSAT_SOURCE_SHA=<full-commit-sha> bash scripts/sites-rebuild.sh main
+
+# Docker still uses the original workflow:
+docker compose -f compose.images.yaml up -d
 ```
 
-The entry point always obtains a **fresh checkout** from GitHub, installs
-exactly the `frontend/package-lock.json` dependencies via `npm ci`, and
-runs the established frontend lint, test/build, group benchmark and Sites
-artifact validation steps. On failure it must not publish.
+The script prints the **fresh checkout** under `sites_project_dir` and
+`provenance.txt`. Deploy that exact directory (not the current workspace).
+`npm ci`, lint, tests, build, benchmarks and artifact validation must pass.
+Do not edit Sites-only code outside the repository; submit fixes as PRs.
 
-On success the script reports:
+In ChatGPT **Work** with `@Sites`:
 
-- `sites_project_dir`: use this exact `frontend/` checkout for Sites
-  version creation, rather than an old local workspace or regenerated code.
-- `source_sha`: immutable Git commit used for the build.
-- `frontend_lock_sha256`, Node and npm versions in `provenance.txt`.
+1. Pull `main` and require its latest commit's GitHub CI to be green.
+2. Run the rebuild script from a clean checkout, recording source SHA,
+   lockfile SHA and resulting Sites artifacts.
+3. Reuse the existing `project_id` in `frontend/.openai/hosting.json`
+   and provision `d1: "DB"` for this Site. Do NOT create a duplicate Site.
+4. Confirm D1 initialization via `GET /api/v1/health`, test
+   `/api/v1/settings`, `/api/v1/satellites`, on-demand SGP4 position
+   and track, catalog search and small-group import.
+5. In Sites preview, test MapLibre globe, the three basemap modes,
+   the OpenFreeMap proxy, star background, shadow, clock,
+   satellite selection/follow and group markers. Test from a fresh browser
+   session that guest data is isolated.
+6. Save a **version** first. After review, deploy it to the existing URL,
+   choose public sharing, and record version ID + commit SHA.
 
-A clean frontend build does **not** prove the remote backend or browser behavior
-is functional. Before publishing, additionally check live API health, map tile
-loading, UTC/day-night shader, shadows, globe rendering, satellite position and
-track, group markers, and all applicable UI actions in the Sites preview.
-
-## Release deployment
-
-1. Require a green GitHub CI run for the selected `main` commit. If a Sites
-   compatibility change is needed, submit a pull request and merge only after
-   CI. Never patch the Sites working copy independently of the repository.
-2. Run `scripts/sites-rebuild.sh main` and capture the source SHA and
-   provenance file. For exact replay, provide `WORLDSAT_SOURCE_SHA`.
-3. Configure Sites to serve the resulting `sites_project_dir` and link it
-   to the existing project in `.openai/hosting.json`; inspect that project
-   linkage rather than creating a duplicate hosted Site.
-4. Configure HTTPS same-origin API routing or a securely configured alternative
-   and test `/api/v1/health`, catalogue routes and map resource loading.
-   Keep Python orbital workers and PostgreSQL on external Docker infrastructure.
-5. **Save a Sites version** for review and associate it with the captured
-   commit SHA. Save is not deploy.
-6. Validate browser behavior from the Sites preview, especially map rendering
-   and protected management operations; then deploy the reviewed version to the
-   existing Sites URL. Enable public access only after security checks pass.
-7. Keep a deployment record with Git SHA, frontend lock digest, backend image
-   digests, CI URL, Sites version ID and public URL.
-
-## What this does and does not guarantee
-
-The script makes the **source selection and validation procedure repeatable**.
-`npm ci` verifies packages using lockfile integrity data, with Node 22.13.0
-pinned to match CI. This is not yet a byte-for-byte reproducible **entire
-operational stack**:
-
-- `compose.images.yaml` uses semver image tags, and nginx/Postgres use mutable
-  upstream tags. Pin resolved OCI digests and capture them in the deployment
-  record before claiming exact backend replay.
-- Live CelesTrak orbital records, map-provider tiles, external availability and
-  persistent PostgreSQL state change over time by design.
-- No GitHub-to-Sites automatic deploy trigger is claimed here. A request to
-  rebuild in Work must execute the fresh-source entry point and then perform
-  Sites save/deploy deliberately.
-
-Use this process instead of Sites-only edits. Changes belong in GitHub first.
+Do not report the site published until Sites confirms deployment and supplies
+its actual public URL. A clean build does not establish runtime compatibility.
