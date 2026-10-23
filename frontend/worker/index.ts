@@ -53,6 +53,11 @@ const worker = {
       headers.set("Cache-Control", "public, max-age=3600");
       if (path.endsWith("/dark") || path.endsWith(".json")) {
         const text = (await upstream.text()).replaceAll("https://tiles.openfreemap.org", "/map/openfreemap");
+        // The upstream body has been decoded and rewritten. Forwarding its
+        // original gzip encoding or byte length would corrupt the basemap.
+        headers.delete("Content-Encoding");
+        headers.delete("Content-Length");
+        headers.set("Content-Type", "application/json; charset=utf-8");
         return new Response(text, {status: upstream.status, headers});
       }
       return new Response(upstream.body, {status: upstream.status, headers});
