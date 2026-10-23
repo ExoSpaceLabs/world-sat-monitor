@@ -34,7 +34,7 @@ test("Sites map proxy rejects path traversal and cannot become an open proxy", a
   url.searchParams.set("sites-map",String(Date.now()));
   const {default:worker} = await import(url.href);
   const res = await worker.fetch(
-    new Request("https://example.test/map/openfreemap/%2E%2E/%2E%2E/evil"), {},
+    new Request("https://example.test/map/openfreemap/%2F..%2Fsecret"), {},
     {waitUntil(){},passThroughOnException(){}},
   );
   assert.equal(res.status,400);
