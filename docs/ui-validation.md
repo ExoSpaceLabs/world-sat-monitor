@@ -83,6 +83,14 @@ investigation, use the trace viewer:
   OFF updates the visible footer.
 - UI-007: MANAGER creates an inactive object through actual UI controls,
   object survives a reload, and deletion removes it.
+- UI-006: a real wheel zoom changes the reported MapLibre camera zoom; RESET
+  VIEW returns the camera to the documented initial zoom.
+- UI-008: MANAGER creates a group, adds the seeded WORLDSAT-01 member, then
+  GROUP mode displays the collection and obtains a ready group position.
+  The test cleans up the group without deleting the shared fixture satellite.
+- UI-009 (behavioral): disabling DRAW ORBIT PATH persists to the backend,
+  survives a page reload, and can be re-enabled; this does **not** yet prove
+  the orbit pixels changed or geometry is physically correct.
 
 ### Still required
 
@@ -95,7 +103,7 @@ investigation, use the trace viewer:
 3. Independent night/day hemispheres and a terminator-location physics check
    using known UTC/subsolar coordinates; positive pixel difference is a
    rendering smoke test, **not** sufficient to validate spatial correctness.
-4. Camera drag/zoom/reset assertions, group create/display, catalog fallback
+4. Camera drag assertions, orbit placement pixel validation, catalog fallback
    error states, source-quality Details, persistence and network failure cases.
 5. Mobile viewport and GPU/OS/browser matrix; release smoke tests against
    published pinned images, not just locally built containers.
