@@ -28,7 +28,8 @@ const response = (payload: unknown, status = 200, extra: HeadersInit = {}) =>
 const empty = () => new Response(null, {status: 204, headers: {"Cache-Control": "no-store"}});
 
 async function init(db: DB) {
-  initialized ??= db.exec(schemaSql).then(() => undefined).catch((reason: unknown) => {
+  initialized ??= db.batch(schemaSql.split(";").map(sql => sql.trim()).filter(Boolean)
+    .map(sql => db.prepare(sql))).then(() => undefined).catch((reason: unknown) => {
     initialized = null;
     throw reason;
   });
@@ -530,6 +531,7 @@ export async function handleSitesApi(request: Request, db: DB): Promise<Response
     res.headers.set("X-Content-Type-Options","nosniff");
     return res;
   } catch(e) {
+    if (!(e instanceof ApiError)) console.error("Sites API request failed", e);
     const err=e instanceof ApiError ? e : new ApiError(500,"Sites API error");
     const res=response({detail:err.message},err.status);
     if (ctx?.setCookie) res.headers.append("Set-Cookie",ctx.setCookie);
