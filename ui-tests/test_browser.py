@@ -37,7 +37,12 @@ def pixel_difference(first, second):
 
 from playwright.sync_api import sync_playwright, expect
 
-BASE_URL = os.getenv("WORLDSAT_UI_BASE_URL", "http://localhost:3000")
+BASE_URL = os.getenv("WORLDSAT_UI_BASE_URL", "http://localhost:3000").rstrip("/")
+TARGET = os.getenv("WORLDSAT_UI_TARGET", "compose").lower()
+if TARGET not in {"compose", "sites"}:
+    raise ValueError("WORLDSAT_UI_TARGET must be 'compose' or 'sites'")
+if TARGET == "sites" and not BASE_URL.startswith("https://"):
+    raise ValueError("Hosted Sites tests require an explicit HTTPS WORLDSAT_UI_BASE_URL")
 ARTIFACTS = Path("ui-artifacts")
 ARTIFACTS.mkdir(exist_ok=True)
 
@@ -66,11 +71,13 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page_errors = []
         self.tiles_seen = []
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
-        # Each browser case starts from a clean, persisted application configuration.
-        # This is safe only because CI owns a disposable Compose database and settings volume.
-        reset = self.context.request.post(BASE_URL + "/api/v1/settings/reset")
-        if not reset.ok:
-            raise AssertionError(f"Fixture settings reset failed: HTTP {reset.status}")
+        # Compose CI owns a disposable database and can reset shared settings.
+        # Sites has no settings/reset endpoint: each browser context instead
+        # starts with a new isolated guest cookie and default D1 state.
+        if TARGET == "compose":
+            reset = self.context.request.post(BASE_URL + "/api/v1/settings/reset")
+            if not reset.ok:
+                raise AssertionError(f"Fixture settings reset failed: HTTP {reset.status}")
         self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
         for pattern in (r"^https://services\.arcgisonline\.com/",
                         r"^https://server\.arcgisonline\.com/",
