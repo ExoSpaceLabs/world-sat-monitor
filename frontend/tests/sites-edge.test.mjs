@@ -39,3 +39,32 @@ test("Sites map proxy rejects path traversal and cannot become an open proxy", a
   );
   assert.equal(res.status,400);
 });
+
+test("Sites initializes real D1, persists settings, and isolates guests", {timeout: 30000}, async () => {
+  const {Miniflare} = await import("miniflare");
+  const mf = new Miniflare({modules:true, script:"export default {fetch(){return new Response('ok')}}", d1Databases:["DB"]});
+  try {
+    const db = await mf.getD1Database("DB");
+    const url = new URL("../dist/server/index.js", import.meta.url);
+    url.searchParams.set("sites-d1", String(Date.now()));
+    const {default:worker} = await import(url.href);
+    const call = (path, cookie = "", method = "GET", body) => worker.fetch(new Request("https://example.test/api/v1/" + path, {
+      method, headers:{Cookie:cookie, "Content-Type":"application/json"},
+      body:body === undefined ? undefined : JSON.stringify(body),
+    }), {DB:db}, {waitUntil(){},passThroughOnException(){}});
+    const health = await call("health");
+    assert.equal(health.status, 200, await health.clone().text());
+    assert.equal((await health.json()).runtime, "sites-d1-sgp4");
+    const cookie = health.headers.get("Set-Cookie").split(";")[0];
+    const settings = await (await call("settings", cookie)).json();
+    settings.map.qa_marker = "persisted";
+    assert.equal((await call("settings", cookie, "PUT", settings)).status, 200);
+    assert.equal((await (await call("settings", cookie)).json()).map.qa_marker, "persisted");
+    const guest = await call("health");
+    const guestCookie = guest.headers.get("Set-Cookie").split(";")[0];
+    assert.notEqual(cookie, guestCookie);
+    assert.equal((await (await call("settings", guestCookie)).json()).map.qa_marker, undefined);
+    assert.equal((await call("satellites/999999999/position", cookie)).status, 200);
+    assert.equal((await call("satellites/999999999/track?resolution_seconds=60", cookie)).status, 200);
+  } finally { await mf.dispose(); }
+});
