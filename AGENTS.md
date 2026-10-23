@@ -1,27 +1,26 @@
-# Agent instructions
+# WorldSat Monitor agent contract
 
-This repository is the source of truth for WorldSat Monitor. Work against the
-selected branch and follow existing CI and release policies. Do not substitute
-generated mock UI/backend code for actual repository functionality.
+GitHub is the sole source of truth for both deployment targets. Preserve the
+existing `compose.yaml` / `compose.images.yaml` Docker production behavior
+when changing the Sites adapter.
 
-## ChatGPT Sites work
+## ChatGPT Sites
 
-When the task is to **build, rebuild, or publish the WorldSat website using
-Sites**, read [docs/sites-deployment.md](docs/sites-deployment.md) first.
+Read [docs/sites-deployment.md](docs/sites-deployment.md) before changing or
+deploying a Site. Sites uses the SAME `frontend/` Next.js UI and HTTP paths,
+with a Worker-hosted API, `satellite.js` SGP4 and built-in D1 database; it
+does NOT need, and cannot run, the Python/PostgreSQL Docker stack.
 
-- Use `scripts/sites-rebuild.sh main` to fetch a clean, current approved
-  `main` source snapshot and run deterministic frontend validation.
-- If an existing deployment's exact Git revision is requested, set
-  `WORLDSAT_SOURCE_SHA` to its recorded full SHA before running the script.
-- Operate from the returned `sites_project_dir`; verify and report its Git
-  SHA, lockfile digest, CI status and Sites saved version.
-- Do not publish from a stale checkout, a branch with uncommitted changes, or
-  a ChatGPT-generated copy that has not been committed to GitHub.
-- Preserve the existing Sites linkage at `frontend/.openai/hosting.json`;
-  inspect before attempting to provision another Site.
-- Sites does not run the repo's Python/PostgreSQL Docker Compose stack. Check
-  API routing, map resources and public API authorization before publishing.
-- Save a Sites version for validation before deployment, and report the final
-  public URL only after successful deployment.
-- Fix build and browser issues in a repository branch and PR first; do not
-  create untracked live-site-only patches.
+- Build only a fresh `main` checkout using `scripts/sites-rebuild.sh main`
+  (or explicitly pin `WORLDSAT_SOURCE_SHA` for exact source replay).
+- Honor the returned `sites_project_dir` and capture commit, lockfile
+  digest, green CI run and deployment version in the release record.
+- Existing Sites linkage is `frontend/.openai/hosting.json`, with `d1=DB`.
+  Provision D1 and reuse this project; do not create a duplicate Site.
+- Do not turn demo fixtures into purported live ephemerides. Verify real
+  catalog/GP ingestion, position+track, globe tiles and WebGL day/night before
+  saving a version. Respect the Sites demo scale limits and public security.
+- Save a Sites version for review; only deploy after tests pass. Do not claim
+  publication without a confirmed production URL.
+- Make all changes in a Git branch/PR, never in a separate uncommitted
+  Sites-only copy. Rebuild from GitHub after merging.
