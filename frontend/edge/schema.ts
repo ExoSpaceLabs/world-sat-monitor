@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS sites_group_members (
 CREATE TABLE IF NOT EXISTS sites_rate_windows (
   key TEXT PRIMARY KEY,
   hits INTEGER NOT NULL,
-  window INTEGER NOT NULL
+  slot INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sites_cache (
   key TEXT PRIMARY KEY,
