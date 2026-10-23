@@ -41,7 +41,7 @@ const worker = {
     // fixed, so user-supplied paths cannot turn this into an open HTTP proxy.
     if (url.pathname.startsWith("/map/openfreemap/")) {
       const path = url.pathname.slice("/map/openfreemap/".length);
-      if (!/^[\\w./-]+$/.test(path) || path.includes("..")) {
+      if (!/^[\w./-]+$/.test(path) || path.includes("..")) {
         return new Response("Invalid tile path", {status: 400});
       }
       const target = new URL("https://tiles.openfreemap.org/" + path);
