@@ -60,7 +60,8 @@ async function createContext(request: Request, db: DB): Promise<Context> {
       visitor, now, now, today);
     await run(db, "INSERT INTO sites_satellites(visitor_id,name,norad_id,active,source,omm,fetched_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
       visitor, "WORLDSAT-01", "999999999", 1, "mock", JSON.stringify(syntheticOmm()), now, now, now);
-    setCookie = `${COOKIE}=${visitor}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=604800`;
+    const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+    setCookie = `${COOKIE}=${visitor}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=604800`;
   }
   const update = await run(db, `UPDATE sites_visitors SET last_seen_at=?,
     requests_today=CASE WHEN request_day=? THEN requests_today + 1 ELSE 1 END,
