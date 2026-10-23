@@ -56,6 +56,8 @@ async function createContext(request: Request, db: DB): Promise<Context> {
   let setCookie: string | null = null;
   if (!current || expired) {
     visitor = crypto.randomUUID();
+    // Expired guest state is disposable and must not accumulate indefinitely.
+    await run(db, "DELETE FROM sites_visitors WHERE last_seen_at < ?", new Date(Date.now()-TTL_MS).toISOString());
     await run(db, "INSERT INTO sites_visitors(id,created_at,last_seen_at,request_day) VALUES(?,?,?,?)",
       visitor, now, now, today);
     await run(db, "INSERT INTO sites_satellites(visitor_id,name,norad_id,active,source,omm,fetched_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -148,6 +150,17 @@ async function providerJson(ctx: Context, key: string, url: string, maxAge = REF
   const cached = await one(ctx.db, "SELECT * FROM sites_cache WHERE key=?", key);
   if (cached && Date.now() - Date.parse(asString(cached.fetched_at)) < maxAge)
     return JSON.parse(asString(cached.body));
+  // All visitors share one upstream throttle so public traffic does not
+  // overwhelm CelesTrak when a new query misses the shared two-hour cache.
+  const window = Math.floor(Date.now() / 3_600_000);
+  await run(ctx.db, `INSERT INTO sites_rate_windows(key,hits,window) VALUES('celestrak',1,?)
+    ON CONFLICT(key) DO UPDATE SET hits=CASE WHEN window=excluded.window THEN hits+1 ELSE 1 END,
+      window=excluded.window`, window);
+  const rate = await one(ctx.db, "SELECT hits FROM sites_rate_windows WHERE key='celestrak'");
+  if (Number(rate?.hits ?? 0) > 60) {
+    if (cached) return JSON.parse(asString(cached.body));
+    error(429, "Provider query quota reached; retry when the cache refreshes");
+  }
   try {
     const res = await fetch(url, {headers: {"Accept": "application/json", "User-Agent": "WorldSatMonitor/1.1 Sites demo"}});
     if (!res.ok) throw new Error("CelesTrak returned " + res.status);
