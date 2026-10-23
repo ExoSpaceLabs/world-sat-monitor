@@ -71,6 +71,30 @@ The browser suite saves a screenshot and Playwright trace for each case under
 investigation, use the trace viewer:
 `python -m playwright show-trace ui-artifacts/<test>-trace.zip`.
 
+## Run the same browser suite against public ChatGPT Sites
+
+For the hosted Sites demo, no local Docker or PostgreSQL is needed. Each
+Playwright browser context starts with a **fresh Sites D1 guest cookie** and
+isolated settings. The test runner does **not** call the Compose-only
+`/api/v1/settings/reset` endpoint when `WORLDSAT_UI_TARGET=sites`.
+
+```bash
+python -m pip install -r ui-tests/requirements.txt
+python -m playwright install chromium
+WORLDSAT_UI_TARGET=sites \
+WORLDSAT_UI_BASE_URL="https://<your-actual-site-hostname>" \
+python -m unittest discover -s ui-tests -p 'test_*.py' -v
+```
+
+The same test scenarios and screenshots/traces are used for Compose and
+Sites. No duplicate test suite is maintained. Hosted runs use real Sites
+D1, Worker APIs and WebGL, while deterministic tile fixtures replace only
+external raster requests. A hosted run consumes guest/demo storage and
+provider budget; do not schedule it at high frequency or run against a
+production account's persistent data. The hosted test is **not** part of
+blocking GitHub CI until a safe external test URL and release policy are
+configured.
+
 ## Executed first-wave contracts
 
 - UI-001/002: browser boots, API ONLINE and MAP READY, a real WebGL2 globe
