@@ -119,7 +119,7 @@ class BrowserSmokeTests(unittest.TestCase):
             finally:
                 self.context.close()
         (ARTIFACTS / (self._testMethodName + "-console.txt")).write_text(
-            "\\n".join(self.console_errors + self.page_errors + self.unexpected_api_errors),
+            "\n".join(self.console_errors + self.page_errors + self.unexpected_api_errors),
             encoding="utf-8",
         )
         self.assertEqual(self.page_errors, [], "Uncaught browser JavaScript errors")
@@ -347,7 +347,7 @@ class BrowserSmokeTests(unittest.TestCase):
                 route.continue_()
 
         self.expected_api_errors.add(("POST", "/api/v1/groups", 503))
-        self.page.route(re.compile(r"/api/v1/groups(?:\\?.*)?$"),
+        self.page.route(re.compile(r"/api/v1/groups(?:\?.*)?$"),
                         unavailable_group_create)
         manager.get_by_role("textbox", name="New group name").fill(name)
         manager.locator(".manager-group-create").get_by_role("button", name="CREATE").click()
