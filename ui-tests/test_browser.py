@@ -9,6 +9,7 @@ import unittest
 from io import BytesIO
 import re
 import uuid
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 
@@ -63,14 +64,22 @@ class BrowserSmokeTests(unittest.TestCase):
         cls.driver.stop()
 
     def setUp(self):
+        mobile = self._testMethodName.startswith("test_ui_011_mobile")
         self.context = self.browser.new_context(
-            viewport={"width": 1280, "height": 800},
+            viewport={"width": 390, "height": 844} if mobile else {"width": 1280, "height": 800},
             device_scale_factor=1, timezone_id="UTC", reduced_motion="reduce",
+            is_mobile=mobile, has_touch=mobile,
         )
         self.page = self.context.new_page()
         self.page_errors = []
+        self.console_errors = []
+        self.unexpected_api_errors = []
+        self.expected_api_errors = set()
         self.tiles_seen = []
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
+        self.page.on("console", lambda message: self.console_errors.append(message.text)
+                     if message.type == "error" else None)
+        self.page.on("response", self._observe_api_response)
         # Compose CI owns a disposable database and can reset shared settings.
         # Sites has no settings/reset endpoint: each browser context instead
         # starts with a new isolated guest cookie and default D1 state.
@@ -83,6 +92,15 @@ class BrowserSmokeTests(unittest.TestCase):
                         r"^https://server\.arcgisonline\.com/",
                         r"^https://tile\.openstreetmap\.org/"):
             self.page.route(re.compile(pattern), self._serve_tile)
+
+
+    def _observe_api_response(self, response):
+        path = urlsplit(response.url).path
+        if not response.url.startswith(BASE_URL + "/api/v1/") or response.status < 500:
+            return
+        key = (response.request.method, path, response.status)
+        if key not in self.expected_api_errors:
+            self.unexpected_api_errors.append(f"{response.status} {response.request.method} {response.url}")
 
     def _serve_tile(self, route):
         url = route.request.url
@@ -100,7 +118,12 @@ class BrowserSmokeTests(unittest.TestCase):
                     path=str(ARTIFACTS / (self._testMethodName + "-trace.zip")))
             finally:
                 self.context.close()
+        (ARTIFACTS / (self._testMethodName + "-console.txt")).write_text(
+            "\\n".join(self.console_errors + self.page_errors + self.unexpected_api_errors),
+            encoding="utf-8",
+        )
         self.assertEqual(self.page_errors, [], "Uncaught browser JavaScript errors")
+        self.assertEqual(self.unexpected_api_errors, [], "Unexpected API HTTP 5xx responses")
 
     def _open(self):
         self.page.goto(BASE_URL, wait_until="domcontentloaded")
@@ -307,3 +330,70 @@ class BrowserSmokeTests(unittest.TestCase):
         draw_path.click()
         expect(draw_path).to_have_attribute("aria-checked", "true")
         expect(self.page.locator("footer")).to_contain_text("SETTINGS SAVED", timeout=15000)
+
+    def test_ui_010_group_create_failure_is_visible_and_non_destructive(self):
+        """A controlled API 503 should surface to the user, not fake a group."""
+        self._open()
+        name = "UI-FAILED-" + uuid.uuid4().hex[:8].upper()
+        self.page.get_by_role("button", name="Open object manager").click()
+        manager = self.page.get_by_label("Object management")
+        manager.get_by_role("tab", name="GROUPED").click()
+
+        def unavailable_group_create(route):
+            if route.request.method == "POST":
+                route.fulfill(status=503, content_type="application/json",
+                              body='{"detail":"Simulated group service unavailable"}')
+            else:
+                route.continue_()
+
+        self.expected_api_errors.add(("POST", "/api/v1/groups", 503))
+        self.page.route(re.compile(r"/api/v1/groups(?:\\?.*)?$"),
+                        unavailable_group_create)
+        manager.get_by_role("textbox", name="New group name").fill(name)
+        manager.locator(".manager-group-create").get_by_role("button", name="CREATE").click()
+        expect(manager.get_by_role("alert")).to_contain_text(
+            "Simulated group service unavailable", timeout=15000)
+        expect(manager.locator(".manager-group-entry").filter(has_text=name)).to_have_count(0)
+        # The failed mutation must not silently create local/backend state.
+        groups = self.context.request.get(BASE_URL + "/api/v1/groups")
+        self.assertTrue(groups.ok)
+        self.assertNotIn(name, [g["name"] for g in groups.json()["groups"]])
+        manager.get_by_role("button", name="Close manager").click()
+        expect(self.page.get_by_label("Interactive rotating 3D Earth map")).to_be_visible()
+
+    def test_ui_011_mobile_controls_and_panels_fit_viewport(self):
+        """Exercise real mobile CSS, not a scaled desktop screenshot."""
+        self._open()
+        width = self.page.evaluate("window.innerWidth")
+        self.assertEqual(width, 390, "Unexpected mobile CSS viewport")
+        scroll_width = self.page.evaluate(
+            "Math.max(document.body.scrollWidth, document.documentElement.scrollWidth)")
+        self.assertLessEqual(scroll_width, width + 2,
+                             "Mobile page has horizontal overflow")
+        for accessible_name, panel_label in (
+            ("Open map settings", "Map settings"),
+            ("Open orbital settings", "Object settings"),
+            ("Open object manager", "Object management"),
+        ):
+            button = self.page.get_by_role("button", name=accessible_name)
+            expect(button).to_be_visible()
+            box = button.bounding_box()
+            self.assertIsNotNone(box)
+            self.assertGreaterEqual(box["x"], -1, accessible_name + " off-screen")
+            self.assertLessEqual(box["x"] + box["width"], width + 1,
+                                 accessible_name + " off-screen")
+            button.click()
+            panel = self.page.get_by_label(panel_label, exact=True)
+            expect(panel).to_be_visible()
+            rect = panel.bounding_box()
+            self.assertIsNotNone(rect)
+            self.assertGreaterEqual(rect["x"], 0, panel_label + " clipped")
+            self.assertLessEqual(rect["x"] + rect["width"], width + 1,
+                                 panel_label + " clipped")
+            if panel_label == "Map settings":
+                panel.get_by_role("button", name="Close map settings").click()
+            elif panel_label == "Object settings":
+                panel.get_by_role("button", name="Close settings").click()
+            else:
+                panel.get_by_role("button", name="Close manager").click()
+            expect(panel).to_have_count(0)
