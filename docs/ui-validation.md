@@ -71,6 +71,30 @@ The browser suite saves a screenshot and Playwright trace for each case under
 investigation, use the trace viewer:
 `python -m playwright show-trace ui-artifacts/<test>-trace.zip`.
 
+## Run the same browser suite against public ChatGPT Sites
+
+For the hosted Sites demo, no local Docker or PostgreSQL is needed. Each
+Playwright browser context starts with a **fresh Sites D1 guest cookie** and
+isolated settings. The test runner does **not** call the Compose-only
+`/api/v1/settings/reset` endpoint when `WORLDSAT_UI_TARGET=sites`.
+
+```bash
+python -m pip install -r ui-tests/requirements.txt
+python -m playwright install chromium
+WORLDSAT_UI_TARGET=sites \
+WORLDSAT_UI_BASE_URL="https://<your-actual-site-hostname>" \
+python -m unittest discover -s ui-tests -p 'test_*.py' -v
+```
+
+The same test scenarios and screenshots/traces are used for Compose and
+Sites. No duplicate test suite is maintained. Hosted runs use real Sites
+D1, Worker APIs and WebGL, while deterministic tile fixtures replace only
+external raster requests. A hosted run consumes guest/demo storage and
+provider budget; do not schedule it at high frequency or run against a
+production account's persistent data. The hosted test is **not** part of
+blocking GitHub CI until a safe external test URL and release policy are
+configured.
+
 ## Executed first-wave contracts
 
 - UI-001/002: browser boots, API ONLINE and MAP READY, a real WebGL2 globe
@@ -83,6 +107,14 @@ investigation, use the trace viewer:
   OFF updates the visible footer.
 - UI-007: MANAGER creates an inactive object through actual UI controls,
   object survives a reload, and deletion removes it.
+- UI-006: a real wheel zoom changes the reported MapLibre camera zoom; RESET
+  VIEW returns the camera to the documented initial zoom.
+- UI-008: MANAGER creates a group, adds the seeded WORLDSAT-01 member, then
+  GROUP mode displays the collection and obtains a ready group position.
+  The test cleans up the group without deleting the shared fixture satellite.
+- UI-009 (behavioral): disabling DRAW ORBIT PATH persists to the backend,
+  survives a page reload, and can be re-enabled; this does **not** yet prove
+  the orbit pixels changed or geometry is physically correct.
 
 ### Still required
 
@@ -95,7 +127,7 @@ investigation, use the trace viewer:
 3. Independent night/day hemispheres and a terminator-location physics check
    using known UTC/subsolar coordinates; positive pixel difference is a
    rendering smoke test, **not** sufficient to validate spatial correctness.
-4. Camera drag/zoom/reset assertions, group create/display, catalog fallback
+4. Camera drag assertions, orbit placement pixel validation, catalog fallback
    error states, source-quality Details, persistence and network failure cases.
 5. Mobile viewport and GPU/OS/browser matrix; release smoke tests against
    published pinned images, not just locally built containers.

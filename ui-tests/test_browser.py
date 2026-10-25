@@ -37,7 +37,12 @@ def pixel_difference(first, second):
 
 from playwright.sync_api import sync_playwright, expect
 
-BASE_URL = os.getenv("WORLDSAT_UI_BASE_URL", "http://localhost:3000")
+BASE_URL = os.getenv("WORLDSAT_UI_BASE_URL", "http://localhost:3000").rstrip("/")
+TARGET = os.getenv("WORLDSAT_UI_TARGET", "compose").lower()
+if TARGET not in {"compose", "sites"}:
+    raise ValueError("WORLDSAT_UI_TARGET must be 'compose' or 'sites'")
+if TARGET == "sites" and not BASE_URL.startswith("https://"):
+    raise ValueError("Hosted Sites tests require an explicit HTTPS WORLDSAT_UI_BASE_URL")
 ARTIFACTS = Path("ui-artifacts")
 ARTIFACTS.mkdir(exist_ok=True)
 
@@ -66,11 +71,13 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page_errors = []
         self.tiles_seen = []
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
-        # Each browser case starts from a clean, persisted application configuration.
-        # This is safe only because CI owns a disposable Compose database and settings volume.
-        reset = self.context.request.post(BASE_URL + "/api/v1/settings/reset")
-        if not reset.ok:
-            raise AssertionError(f"Fixture settings reset failed: HTTP {reset.status}")
+        # Compose CI owns a disposable database and can reset shared settings.
+        # Sites has no settings/reset endpoint: each browser context instead
+        # starts with a new isolated guest cookie and default D1 state.
+        if TARGET == "compose":
+            reset = self.context.request.post(BASE_URL + "/api/v1/settings/reset")
+            if not reset.ok:
+                raise AssertionError(f"Fixture settings reset failed: HTTP {reset.status}")
         self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
         for pattern in (r"^https://services\.arcgisonline\.com/",
                         r"^https://server\.arcgisonline\.com/",
@@ -214,3 +221,89 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.once("dialog", lambda dialog: dialog.accept())
         row.get_by_role("button", name="DEL").click()
         expect(row).to_have_count(0)
+
+    def test_ui_006_reset_view_restores_camera_zoom(self):
+        """Exercise actual wheel input and require a camera response and reset."""
+        # Camera movement is asynchronous (MapLibre animation frames). Do
+        # not install Playwright's virtual clock: that freezes or advances the
+        # same timers driving wheel-zoom transitions on some browser versions.
+        canvas = self._open()
+        coordinates = self.page.locator(".coordinates")
+        expect(coordinates).to_contain_text("Z1.4")
+        # Close the docked Details overlay so it cannot intercept map input.
+        details = self.page.get_by_role("button", name="Toggle display details")
+        details.click()
+        expect(details).to_have_attribute("aria-expanded", "false")
+        canvas.hover(position={"x": 800, "y": 350})
+        for _ in range(3):
+            self.page.mouse.wheel(0, -600)
+        self.page.wait_for_function(
+            "() => { const match = document.querySelector('.coordinates')?.textContent?.match(/Z([0-9.]+)/); return match && Number(match[1]) >= 1.8; }",
+            timeout=15000,
+        )
+        self.page.get_by_role("button", name="Reset globe camera").click()
+        expect(coordinates).to_contain_text("Z1.4", timeout=15000)
+
+    def test_ui_008_group_creation_membership_display_and_cleanup(self):
+        """Manager creation, membership, group display and deletion are end-to-end."""
+        self._open()
+        name = "UI-GROUP-" + uuid.uuid4().hex[:8].upper()
+        self.page.get_by_role("button", name="Open object manager").click()
+        manager = self.page.get_by_label("Object management")
+        manager.get_by_role("tab", name="GROUPED").click()
+        manager.get_by_role("textbox", name="New group name").fill(name)
+        manager.locator(".manager-group-create").get_by_role("button", name="CREATE").click()
+        entry = manager.locator(".manager-group-entry").filter(has_text=name)
+        expect(entry).to_be_visible(timeout=20000)
+
+        # Add the deterministic fixture, not a live CelesTrak object.
+        candidates = entry.get_by_label("Add satellite to group")
+        fixture = candidates.locator(".group-member-candidate").filter(has_text="WORLDSAT-01")
+        expect(fixture).to_be_visible(timeout=15000)
+        fixture.get_by_role("button", name="ADD").click()
+        expect(entry.locator(".manager-group-expand")).to_contain_text("1 MEMBERS", timeout=20000)
+
+        api_groups = self.context.request.get(BASE_URL + "/api/v1/groups")
+        self.assertTrue(api_groups.ok)
+        group = next((g for g in api_groups.json()["groups"] if g["name"] == name), None)
+        self.assertIsNotNone(group, "Created group not found in backend")
+        group_id = group["id"]
+        try:
+            manager.get_by_role("button", name="Close manager").click()
+            self.page.get_by_role("group", name="Display mode").get_by_role("button", name="GROUP").click()
+            listing = self.page.get_by_label("Group display list")
+            display = listing.locator(".group-display-row").filter(has_text=name)
+            expect(display).to_be_visible(timeout=15000)
+            display.click()
+            expect(display).to_have_attribute("aria-pressed", "true")
+            expect(self.page.locator("footer")).to_contain_text("GROUP " + name + " DISPLAYED")
+            expect(self.page.locator("footer")).to_contain_text("1/1 POSITIONS READY", timeout=30000)
+            expect(self.page.get_by_label("Interactive rotating 3D Earth map")).to_be_visible()
+        finally:
+            # API cleanup is acceptable in a test fixture; UI creation/display
+            # and the group membership were explicitly validated above.
+            deleted = self.context.request.delete(BASE_URL + f"/api/v1/groups/{group_id}")
+            self.assertEqual(deleted.status, 204, "Fixture group cleanup failed")
+
+    def test_ui_009_orbit_controls_persist_after_reload(self):
+        self._open()
+        self.page.get_by_role("button", name="Open orbital settings").click()
+        settings = self.page.get_by_label("Object settings")
+        draw_path = settings.get_by_role("switch", name=re.compile("DRAW ORBIT PATH"))
+        expect(draw_path).to_have_attribute("aria-checked", "true")
+        draw_path.click()
+        expect(draw_path).to_have_attribute("aria-checked", "false")
+        expect(self.page.locator("footer")).to_contain_text("SETTINGS SAVED", timeout=15000)
+        response = self.context.request.get(BASE_URL + "/api/v1/settings")
+        self.assertTrue(response.ok)
+        self.assertFalse(response.json()["orbit"]["path"]["enabled"])
+
+        self.page.reload(wait_until="domcontentloaded")
+        expect(self.page.locator("footer")).to_contain_text("API ONLINE", timeout=45000)
+        self.page.get_by_role("button", name="Open orbital settings").click()
+        settings = self.page.get_by_label("Object settings")
+        draw_path = settings.get_by_role("switch", name=re.compile("DRAW ORBIT PATH"))
+        expect(draw_path).to_have_attribute("aria-checked", "false")
+        draw_path.click()
+        expect(draw_path).to_have_attribute("aria-checked", "true")
+        expect(self.page.locator("footer")).to_contain_text("SETTINGS SAVED", timeout=15000)
