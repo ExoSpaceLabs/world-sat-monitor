@@ -115,6 +115,16 @@ configured.
 - UI-009 (behavioral): disabling DRAW ORBIT PATH persists to the backend,
   survives a page reload, and can be re-enabled; this does **not** yet prove
   the orbit pixels changed or geometry is physically correct.
+- UI-010 (negative): intercept only the deliberate POST group creation and
+  return HTTP 503; Manager must show an explicit error, not invent a group,
+  and the globe stays available. Live API reads continue to the real backend.
+- UI-011 (mobile): start Chromium in a 390 × 844 device viewport; require
+  no horizontal overflow, visible topbar controls, and in-bounds Map Settings,
+  Orbital Settings and Manager panels with working close buttons.
+- UI-012 (passive, all cases): fail tests on unexpected `/api/v1/*` HTTP 5xx
+  responses. Capture browser console errors and exceptions as a text artifact
+  alongside screenshots and traces. The deliberately injected UI-010 503 is
+  explicitly allowlisted only in that test.
 
 ### Still required
 
@@ -127,8 +137,8 @@ configured.
 3. Independent night/day hemispheres and a terminator-location physics check
    using known UTC/subsolar coordinates; positive pixel difference is a
    rendering smoke test, **not** sufficient to validate spatial correctness.
-4. Camera drag assertions, orbit placement pixel validation, catalog fallback
-   error states, source-quality Details, persistence and network failure cases.
+4. Camera drag assertions, orbit placement pixel validation, source-quality
+   Details, provider outage fallback, and network transport failure handling.
 5. Mobile viewport and GPU/OS/browser matrix; release smoke tests against
    published pinned images, not just locally built containers.
 6. Console error and failed network capture beyond uncaught JS exceptions,
