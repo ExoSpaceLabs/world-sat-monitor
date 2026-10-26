@@ -321,7 +321,7 @@ class BrowserSmokeTests(unittest.TestCase):
         # floating-point rounding around the 1.35 boundary can show 1.3 or
         # 1.4 after MapLibre's animated easing, depending on browser frames.
         # Both represent the same initial view at the display's precision.
-        expect(coordinates).to_contain_text(re.compile(r"Z1\\.[34]\\b"), timeout=15000)
+        expect(coordinates).to_contain_text(re.compile(r"Z1[.][34]"), timeout=15000)
         expect(coordinates).to_contain_text("18.000° N", timeout=15000)
 
     def test_ui_008_group_creation_membership_display_and_cleanup(self):
