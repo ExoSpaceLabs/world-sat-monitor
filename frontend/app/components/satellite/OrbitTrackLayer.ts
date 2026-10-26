@@ -503,12 +503,18 @@ export class OrbitTrackLayer implements CustomLayerInterface {
   private lastDebugSignature = "";
   private map: MapLibreMap | null = null;
   private readonly programs = new Map<string, ProgramState>();
+  private state: OrbitTrackState;
+  private readonly maplibre: MapLibreModule;
+  private readonly onDebugState?: (state: OrbitDebugState) => void;
 
   constructor(
-    private state: OrbitTrackState,
-    private readonly maplibre: MapLibreModule,
-    private readonly onDebugState?: (state: OrbitDebugState) => void,
+    state: OrbitTrackState,
+    maplibre: MapLibreModule,
+    onDebugState?: (state: OrbitDebugState) => void,
   ) {
+    this.state = state;
+    this.maplibre = maplibre;
+    this.onDebugState = onDebugState;
     this.geometry = buildLayerGeometry(maplibre, state);
   }
 
