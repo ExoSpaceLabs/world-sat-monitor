@@ -79,3 +79,35 @@ test("shadow opacity is derived only from geographic solar illumination", () => 
   assert.equal(shadowAlpha(-1, 0.35), 0.35);
   assert.ok(shadowAlpha(-0.01) > 0 && shadowAlpha(-0.01) < DEFAULT_SHADOW_OPACITY);
 });
+
+test("independent equinox reference: Greenwich-facing Africa is day at noon and night at midnight", () => {
+  // Astronomical reference: near the March equinox, declination is almost
+  // zero and the subsolar meridian is near Greenwich at 12:00 UTC.
+  // This is independent of the model's returned right ascension / sidereal
+  // angle identity, which could agree even if both values were wrong.
+  const noon = getSolarState(new Date("2026-03-20T12:00:00.000Z"));
+  const midnight = getSolarState(new Date("2026-03-20T00:00:00.000Z"));
+  assert.ok(Math.abs(noon.latitude) < 1, "equinox declination must be near zero");
+  assert.ok(Math.abs(noon.longitude) < 6, "noon Sun must be near Greenwich");
+  assert.ok(Math.abs(midnight.latitude) < 1);
+  assert.ok(Math.abs(Math.abs(midnight.longitude) - 180) < 6);
+  assert.ok(solarElevation(18, 13, noon) > 65,
+    "Africa-facing initial camera centre must be in daylight at noon");
+  assert.ok(solarElevation(18, 13, midnight) < -65,
+    "the same location must be in night at midnight");
+  assert.equal(shadowAlpha(solarIllumination(18, 13, noon), 1), 0);
+  assert.ok(shadowAlpha(solarIllumination(18, 13, midnight), 1) > 0.99);
+});
+
+test("solstice anchor: polar seasons follow terrestrial axial tilt", () => {
+  const june = getSolarState(new Date("2026-06-21T12:00:00.000Z"));
+  const december = getSolarState(new Date("2026-12-21T12:00:00.000Z"));
+  assert.ok(june.latitude > 23.2 && june.latitude < 23.5,
+    "June solstice must have northern positive declination");
+  assert.ok(december.latitude < -23.2 && december.latitude > -23.5,
+    "December solstice must have southern negative declination");
+  assert.ok(solarIllumination(90, 0, june) > 0);
+  assert.ok(solarIllumination(90, 0, december) < 0);
+  assert.ok(solarIllumination(-90, 0, june) < 0);
+  assert.ok(solarIllumination(-90, 0, december) > 0);
+});

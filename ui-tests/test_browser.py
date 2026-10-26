@@ -36,6 +36,21 @@ def pixel_difference(first, second):
         raise AssertionError("Screenshot dimensions differ")
     return sum(ImageStat.Stat(ImageChops.difference(a, b)).mean) / 3
 
+def centre_pixel_difference(first, second):
+    """Compare only the Earth-centre ROI, excluding Settings and other chrome."""
+    a = Image.open(BytesIO(first)).convert("RGB")
+    b = Image.open(BytesIO(second)).convert("RGB")
+    if a.size != b.size:
+        raise AssertionError("Screenshot dimensions differ")
+    width, height = a.size
+    roi = (
+        width * 2 // 5, height * 2 // 5,
+        width * 3 // 5, height * 3 // 5,
+    )
+    return sum(ImageStat.Stat(ImageChops.difference(
+        a.crop(roi), b.crop(roi))).mean) / 3
+
+
 from playwright.sync_api import sync_playwright, expect
 
 BASE_URL = os.getenv("WORLDSAT_UI_BASE_URL", "http://localhost:3000").rstrip("/")
@@ -224,6 +239,43 @@ class BrowserSmokeTests(unittest.TestCase):
         expect(environment).to_have_attribute("aria-checked", "false")
         expect(self.page.locator("footer")).to_contain_text("ENVIRONMENT OFF")
 
+    def test_ui_005b_equinox_night_is_dark_and_noon_is_sunlit(self):
+        """Same camera, equinox noon/midnight: the visible hemisphere matters.
+
+        Unlike the generic opacity-pixel test, this explicitly fails an
+        inverted night mask or a shader that darkens the entire planet.
+        """
+        def centre_shadow_effect(instant, label):
+            self.page.clock.install(time=datetime.fromisoformat(instant))
+            self._open()
+            panel = self._settings()
+            opacity = panel.get_by_role("slider", name="Night shadow opacity")
+            opacity.focus()
+            opacity.press("Home")
+            expect(panel.locator(".shadow-opacity output")).to_have_text("0%")
+            self.page.wait_for_timeout(350)
+            unshaded = self._capture_globe(label + "-zero")
+            opacity.press("End")
+            expect(panel.locator(".shadow-opacity output")).to_have_text("100%")
+            self.page.wait_for_timeout(350)
+            shaded = self._capture_globe(label + "-full")
+            return centre_pixel_difference(unshaded, shaded)
+
+        # Africa-centred INITIAL_VIEW (13E, 18N), same orientation and raster
+        # tiles on both fresh loads. Noon and midnight are astronomical reference
+        # states at the March equinox; no private map hooks are required.
+        midday = centre_shadow_effect("2026-03-20T12:00:00+00:00", "equinox-noon")
+        self.page.close()
+        self.page = self.context.new_page()
+        self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
+        self.page.on("response", self._observe_api_response)
+        midnight = centre_shadow_effect("2026-03-20T00:00:00+00:00", "equinox-midnight")
+        print(f"Terminator hemisphere ROI: noon={midday:.3f}, midnight={midnight:.3f}")
+        self.assertGreater(midnight, 3.0,
+                           "Night-side core must visibly darken")
+        self.assertLess(midday, max(0.7, midnight * 0.25),
+                        "Daylight core must remain mostly undarkened at equinox noon")
+
     def test_ui_007_manager_create_reload_delete(self):
         self._open()
         name = "UI-E2E-" + uuid.uuid4().hex[:8].upper()
@@ -265,7 +317,12 @@ class BrowserSmokeTests(unittest.TestCase):
             timeout=15000,
         )
         self.page.get_by_role("button", name="Reset globe camera").click()
-        expect(coordinates).to_contain_text("Z1.4", timeout=15000)
+        # INITIAL_VIEW.zoom = 1.35. The UI reports one decimal place, and
+        # floating-point rounding around the 1.35 boundary can show 1.3 or
+        # 1.4 after MapLibre's animated easing, depending on browser frames.
+        # Both represent the same initial view at the display's precision.
+        expect(coordinates).to_contain_text(re.compile(r"Z1[.][34]"), timeout=15000)
+        expect(coordinates).to_contain_text("18.000° N", timeout=15000)
 
     def test_ui_008_group_creation_membership_display_and_cleanup(self):
         """Manager creation, membership, group display and deletion are end-to-end."""

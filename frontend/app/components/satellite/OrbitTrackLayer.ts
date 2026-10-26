@@ -10,7 +10,7 @@ import {
   headingEndpoint,
   type Satellite,
   type SatelliteTrackPoint,
-} from "../../domain/satellite";
+} from "../../domain/satellite.ts";
 import {
   STREET_SURFACE,
   THEME_CYAN,
@@ -18,7 +18,7 @@ import {
   THEME_HEADING,
   usesStreetContrast,
   type RgbaColor,
-} from "../../maps/theme";
+} from "../../maps/theme.ts";
 
 export const ORBIT_TRACK_LAYER_ID = "satellite-orbit-track";
 
@@ -288,7 +288,7 @@ function headingVector(satellite: Satellite): WorldPoint[] {
   return points;
 }
 
-function buildLayerGeometry(
+export function buildLayerGeometry(
   maplibre: MapLibreModule,
   state: OrbitTrackState,
 ): LayerGeometry {
@@ -503,12 +503,18 @@ export class OrbitTrackLayer implements CustomLayerInterface {
   private lastDebugSignature = "";
   private map: MapLibreMap | null = null;
   private readonly programs = new Map<string, ProgramState>();
+  private state: OrbitTrackState;
+  private readonly maplibre: MapLibreModule;
+  private readonly onDebugState?: (state: OrbitDebugState) => void;
 
   constructor(
-    private state: OrbitTrackState,
-    private readonly maplibre: MapLibreModule,
-    private readonly onDebugState?: (state: OrbitDebugState) => void,
+    state: OrbitTrackState,
+    maplibre: MapLibreModule,
+    onDebugState?: (state: OrbitDebugState) => void,
   ) {
+    this.state = state;
+    this.maplibre = maplibre;
+    this.onDebugState = onDebugState;
     this.geometry = buildLayerGeometry(maplibre, state);
   }
 
