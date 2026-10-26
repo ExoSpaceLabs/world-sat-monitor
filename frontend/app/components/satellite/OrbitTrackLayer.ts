@@ -10,7 +10,7 @@ import {
   headingEndpoint,
   type Satellite,
   type SatelliteTrackPoint,
-} from "../../domain/satellite";
+} from "../../domain/satellite.ts";
 import {
   STREET_SURFACE,
   THEME_CYAN,
@@ -18,7 +18,7 @@ import {
   THEME_HEADING,
   usesStreetContrast,
   type RgbaColor,
-} from "../../maps/theme";
+} from "../../maps/theme.ts";
 
 export const ORBIT_TRACK_LAYER_ID = "satellite-orbit-track";
 
