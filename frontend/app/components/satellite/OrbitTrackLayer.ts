@@ -288,7 +288,7 @@ function headingVector(satellite: Satellite): WorldPoint[] {
   return points;
 }
 
-function buildLayerGeometry(
+export function buildLayerGeometry(
   maplibre: MapLibreModule,
   state: OrbitTrackState,
 ): LayerGeometry {
