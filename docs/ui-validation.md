@@ -105,6 +105,18 @@ configured.
   moving shadow opacity from 0 to 100 causes a measurable change in the
   captured globe rather than merely updating a label. Toggling environment
   OFF updates the visible footer.
+- UI-005b: at the March equinox, compare the same Africa-facing, central Earth
+  image region with the shadow slider at 0% and 100% at **12:00 UTC** and
+  **00:00 UTC**. Require a substantially stronger darkening at midnight than
+  at noon, catching inverted or planet-wide night masks. Freeze the browser's
+  UTC independently for each scene; do not expose a production camera hook.
+- Orbit geometry (Node test): feed realistic history, prediction and heading
+  points through the **same** vertex generator the renderer uses. NADIR has
+  zero elevation; ORBIT retains kilometres converted to physical metres,
+  longer distances, and no antimeridian-spanning line strips.
+- Solar anchors (Node test): independent equinox/solstice UTC checks for
+  declination, subsolar longitude and day/night at known geographic points.
+  Prior tests only checked internal RA/sidereal consistency.
 - UI-007: MANAGER creates an inactive object through actual UI controls,
   object survives a reload, and deletion removes it.
 - UI-006: a real wheel zoom changes the reported MapLibre camera zoom; RESET
@@ -134,10 +146,11 @@ configured.
 2. Approved reference screenshots for single, group, imagery styles, direction
    vectors, orbit ground/altitude placement, illumination, About, settings,
    manager and responsive layouts. Baseline updates must be reviewed.
-3. Independent night/day hemispheres and a terminator-location physics check
-   using known UTC/subsolar coordinates; positive pixel difference is a
-   rendering smoke test, **not** sufficient to validate spatial correctness.
-4. Camera drag assertions, orbit placement pixel validation, source-quality
+3. Full terminator **boundary-location** pixel validation across seasons and
+   camera bearings; current checks anchor noon/midnight hemisphere polarity and
+   independent solar geometry but do not reconstruct the visible boundary.
+4. Camera drag assertions, **rendered** orbit/marker altitude pixel validation
+   (current added test validates the production vertex builder), source-quality
    Details, provider outage fallback, and network transport failure handling.
 5. Mobile viewport and GPU/OS/browser matrix; release smoke tests against
    published pinned images, not just locally built containers.
